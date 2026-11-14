@@ -591,6 +591,7 @@ const DEFAULTS = {
   hours: { days: [0, 1, 2, 3, 4], start: 9, end: 17 },
   general: { noAttachTickets: false, roundRobin: false, defaultPriority: 'Medium', defaultType: 'New chronic request', defaultGroup: 'Chronic review', mailbox: 'Chronic@sarwa.life' },
   importer: { machine: '', label: '' },
+  ai: { enabled: false, model: 'claude-opus-5-5' },
   autoAck: {
     enabled: false, since: '', skip: 'noreply, no-reply, donotreply, mailer-daemon, postmaster, gmhis',
     AR: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">نفيدكم بأنه تم استلام طلبكم بخصوص: {{ticket.subject}}<br>وتم تسجيله تحت رقم التذكرة <b>{{ticket.no}}</b>.<br>سيتم مراجعة الطلب والرد عليكم في أقرب وقت.</p>',
@@ -1345,7 +1346,7 @@ function reportsView() {
 /* ---------------- Admin ---------------- */
 function adminView(r) {
   const sec = r.arg || 'general'; const S = DB.settings;
-  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['agents', 'Agents'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data & folder']];
+  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Agents'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data & folder']];
   const panel = el('div', { class: 'panel' });
   const save = async (section, value) => { await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
   const lines = arr => arr.join('\n'); const unlines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
@@ -1366,6 +1367,20 @@ function adminView(r) {
         el('label', { class: 'blk' }, 'Default group', sel('defaultGroup', S.groups)),
         el('label', { class: 'blk' }, 'Mailbox that sends replies', el('input', { type: 'email', value: g.mailbox, onchange: e => g.mailbox = e.target.value.trim() })),
         el('button', { class: 'btn primary', type: 'button', onclick: () => save('general', g) }, 'Save')];
+    },
+    ai() {
+      const a = Object.assign({ enabled: false, model: 'claude-opus-5-5' }, clone(S.ai || {}));
+      const on = el('input', { type: 'checkbox', checked: !!a.enabled });
+      const keyIn = el('input', { type: 'password', value: lsGet('hd-aikey', ''), placeholder: 'sk-ant-...', autocomplete: 'off', style: 'width:100%' });
+      const model = el('select', { onchange: e => a.model = e.target.value }, [['claude-opus-5-5', 'Claude Opus 5.5 — best reading'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 — cheaper'], ['claude-haiku-5-5', 'Claude Haiku 5.5 — cheapest']].map(m => opt(m[0], m[1], a.model)));
+      return [el('h2', {}, 'AI reading of prescriptions'),
+        el('p', { class: 'small muted' }, 'When on, an "AI read from attachments" button appears in the Validate screen. It sends the ticket’s prescription and lab images to the Anthropic API, reads the medicines, doses and lab results, and fills the validation table. The assessor always reviews and makes the final decision.'),
+        el('label', { class: 'row', style: 'margin:8px 0' }, on, el('b', {}, 'Turn on AI reading')),
+        el('label', { class: 'blk' }, 'Model', model),
+        el('label', { class: 'blk' }, 'Anthropic API key (kept on THIS device only)', keyIn),
+        el('p', { class: 'small muted' }, 'The key is stored only in this browser — not shared with the team, not in the folder. Each device needs its own key, from console.anthropic.com. Reading sends member prescription images to the Anthropic API (the same AI the GlobeMed Chronic tool already uses) and uses paid API credit.'),
+        el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { lsSet('hd-aikey', keyIn.value.trim()); a.enabled = on.checked; await save('ai', { enabled: a.enabled, model: a.model }); toast('Saved'); } }, 'Save'),
+          lsGet('hd-aikey', '') ? el('button', { class: 'btn', type: 'button', onclick: () => { lsSet('hd-aikey', ''); keyIn.value = ''; toast('Key removed from this device'); } }, 'Remove key from this device') : null)];
     },
     autoack() {
       const a = Object.assign(clone(DEFAULTS.autoAck), clone(S.autoAck || {}));
@@ -1534,6 +1549,37 @@ function decisionEmail(t, V, R, lang) {
   if (rej.length) out.push(H(AR ? 'الأصناف المرفوضة وسبب الرفض' : 'Rejected items and reason'), `<ul dir="${dir}">${rej.map(x => `<li>${esc(x.name)}: ${x.final === 'ACUTE' ? (AR ? 'يصرف كعلاج حاد (Acute) بموافقة منفصلة من الصيدلية / الفرع.' : 'not a monthly chronic medicine – to be dispensed as an acute prescription with a separate approval from the pharmacy / branch.') : esc(x.reason || (AR ? 'النتيجة المرفقة لا تؤكد الحاجة للعلاج.' : 'the attached result does not confirm the need for this medicine.'))}</li>`).join('')}</ul>`);
   return out.join('');
 }
+async function blobToB64(blob) { return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(new Error('read failed')); r.readAsDataURL(blob); }); }
+const AI = {
+  key: () => lsGet('hd-aikey', ''),
+  model: () => (DB.settings.ai && DB.settings.ai.model) || 'claude-opus-5-5',
+  async extract(blocks) {
+    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': AI.key(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: AI.model(), max_tokens: 8000, messages: [{ role: 'user', content: blocks }] }) });
+    let j; try { j = await r.json(); } catch { throw new Error('API returned ' + r.status); }
+    if (!r.ok) throw new Error((j.error && j.error.message) || ('API error ' + r.status));
+    const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI did not return readable data');
+    return JSON.parse(m[0]);
+  }
+};
+function aiPrompt(diagnosis) {
+  return `You are the Chronic Medications reviewer for Sarwa Life Insurance (Egypt). Read the attached claim form / prescription and any lab or scan reports (handwritten or printed, Arabic or English) and extract the data. Return ONLY a JSON object, nothing else.
+
+JSON shape:
+{
+ "member": "8-digit card number or empty",
+ "memberName": "member name or empty",
+ "diagnosis": "diagnosis written on the form",
+ "labs": [ { "test": one of [${Object.keys(TESTS).join(',')}], "value": "e.g. 8.1 %", "date": "YYYY-MM-DD or empty", "result": one of [high,positive,normal,negative] } ],
+ "items": [ { "name": "trade name + strength", "cls": one of [${CLASSES.map(c => c[0]).join(',')}], "dose": number, "unit": one of [${UNITS.map(u => u[0]).join(',')}], "times": number, "per": one of [day,week,month], "decision": one of [APPROVED,MORE_INFO,ACUTE,NOT_JUSTIFIED,UNREADABLE], "reason": "short reason, max 12 words" } ]
+}
+
+Reading rules: GlobeMed columns like 1x1x90 mean 1 unit, once a day, for 90 days. Arabic doses and Arabic-Indic digits (٣٠ وحدة = 30 units; قرص; مرة يوميا; مرتين; قبل النوم; قرص كل أسبوع). Abbreviations od/bid/tds/tid/qid/hs/nocte/weekly. Insulin written as "30 units" with no frequency = once daily. "X او Y" alternatives are ONE item. Put each medicine on its own line and classify it (cls). If a line cannot be read, set cls "other" and decision "UNREADABLE".
+
+Decision guidance (Sarwa rules, they override guidelines): blood-pressure medicines (beta-blockers, ACE inhibitors, ARBs, calcium-channel blockers, diuretics) = APPROVED on the written diagnosis alone. Vitamin B6/B12 (Milga, Neurovit, Neurobion) and thioctic/alpha-lipoic acid (Thiotacid) = APPROVED when diabetes is shown. Colon/IBS medicines (mebeverine/Duspatalin, Colona, probiotics, simethicone) = APPROVED up to 3 months. Acute medicines (antibiotics, short courses, cold/pain) = ACUTE. A chronic medicine needs a confirming lab or scan no older than 6 months, otherwise MORE_INFO. A normal/negative result, a medicine that does not fit the diagnosis, or a dose above the maximum = NOT_JUSTIFIED.
+
+Diagnosis already typed by the assessor (may be empty): "${(diagnosis || '').slice(0, 300).replace(/"/g, "'")}".`;
+}
 function validationDialog(no) {
   const t = DB.tickets.get(no); if (!t) return;
   const today = new Date().toISOString().slice(0, 10);
@@ -1543,7 +1589,36 @@ function validationDialog(no) {
   const box = el('div', { style: 'display:grid;gap:12px' });
   const inp = (obj, k, attrs = {}) => el('input', { value: obj[k] ?? '', ...attrs, oninput: e => { obj[k] = attrs.type === 'checkbox' ? e.target.checked : e.target.value; if (attrs.live !== false) recalc(); }, onchange: e => { obj[k] = attrs.type === 'checkbox' ? e.target.checked : e.target.value; recalc(); } });
   const sel = (obj, k, opts, none) => el('select', { onchange: e => { obj[k] = e.target.value; draw(); } }, none != null ? opt('', none, obj[k] || '') : null, opts.map(o => Array.isArray(o) ? opt(o[0], o[1], obj[k]) : opt(o, o, obj[k])));
-  let resultBox;
+  let resultBox, aiStatusEl;
+  function aiStatus(msg, busy) { if (aiStatusEl) { aiStatusEl.textContent = msg || ''; aiStatusEl.style.color = busy ? 'var(--muted)' : 'var(--text)'; } }
+  function aiBar() {
+    aiStatusEl = el('span', { class: 'small muted', style: 'overflow-wrap:anywhere;flex:1;text-align:right' }, AI.key() ? '' : 'Add your Anthropic API key in Admin › AI reading to turn this on.');
+    return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;background:var(--accent-soft);border-radius:8px;padding:6px 10px' },
+      el('div', { class: 'row' }, el('button', { class: 'btn sm primary', type: 'button', disabled: !AI.key(), onclick: runAI }, '✨ AI read from attachments'), el('span', { class: 'small muted' }, 'Beta — AI fills the table, the assessor decides.')),
+      aiStatusEl);
+  }
+  async function runAI() {
+    if (!AI.key()) { toast('Add your Anthropic API key in Admin › AI reading'); return; }
+    const tk = DB.tickets.get(no); const atts = [];
+    for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/|application\/pdf)/.test(a.mime || '')) atts.push(a);
+    if (!atts.length) { toast('No readable images or PDFs on this ticket'); return; }
+    aiStatus('Reading ' + atts.length + ' file(s) with AI…', true);
+    try {
+      const blocks = []; let n = 0;
+      for (const a of atts) { if (n >= 12) break; try { const f = await FS.file(a.path); if (f.size > 6 * 1048576) continue; const b64 = await blobToB64(f); blocks.push(a.mime === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: a.mime, data: b64 } }); n++; } catch { } }
+      if (!blocks.length) { aiStatus('Could not load the files (still syncing?). Try again shortly.'); return; }
+      blocks.push({ type: 'text', text: aiPrompt(V.diagnosis) });
+      const data = await AI.extract(blocks);
+      if (data.diagnosis && !V.diagnosis) V.diagnosis = data.diagnosis;
+      const okTest = new Set(Object.keys(TESTS)), okCls = new Set(CLASSES.map(c => c[0])), okUnit = new Set(UNITS.map(u => u[0])), okDec = new Set(Object.keys(DEC)), okRes = ['high', 'positive', 'normal', 'negative'];
+      for (const l of (data.labs || [])) if (okTest.has(l.test)) V.labs.push({ test: l.test, value: String(l.value || ''), date: /^\d{4}-\d{2}-\d{2}$/.test(l.date || '') ? l.date : '', result: okRes.includes(l.result) ? l.result : '' });
+      const items = (data.items || []);
+      if (items.length && V.items.length === 1 && !V.items[0].name && !V.items[0].cls) V.items = [];
+      for (const it of items) V.items.push({ name: String(it.name || '').slice(0, 200), cls: okCls.has(it.cls) ? it.cls : '', dose: +it.dose || 1, unit: okUnit.has(it.unit) ? it.unit : 'tablet', times: +it.times || 1, per: ['day', 'week', 'month'].includes(it.per) ? it.per : 'day', prior: 0, unreadable: it.decision === 'UNREADABLE', final: okDec.has(it.decision) ? it.decision : '', finalQty: '', months: '', reason: String(it.reason || '').slice(0, 200), ai: true });
+      draw();
+      aiStatus('AI filled ' + items.length + ' item(s) and ' + (data.labs || []).length + ' lab(s)' + (data.member ? ' · card on form: ' + data.member : '') + '. Check every line before sending — AI can misread.');
+    } catch (e) { aiStatus('AI error: ' + e.message); }
+  }
   function recalc() { const R = computeValidation(V); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
   function resRow(x) { return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'), el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty), el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)), el('td', { class: 'n' }, x.final === 'APPROVED' ? dmy(x.from) + ' → ' + dmy(x.to) : '—')); }
   function draw() {
@@ -1562,7 +1637,7 @@ function validationDialog(no) {
         el('td', {}, sel(it, 'final', Object.entries(DEC).map(([k, v]) => [k, v.en]), 'As suggested')), el('td', {}, inp(it, 'finalQty', { type: 'number', min: 0, placeholder: 'auto', style: 'width:64px' })), el('td', {}, inp(it, 'months', { type: 'number', min: 1, max: 12, placeholder: String(V.months), style: 'width:56px' })),
         el('td', {}, inp(it, 'reason', { type: 'text', dir: 'auto', style: 'width:180px', live: false })), el('td', {}, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.items.splice(i, 1); draw(); } }, '×')))))));
     resultBox = el('tbody');
-    box.replaceChildren(caseRow,
+    box.replaceChildren(aiBar(), caseRow,
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Lab and scan results'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.labs.push({ test: 'hba1c', value: '', date: '', result: '' }); draw(); } }, '+ Add result')), labs,
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Requested items'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
       el('b', {}, 'Suggested decisions (Sarwa rules)'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
