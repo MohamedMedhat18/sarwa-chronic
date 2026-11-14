@@ -1,0 +1,1742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sarwa Chronic</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#13353a">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Sarwa Chronic">
+<style>
+:root{
+  --bg:#f3f5f8; --surface:#fff; --surface-2:#eef1f5; --surface-3:#e4e8ee; --text:#18212b; --muted:#5e6b7a; --border:#dbe1e8;
+  --accent:#0d6b6b; --accent-ink:#fff; --accent-soft:#dff0ee; --rail:#13353a; --rail-ink:#cfe3e1; --rail-active:#2a5a5f;
+  --ok:#1b7344; --ok-bg:#e1f3e8; --warn:#8a5200; --warn-bg:#fcefd5; --bad:#b0281c; --bad-bg:#fbe4e1; --info:#1d5ca8; --info-bg:#e3edfa;
+  --note:#fff8dc; --note-border:#efd98a; --low:#6b8f71; --med:#2f6fb0; --high:#d08a12; --urgent:#c4321f;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 2px 8px rgba(16,24,40,.06); color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0e1318; --surface:#161c23; --surface-2:#1d252e; --surface-3:#26303b; --text:#e5eaef; --muted:#98a4b2; --border:#2a3440;
+  --accent:#45b8b0; --accent-ink:#04201e; --accent-soft:#15302e; --rail:#0b2226; --rail-ink:#a9c7c4; --rail-active:#1d4246;
+  --ok:#62d093; --ok-bg:#14301f; --warn:#f0b357; --warn-bg:#33270f; --bad:#ff8b7f; --bad-bg:#3a1714; --info:#82b4f2; --info-bg:#15263b;
+  --note:#2e2a14; --note-border:#5b5226; --shadow:none; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#0e1318; --surface:#161c23; --surface-2:#1d252e; --surface-3:#26303b; --text:#e5eaef; --muted:#98a4b2; --border:#2a3440;
+  --accent:#45b8b0; --accent-ink:#04201e; --accent-soft:#15302e; --rail:#0b2226; --rail-ink:#a9c7c4; --rail-active:#1d4246;
+  --ok:#62d093; --ok-bg:#14301f; --warn:#f0b357; --warn-bg:#33270f; --bad:#ff8b7f; --bad-bg:#3a1714; --info:#82b4f2; --info-bg:#15263b;
+  --note:#2e2a14; --note-border:#5b5226; --shadow:none; color-scheme:dark;}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.5 "Segoe UI",system-ui,-apple-system,"Noto Sans Arabic",Tahoma,sans-serif;-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--accent)}
+.app{display:grid;grid-template-columns:64px minmax(0,1fr);height:100vh}
+.rail{background:var(--rail);display:flex;flex-direction:column;align-items:center;padding:10px 0;gap:4px}
+.rail .logo{width:38px;height:38px;border-radius:10px;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-weight:800;margin-bottom:10px}
+.rail a{position:relative;width:46px;height:46px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--rail-ink);text-decoration:none}
+.rail a:hover{background:var(--rail-active)}
+.rail a.on{background:var(--rail-active);color:#fff}
+.rail a svg{width:22px;height:22px}
+.rail a .cnt{position:absolute;top:3px;right:2px;background:var(--urgent);color:#fff;font-size:10px;font-weight:700;border-radius:9px;padding:0 5px;line-height:16px}
+.rail a[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:52px;background:#111;color:#fff;font-size:12px;padding:3px 8px;border-radius:6px;white-space:nowrap;z-index:20}
+.main{display:flex;flex-direction:column;min-width:0;height:100vh}
+.top{height:56px;flex:none;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:10px;padding:0 16px}
+.top h1{font-size:16px;margin:0 8px 0 0;white-space:nowrap}
+.top .search{flex:1 1 auto;max-width:440px;position:relative}
+.top .search input{width:100%;padding:7px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface-2)}
+.top .grow{flex:1}
+.sync{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;white-space:nowrap}
+.sync .dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.sync.busy .dot{background:var(--warn)} .sync.err .dot{background:var(--bad)}
+.me{display:flex;align-items:center;gap:6px;border:1px solid var(--border);border-radius:20px;padding:3px 10px 3px 3px;background:var(--surface);cursor:pointer;white-space:nowrap}
+.view{flex:1;overflow:auto;min-height:0}
+.pad{padding:16px}
+.btn{border:1px solid var(--border);background:var(--surface);border-radius:8px;padding:6px 13px;cursor:pointer;font-weight:550;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;text-decoration:none;color:var(--text)}
+.btn:hover{background:var(--surface-2)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.sm{padding:3px 9px;font-size:12.5px}
+.btn.danger{color:var(--bad)}
+.btn[disabled]{opacity:.5;cursor:not-allowed}
+.btn.ghost{border-color:transparent;background:transparent}
+input[type=text],input[type=email],input[type=search],input[type=number],input[type=date],input[type=time],select,textarea{border:1px solid var(--border);border-radius:7px;padding:6px 9px;background:var(--surface);min-width:0}
+textarea{resize:vertical}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow)}
+.muted{color:var(--muted)} .small{font-size:12.5px}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:1px 8px;font-size:11.5px;font-weight:650;white-space:nowrap;line-height:18px}
+.p-new{background:var(--info-bg);color:var(--info)} .p-resp{background:var(--accent-soft);color:var(--accent)}
+.p-over{background:var(--bad-bg);color:var(--bad)} .p-due{background:var(--warn-bg);color:var(--warn)}
+.p-ok{background:var(--ok-bg);color:var(--ok)} .p-muted{background:var(--surface-2);color:var(--muted)} .p-note{background:var(--note);color:var(--warn);border:1px solid var(--note-border)}
+.st{font-size:12px;font-weight:650;border-radius:6px;padding:1px 7px;white-space:nowrap}
+.st-Open{background:var(--info-bg);color:var(--info)} .st-Pending,.st-Waiting{background:var(--warn-bg);color:var(--warn)}
+.st-Resolved{background:var(--ok-bg);color:var(--ok)} .st-Closed{background:var(--surface-2);color:var(--muted)}
+.pri{display:inline-flex;align-items:center;gap:5px;font-size:12.5px}
+.pri::before{content:"";width:9px;height:9px;border-radius:2px;background:var(--med)}
+.pri-Low::before{background:var(--low)} .pri-High::before{background:var(--high)} .pri-Urgent::before{background:var(--urgent)}
+.av{width:30px;height:30px;border-radius:50%;flex:none;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:#fff}
+.av.sm{width:24px;height:24px;font-size:10.5px}
+/* tickets list */
+.lt{display:grid;grid-template-columns:minmax(0,1fr) 260px;min-height:100%}
+@media (max-width:1000px){.lt{grid-template-columns:minmax(0,1fr)} .filters{display:none} .filters.show{display:block}}
+.lhead{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 16px 8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;border-bottom:1px solid var(--border)}
+.lhead select.viewsel{font-weight:650;font-size:15px;border:0;background:transparent;padding-left:0}
+.bulk{display:flex;flex-wrap:wrap;gap:6px;align-items:center;background:var(--accent-soft);border-radius:8px;padding:5px 8px}
+.tl{padding:8px 16px 24px}
+.tr{display:grid;grid-template-columns:22px 34px minmax(0,1fr) auto;gap:10px;align-items:start;background:var(--surface);border:1px solid var(--border);border-left:4px solid var(--med);border-radius:9px;padding:10px 12px;margin-bottom:7px}
+.tr.pri-Low{border-left-color:var(--low)} .tr.pri-High{border-left-color:var(--high)} .tr.pri-Urgent{border-left-color:var(--urgent)}
+.tr.sel{background:var(--accent-soft)}
+.tr .subj{font-weight:600;font-size:14.5px;color:var(--text);text-decoration:none;overflow-wrap:anywhere}
+.tr .subj:hover{color:var(--accent)}
+.tr .meta{font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:2px}
+.tr .props{display:grid;grid-template-columns:repeat(3,minmax(110px,150px));gap:6px}
+.tr .props select{font-size:12.5px;padding:3px 6px;width:100%}
+@media (max-width:760px){.tr{grid-template-columns:22px minmax(0,1fr)} .tr .avcell{display:none} .tr .props{grid-column:2;grid-template-columns:repeat(3,minmax(0,1fr))}}
+.filters{border-left:1px solid var(--border);background:var(--surface);padding:14px;position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto}
+.filters h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:12px 0 6px}
+.filters label.ck{display:flex;align-items:center;gap:6px;font-size:13px;padding:1px 0}
+.filters select,.filters input{width:100%}
+.empty{padding:40px 16px;text-align:center;color:var(--muted)}
+/* ticket view */
+.tv{display:grid;grid-template-columns:minmax(0,1fr) 320px;min-height:100%}
+@media (max-width:1000px){.tv{grid-template-columns:minmax(0,1fr)}}
+.tv .left{padding:14px 18px 40px;min-width:0}
+.tv .side{border-left:1px solid var(--border);background:var(--surface);padding:14px}
+.tbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:12px}
+.tsub{font-size:20px;line-height:1.3;margin:4px 0 6px;font-weight:650;overflow-wrap:anywhere}
+.msg{background:var(--surface);border:1px solid var(--border);border-radius:11px;margin:12px 0;overflow:hidden}
+.msg.out{border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.msg.note{background:var(--note);border-color:var(--note-border)}
+.msg .mh{display:flex;gap:10px;align-items:flex-start;padding:10px 14px 0}
+.msg .mh .who{font-weight:650}
+.msg .mb{padding:8px 14px 12px 54px;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg .mb.html{white-space:normal}
+.msg .mb.html p{margin:0 0 .5em}
+.msg .quoted{color:var(--muted);border-left:3px solid var(--border);padding-left:10px;margin-top:6px}
+.msg .atts{display:flex;flex-wrap:wrap;gap:8px;padding:0 14px 12px 54px}
+.att{border:1px solid var(--border);border-radius:8px;background:var(--surface);width:150px;overflow:hidden;font-size:12px}
+.att .th{height:84px;background:var(--surface-2);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--muted);cursor:pointer}
+.att .th img{width:100%;height:100%;object-fit:cover}
+.att .nm{padding:4px 7px;overflow-wrap:anywhere;line-height:1.3}
+.att .ac{display:flex;gap:4px;padding:0 6px 6px}
+.sys{font-size:12.5px;color:var(--muted);text-align:center;margin:8px 0}
+.editor{background:var(--surface);border:1px solid var(--border);border-radius:11px;margin-top:14px}
+.editor .tabs{display:flex;border-bottom:1px solid var(--border)}
+.editor .tabs button{border:0;background:transparent;padding:9px 14px;cursor:pointer;font-weight:600;color:var(--muted);border-bottom:2px solid transparent}
+.editor .tabs button.on{color:var(--text);border-bottom-color:var(--accent)}
+.editor .fld{display:grid;grid-template-columns:44px minmax(0,1fr);gap:6px;align-items:center;padding:6px 12px 0}
+.editor .fld input{width:100%}
+.tool{display:flex;flex-wrap:wrap;gap:2px;padding:6px 10px;border-bottom:1px solid var(--border)}
+.tool button{border:0;background:transparent;border-radius:6px;padding:3px 8px;cursor:pointer;font-weight:700}
+.tool button:hover{background:var(--surface-2)}
+.ce{min-height:150px;max-height:420px;overflow:auto;padding:12px 14px;outline:none}
+.ce:empty::before{content:attr(data-ph);color:var(--muted)}
+.ce table{border-collapse:collapse} .ce td,.ce th{border:1px solid var(--border);padding:3px 6px}
+.efoot{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--border)}
+.side h3{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:16px 0 8px}
+.side h3:first-child{margin-top:0}
+.side .f{display:grid;gap:3px;margin-bottom:9px}
+.side .f label{font-size:12px;color:var(--muted)}
+.side .f select,.side .f input{width:100%}
+.tags{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.tag{background:var(--surface-2);border-radius:6px;padding:1px 7px;font-size:12px;display:inline-flex;gap:4px;align-items:center}
+.tag button{border:0;background:transparent;cursor:pointer;color:var(--muted);padding:0}
+.slabox{border:1px solid var(--border);border-radius:9px;padding:8px 10px;font-size:13px;display:grid;gap:4px}
+.tline{font-size:12px;color:var(--muted);border-left:2px solid var(--border);padding:0 0 8px 10px;position:relative}
+.tline::before{content:"";position:absolute;left:-5px;top:5px;width:8px;height:8px;border-radius:50%;background:var(--border)}
+/* dashboard */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:16px}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px;text-decoration:none;color:var(--text);display:block}
+.kpi:hover{border-color:var(--accent)}
+.kpi b{display:block;font-size:28px;line-height:1.1;font-variant-numeric:tabular-nums}
+.kpi span{color:var(--muted);font-size:12.5px}
+.kpi.bad b{color:var(--bad)} .kpi.warn b{color:var(--warn)}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.panel h2{font-size:14px;margin:0 0 12px}
+.bar{display:grid;grid-template-columns:130px minmax(0,1fr) 40px;gap:8px;align-items:center;font-size:13px;margin:6px 0}
+.bar .tr2{background:var(--surface-2);border-radius:5px;height:14px;overflow:hidden}
+.bar .fill{height:100%;background:var(--accent);border-radius:5px}
+.bar .lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar .v{text-align:right;font-variant-numeric:tabular-nums}
+table.t{width:100%;border-collapse:collapse;font-size:13px}
+table.t th,table.t td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--border);vertical-align:top}
+table.t th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);background:var(--surface-2)}
+table.t td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
+.tw{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:var(--surface)}
+/* admin */
+.adm{display:grid;grid-template-columns:200px minmax(0,1fr);gap:16px;padding:16px}
+@media (max-width:800px){.adm{grid-template-columns:minmax(0,1fr)}}
+.adm nav{display:flex;flex-direction:column;gap:2px}
+.adm nav a{padding:7px 10px;border-radius:7px;text-decoration:none;color:var(--text)}
+.adm nav a.on{background:var(--accent-soft);color:var(--accent);font-weight:650}
+.adm .panel label.blk{display:grid;gap:4px;margin-bottom:10px;font-size:13px}
+.rule{border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:10px;display:grid;gap:8px}
+/* setup / misc */
+.setup{max-width:640px;margin:40px auto;padding:24px}
+.setup h2{margin-top:0}
+.setup ol{padding-left:18px} .setup li{margin:6px 0}
+dialog{border:0;border-radius:14px;padding:0;background:var(--surface);color:var(--text);width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
+dialog::backdrop{background:rgba(10,15,20,.5)}
+.dh{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-weight:650;font-size:16px}
+.db{padding:14px 18px;display:grid;gap:10px}
+.db label{display:grid;gap:3px;font-size:13px}
+.df{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--text);color:var(--bg);padding:9px 16px;border-radius:9px;font-size:13.5px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:100;max-width:calc(100vw - 32px)}
+.toast.show{opacity:1}
+.banner{background:var(--warn-bg);color:var(--warn);padding:8px 16px;font-size:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.kbd{font-family:Consolas,monospace;font-size:11.5px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 4px}
+iframe.orig{width:100%;height:60vh;border:1px solid var(--border);border-radius:8px;background:#fff}
+@media (max-width:640px){.top h1{display:none}.sync span.t{display:none}.app{grid-template-columns:52px minmax(0,1fr)}.rail a{width:40px;height:40px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav class="rail" aria-label="Main">
+    <div class="logo">CH</div>
+    <a href="#/dashboard" data-r="dashboard" data-tip="Dashboard"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg></a>
+    <a href="#/tickets" data-r="tickets" data-tip="Tickets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4z"/><path d="M14 5v12"/></svg><span class="cnt" id="cntNew" hidden></span></a>
+    <a href="#/ignored" data-r="ignored" data-tip="Emails not turned into tickets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></svg></a>
+    <a href="#/contacts" data-r="contacts" data-tip="Contacts &amp; members"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7"/><path d="M16 4a4 4 0 0 1 0 8M22 21c0-3-2-5.5-4.5-6.5"/></svg></a>
+    <a href="#/reports" data-r="reports" data-tip="Reports"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></a>
+    <a href="#/admin" data-r="admin" data-tip="Admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></a>
+  </nav>
+  <div class="main">
+    <header class="top">
+      <h1>Sarwa Chronic</h1>
+      <form class="search" id="searchForm" role="search"><input type="search" id="q" placeholder="Search tickets, member no., email…  ( / )" aria-label="Search tickets"></form>
+      <div class="grow"></div>
+      <button class="btn" id="installBtn" type="button" hidden>⬇ Install app</button>
+      <button class="btn primary" id="newBtn" type="button">+ New ticket</button>
+      <div class="sync" id="sync" title="Sync status"><span class="dot"></span><span class="t" id="syncT">Not connected</span></div>
+      <div class="me" id="meBtn" role="button" tabindex="0"><span class="av sm" id="meAv">?</span><span id="meName">Set your name</span></div>
+    </header>
+    <div id="banner"></div>
+    <main class="view" id="view"></main>
+  </div>
+</div>
+<dialog id="dlg"></dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+'use strict';
+/* =====================================================================
+   Small helpers
+   ===================================================================== */
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+// let replaceChildren/append skip null/false and accept nested arrays (used for optional parts of the UI)
+for (const fn of ['replaceChildren', 'append']) { const orig = Element.prototype[fn]; Element.prototype[fn] = function (...k) { return orig.apply(this, k.flat(Infinity).filter(x => x != null && x !== false)); }; }
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v == null || v === false) continue;
+    if (k === 'class') e.className = v;
+    else if (k === 'text') e.textContent = v;
+    else if (k === 'html') e.innerHTML = v; // only ever given sanitized HTML
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'value') e.value = v;
+    else if (k === 'checked' || k === 'selected' || k === 'disabled' || k === 'hidden') e[k] = !!v;
+    else e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat(Infinity)) { if (c == null || c === false) continue; e.append(c.nodeType ? c : document.createTextNode(String(c))); }
+  return e;
+}
+const opt = (v, label, sel) => el('option', { value: v, selected: v === sel }, label ?? v);
+const pad = (n, l = 2) => String(n).padStart(l, '0');
+function fmtDate(d) { if (!d) return '—'; d = new Date(d); if (isNaN(d)) return '—'; return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function fmtDay(d) { d = new Date(d); return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`; }
+function rel(d) {
+  if (!d) return ''; const ms = Date.now() - new Date(d).getTime(); const a = Math.abs(ms), fut = ms < 0;
+  const m = Math.round(a / 60000), h = Math.round(a / 3600000), dd = Math.round(a / 86400000);
+  const s = m < 1 ? 'just now' : m < 60 ? m + ' min' : h < 24 ? h + ' h' : dd < 30 ? dd + ' d' : fmtDay(d);
+  return m < 1 || dd >= 30 ? s : fut ? 'in ' + s : s + ' ago';
+}
+const fmtSize = b => b < 1024 ? b + ' B' : b < 1048576 ? Math.round(b / 1024) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
+const normDigits = s => String(s || '').replace(/[٠-٩]/g, d => d.charCodeAt(0) - 0x660).replace(/[۰-۹]/g, d => d.charCodeAt(0) - 0x6F0);
+const extOf = n => { const m = String(n || '').toLowerCase().match(/\.([a-z0-9]{1,6})$/); return m ? m[1] : ''; };
+const rand = n => { const a = new Uint8Array(n); crypto.getRandomValues(a); return [...a].map(x => (x % 36).toString(36)).join(''); };
+const safeName = n => String(n || 'file').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(-90) || 'file';
+const clone = o => JSON.parse(JSON.stringify(o));
+function hashStr(str) { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
+const AVC = ['#0d6b6b', '#2f6fb0', '#8a4fb5', '#b0532f', '#2f8a4f', '#a0742a', '#3d5a99', '#b03a6b'];
+function avatar(name, sm) { const n = String(name || '?').trim(); const ini = n.split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '?'; return el('span', { class: 'av' + (sm ? ' sm' : ''), style: 'background:' + AVC[hashStr(n) % AVC.length], 'aria-hidden': 'true' }, ini); }
+let toastT; function toast(m) { const t = $('#toast'); t.textContent = m; t.classList.add('show'); clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 3500); }
+const isAr = s => (String(s || '').match(/[؀-ۿ]/g) || []).length > 3;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function lsGet(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch { return d; } }
+function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { } }
+
+/* HTML sanitizer for anything rendered as HTML */
+const ALLOWED = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'BR', 'P', 'DIV', 'UL', 'OL', 'LI', 'A', 'SPAN', 'BLOCKQUOTE', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'H3', 'H4', 'HR']);
+function sanitize(html) {
+  const doc = new DOMParser().parseFromString('<div id="x">' + (html || '') + '</div>', 'text/html');
+  const root = doc.getElementById('x');
+  (function walk(n) {
+    for (const c of [...n.childNodes]) {
+      if (c.nodeType === 1) {
+        if (!ALLOWED.has(c.tagName)) {
+          if (/^(SCRIPT|STYLE|IFRAME|OBJECT|EMBED|HEAD|META|LINK|TITLE|SVG|MATH|FORM|INPUT|BUTTON|TEXTAREA|SELECT|IMG|VIDEO|AUDIO)$/.test(c.tagName)) { c.remove(); continue; }
+          walk(c); c.replaceWith(...c.childNodes); continue;
+        }
+        for (const a of [...c.attributes]) {
+          const nm = a.name.toLowerCase();
+          const keep = (c.tagName === 'A' && nm === 'href' && /^(https?:|mailto:)/i.test(a.value.trim())) || nm === 'dir' || nm === 'colspan' || nm === 'rowspan' ||
+            (nm === 'style' && /^[\w\s:;#%,.()'"-]*$/.test(a.value) && !/url|expression|position|@import/i.test(a.value));
+          if (!keep) c.removeAttribute(a.name);
+        }
+        if (c.tagName === 'A') { c.setAttribute('target', '_blank'); c.setAttribute('rel', 'noopener noreferrer'); }
+        walk(c);
+      } else if (c.nodeType !== 3) c.remove();
+    }
+  })(root);
+  return root.innerHTML;
+}
+const textToHtml = t => esc(t).replace(/\n/g, '<br>');
+function htmlToPlain(html) { const d = document.createElement('div'); d.innerHTML = sanitize(html).replace(/<br\s*\/?>/gi, '\n').replace(/<\/(p|div|li|tr|h3|h4)>/gi, '\n'); return d.textContent.replace(/\n{3,}/g, '\n\n').trim(); }
+
+/* =====================================================================
+   Email parsing (.eml MIME and Outlook .msg)
+   ===================================================================== */
+function bytesToLatin1(u8) { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return s; }
+function latin1ToBytes(s) { const u = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i) & 255; return u; }
+function b64ToBytes(s) { s = String(s).replace(/[^A-Za-z0-9+/]/g, ''); if (s.length % 4 === 1) s = s.slice(0, -1); while (s.length % 4) s += '='; try { return latin1ToBytes(atob(s)); } catch { return new Uint8Array(0); } }
+function qpToBytes(s, header) { s = header ? s.replace(/_/g, ' ') : s.replace(/=\r?\n/g, ''); return latin1ToBytes(s.replace(/=([0-9A-Fa-f]{2})/g, (m, h) => String.fromCharCode(parseInt(h, 16)))); }
+const CODEPAGES = { '1256': 'windows-1256', '1252': 'windows-1252', '65001': 'utf-8', '28596': 'iso-8859-6', '708': 'iso-8859-6', '1200': 'utf-16le', '20127': 'windows-1252', '28591': 'windows-1252' };
+function decodeBytes(u8, charset) { let cs = String(charset || 'utf-8').trim().toLowerCase().replace(/^["']|["']$/g, ''); if (/^\d+$/.test(cs)) cs = CODEPAGES[cs] || 'utf-8'; if (cs === 'utf8') cs = 'utf-8'; try { return new TextDecoder(cs).decode(u8); } catch { return new TextDecoder('utf-8').decode(u8); } }
+const concatBytes = arr => { const o = new Uint8Array(arr.reduce((a, b) => a + b.length, 0)); let p = 0; for (const a of arr) { o.set(a, p); p += a.length; } return o; };
+function decodeHeader(v) {
+  if (!v) return '';
+  if (/[\x80-\xff]/.test(v) && !/[^\x00-\xff]/.test(v)) { try { v = new TextDecoder('utf-8', { fatal: true }).decode(latin1ToBytes(v)); } catch { } }
+  const re = /=\?([^?\s]+)\?([bBqQ])\?([^?]*)\?=/g; let out = '', last = 0, m, pend = null;
+  const flush = () => { if (pend) { out += decodeBytes(concatBytes(pend.parts), pend.cs); pend = null; } };
+  while ((m = re.exec(v))) {
+    const between = v.slice(last, m.index);
+    if (!(pend && /^\s*$/.test(between))) { flush(); out += between; }
+    const cs = m[1].split('*')[0].toLowerCase(); const bytes = m[2].toUpperCase() === 'B' ? b64ToBytes(m[3]) : qpToBytes(m[3], true);
+    if (pend && pend.cs === cs) pend.parts.push(bytes); else { flush(); pend = { cs, parts: [bytes] }; }
+    last = re.lastIndex;
+  }
+  flush(); out += v.slice(last); return out.replace(/\s+/g, ' ').trim();
+}
+function parseHeaders(s) { const h = {}; for (const line of String(s || '').replace(/\r?\n[ \t]+/g, ' ').split(/\r?\n/)) { const m = line.match(/^([!-9;-~]+):[ \t]*(.*)$/); if (m) { const k = m[1].toLowerCase(); if (!(k in h)) h[k] = m[2]; } } return h; }
+function splitMsg(bin) { const m = /\r?\n\r?\n/.exec(bin); if (!m) return { headers: parseHeaders(bin), body: '' }; return { headers: parseHeaders(bin.slice(0, m.index)), body: bin.slice(m.index + m[0].length) }; }
+function splitSemi(s) { const out = []; let cur = '', q = false; for (let i = 0; i < s.length; i++) { const c = s[i]; if (c === '"' && s[i - 1] !== '\\') q = !q; if (c === ';' && !q) { out.push(cur); cur = ''; } else cur += c; } out.push(cur); return out; }
+function parseParams(v) {
+  const parts = splitSemi(v || ''); const value = (parts.shift() || '').trim().toLowerCase(); const params = {}, ext = {};
+  for (const p of parts) {
+    const i = p.indexOf('='); if (i < 0) continue; const k = p.slice(0, i).trim().toLowerCase(); let val = p.slice(i + 1).trim();
+    if (val[0] === '"') val = val.slice(1, val.endsWith('"') ? -1 : undefined).replace(/\\(.)/g, '$1');
+    const m = k.match(/^([^*]+)\*(?:(\d+)(\*)?)?$/);
+    if (m) (ext[m[1]] || (ext[m[1]] = [])).push({ n: +(m[2] || 0), enc: m[2] === undefined ? true : !!m[3], val }); else params[k] = val;
+  }
+  for (const [k, segs] of Object.entries(ext)) {
+    segs.sort((a, b) => a.n - b.n); let cs = 'utf-8'; const bytes = [];
+    segs.forEach((sg, idx) => { let v = sg.val; if (sg.enc) { if (idx === 0) { const mm = v.match(/^([^']*)'[^']*'(.*)$/); if (mm) { cs = mm[1] || cs; v = mm[2]; } } bytes.push(latin1ToBytes(v.replace(/%([0-9A-Fa-f]{2})/g, (x, h) => String.fromCharCode(parseInt(h, 16))))); } else bytes.push(latin1ToBytes(v)); });
+    params[k] = decodeBytes(concatBytes(bytes), cs);
+  }
+  return { value, params };
+}
+function splitMultipart(body, boundary) {
+  const delim = '--' + boundary, parts = []; let pos = body.startsWith(delim) ? 0 : body.indexOf('\n' + delim); if (pos < 0) return parts; if (pos > 0) pos += 1;
+  while (pos >= 0) {
+    if (body.startsWith(delim + '--', pos)) break;
+    let start = body.indexOf('\n', pos); if (start < 0) break; start += 1;
+    const next = body.indexOf('\n' + delim, start - 1);
+    if (next < 0) { parts.push(body.slice(start)); break; }
+    let end = next; if (body[end - 1] === '\r') end--; if (end > start) parts.push(body.slice(start, end)); pos = next + 1;
+  }
+  return parts;
+}
+const MIME_EXT = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'text/plain': 'txt', 'text/html': 'html', 'text/calendar': 'ics', 'message/rfc822': 'eml' };
+const EXT_MIME = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', eml: 'message/rfc822', msg: 'application/vnd.ms-outlook' };
+const mimeFromName = n => EXT_MIME[extOf(n)] || 'application/octet-stream';
+function walkPart(bin, ctx, depth) {
+  const { headers, body } = splitMsg(bin); const ct = parseParams(headers['content-type'] || 'text/plain'); const type = ct.value || 'text/plain';
+  if (type.startsWith('multipart/')) { const b = ct.params.boundary; if (b) for (const p of splitMultipart(body, b)) walkPart(p, ctx, depth); return; }
+  const cd = parseParams(headers['content-disposition'] || ''); const cte = (headers['content-transfer-encoding'] || '').trim().toLowerCase();
+  const bytes = cte === 'base64' ? b64ToBytes(body) : cte === 'quoted-printable' ? qpToBytes(body) : latin1ToBytes(body);
+  const name = decodeHeader(cd.params.filename || ct.params.name || '');
+  if (type === 'message/rfc822' && depth < 6) { ctx.forwarded.push(parseEml(bytes, depth + 1)); return; }
+  const isAttachment = cd.value === 'attachment' || !!name || !/^text\/(plain|html)$/.test(type);
+  if (!isAttachment) { (type === 'text/html' ? ctx.htmls : ctx.texts).push(decodeBytes(bytes, ct.params.charset)); return; }
+  ctx.atts.push({ name: name || ('attachment.' + (MIME_EXT[type] || 'bin')), mime: type, bytes, inline: cd.value === 'inline' || (!cd.value && !!headers['content-id']), cid: (headers['content-id'] || '').replace(/[<>\s]/g, '') });
+}
+function splitFrom(s) { const m = String(s || '').match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>/); if (m) return { fromName: m[1].trim(), fromEmail: m[2].trim() }; const e = String(s || '').match(/[\w.+'-]+@[\w.-]+/); return { fromName: e ? s.replace(e[0], '').replace(/[<>()"]/g, '').trim() : String(s || '').trim(), fromEmail: e ? e[0] : '' }; }
+function parseDate(s) { if (!s) return null; const d = new Date(String(s).replace(/\s*\([^)]*\)\s*$/, '').trim()); return isNaN(d) ? null : d.toISOString(); }
+function htmlToText(html) {
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('style,script,head,title').forEach(n => n.remove());
+    doc.querySelectorAll('br').forEach(n => n.replaceWith('\n'));
+    doc.querySelectorAll('p,div,tr,li,h1,h2,h3,h4,table,blockquote').forEach(n => n.append('\n'));
+    doc.querySelectorAll('td,th').forEach(n => n.append('\t'));
+    return (doc.body ? doc.body.textContent : '').replace(/ /g, ' ').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  } catch { return String(html).replace(/<[^>]+>/g, ' '); }
+}
+function parseEml(u8, depth = 0) {
+  const bin = bytesToLatin1(u8); const { headers } = splitMsg(bin); const ctx = { texts: [], htmls: [], atts: [], forwarded: [] };
+  walkPart(bin, ctx, depth);
+  let body = ctx.texts.join('\n').trim(); const html = ctx.htmls.join('\n'); if (!body && html) body = htmlToText(html);
+  return { subject: decodeHeader(headers.subject || ''), ...splitFrom(decodeHeader(headers.from || '')), to: decodeHeader(headers.to || ''), cc: decodeHeader(headers.cc || ''), date: parseDate(headers.date), messageId: (headers['message-id'] || '').trim(), body, html, atts: ctx.atts, forwarded: ctx.forwarded };
+}
+function readCFB(buf) {
+  const u8 = new Uint8Array(buf), dv = new DataView(buf); const SIG = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+  if (u8.length < 512 || SIG.some((b, i) => u8[i] !== b)) throw new Error('not an Outlook .msg file');
+  const ss = 1 << dv.getUint16(30, true), mss = 1 << dv.getUint16(32, true); const dirStart = dv.getUint32(48, true), cutoff = dv.getUint32(56, true) || 4096;
+  const mfStart = dv.getUint32(60, true), nMf = dv.getUint32(64, true); let difSec = dv.getUint32(68, true); const nDif = dv.getUint32(72, true);
+  const END = 0xFFFFFFFA, off = id => (id + 1) * ss; const fatSecs = [];
+  for (let i = 0; i < 109; i++) { const v = dv.getUint32(76 + i * 4, true); if (v < END) fatSecs.push(v); }
+  for (let k = 0; k < nDif && difSec < END; k++) { const o = off(difSec); if (o + ss > u8.length) break; for (let i = 0; i < ss / 4 - 1; i++) { const v = dv.getUint32(o + i * 4, true); if (v < END) fatSecs.push(v); } difSec = dv.getUint32(o + ss - 4, true); }
+  const per = ss / 4, fat = new Uint32Array(fatSecs.length * per);
+  fatSecs.forEach((s, i) => { const o = off(s); for (let j = 0; j < per; j++) fat[i * per + j] = (o + j * 4 + 4 <= u8.length) ? dv.getUint32(o + j * 4, true) : 0xFFFFFFFE; });
+  const chain = (start, table) => { const out = [], seen = new Set(); let s = start; while (s < END && s < table.length && !seen.has(s)) { seen.add(s); out.push(s); s = table[s]; } return out; };
+  const readBig = (start, size) => { const secs = chain(start, fat); const len = size == null ? secs.length * ss : size; const out = new Uint8Array(len); let p = 0; for (const s of secs) { if (p >= len) break; const o = off(s); const n = Math.min(ss, len - p); out.set(u8.subarray(o, Math.min(o + n, u8.length)), p); p += n; } return out; };
+  const dirBytes = readBig(dirStart), ddv = new DataView(dirBytes.buffer), u16 = new TextDecoder('utf-16le'); const entries = [];
+  for (let o = 0; o + 128 <= dirBytes.length; o += 128) { const nl = ddv.getUint16(o + 64, true); entries.push({ name: nl >= 2 ? u16.decode(dirBytes.subarray(o, o + Math.min(nl, 64) - 2)) : '', type: dirBytes[o + 66], left: ddv.getUint32(o + 68, true), right: ddv.getUint32(o + 72, true), child: ddv.getUint32(o + 76, true), start: ddv.getUint32(o + 116, true), size: ddv.getUint32(o + 120, true) }); }
+  const root = entries[0]; const mfBytes = nMf ? readBig(mfStart, nMf * ss) : new Uint8Array(0); const mdv = new DataView(mfBytes.buffer), minifat = new Uint32Array(mfBytes.length >> 2);
+  for (let i = 0; i < minifat.length; i++) minifat[i] = mdv.getUint32(i * 4, true);
+  const mini = root && root.start < END ? readBig(root.start, root.size) : new Uint8Array(0);
+  function read(idx) { const e = entries[idx]; if (!e || e.type !== 2) return new Uint8Array(0); if (e.size < cutoff) { const out = new Uint8Array(e.size); let p = 0; for (const s of chain(e.start, minifat)) { if (p >= e.size) break; const o = s * mss, n = Math.min(mss, e.size - p); out.set(mini.subarray(o, o + n), p); p += n; } return out; } return readBig(e.start, e.size); }
+  function children(idx) { const map = new Map(), seen = new Set(); const visit = i => { if (i >= END || i >= entries.length || seen.has(i)) return; seen.add(i); const e = entries[i]; visit(e.left); map.set(e.name.toUpperCase(), i); visit(e.right); }; if (entries[idx]) visit(entries[idx].child); return map; }
+  return { read, children };
+}
+function msgNode(cfb, idx, hdrSize, cp) {
+  const kids = cfb.children(idx); const raw = tag => { const i = kids.get('__SUBSTG1.0_' + tag); return i == null ? null : cfb.read(i); };
+  const props = {}; const pi = kids.get('__PROPERTIES_VERSION1.0');
+  if (pi != null) { const b = cfb.read(pi), dv = new DataView(b.buffer); for (let o = hdrSize; o + 16 <= b.length; o += 16) props[dv.getUint32(o, true).toString(16).toUpperCase().padStart(8, '0')] = { lo: dv.getUint32(o + 8, true), hi: dv.getUint32(o + 12, true) }; }
+  if (cp == null) { const c = props['3FDE0003'] || props['3FFD0003']; cp = c ? String(c.lo) : '1256'; }
+  const str = id => { let b = raw(id + '001F'); if (b) return new TextDecoder('utf-16le').decode(b).replace(/\0+$/, ''); b = raw(id + '001E'); if (b) return decodeBytes(b, cp).replace(/\0+$/, ''); return ''; };
+  return { kids, raw, props, str, cp };
+}
+function filetime(p) { if (!p) return null; const ms = (p.hi * 4294967296 + p.lo) / 10000 - 11644473600000; if (!(ms > 0)) return null; const d = new Date(ms); return isNaN(d) ? null : d.toISOString(); }
+function parseMsgAt(cfb, idx, hdrSize, depth, cp) {
+  const n = msgNode(cfb, idx, hdrSize, cp); const th = parseHeaders(n.str('007D'));
+  const subject = n.str('0037') || decodeHeader(th.subject || '');
+  let fromName = n.str('0C1A') || n.str('0042'); let fromEmail = n.str('5D01') || n.str('5D02') || n.str('0C1F') || n.str('0065');
+  if (!/@/.test(fromEmail)) { const f = splitFrom(decodeHeader(th.from || '')); fromEmail = f.fromEmail || ''; if (!fromName) fromName = f.fromName; }
+  const date = filetime(n.props['0E060040']) || filetime(n.props['00390040']) || parseDate(th.date);
+  const messageId = n.str('1035') || (th['message-id'] || '').trim();
+  let html = ''; const h = n.raw('10130102'); if (h) html = decodeBytes(h, n.cp); else html = n.str('1013');
+  let body = n.str('1000'); if (!body.trim() && html) body = htmlToText(html);
+  if (!body.trim() && n.raw('10090102')) body = '(The email text is stored in RTF – open the email in Outlook to read it.)';
+  const atts = [], forwarded = [];
+  for (const [name, i] of n.kids) {
+    if (!name.startsWith('__ATTACH_VERSION1.0_#')) continue;
+    const a = msgNode(cfb, i, 8, n.cp); const embIdx = a.kids.get('__SUBSTG1.0_3701000D');
+    if (embIdx != null && depth < 6) { forwarded.push(parseMsgAt(cfb, embIdx, 24, depth + 1, n.cp)); continue; }
+    const data = a.raw('37010102'); if (!data) continue;
+    const fname = a.str('3707') || a.str('3704') || a.str('3001') || 'attachment'; const cid = a.str('3712');
+    atts.push({ name: fname, mime: (a.str('370E') || mimeFromName(fname)).toLowerCase(), bytes: data, inline: !!(a.props['7FFE000B'] && a.props['7FFE000B'].lo) || !!cid, cid });
+  }
+  return { subject, fromName, fromEmail, to: n.str('0E04'), cc: n.str('0E03'), date, messageId, body: body.trim(), html, atts, forwarded };
+}
+const parseMsg = buf => parseMsgAt(readCFB(buf), 0, 32, 0, null);
+function flatten(email, depth = 0, out = { atts: [], bodies: [] }) {
+  out.bodies.push(depth === 0 ? email.body : `\n---------- Forwarded / attached email ----------\nFrom: ${[email.fromName, email.fromEmail && '<' + email.fromEmail + '>'].filter(Boolean).join(' ')}\nDate: ${fmtDate(email.date)}\nSubject: ${email.subject}\n\n${email.body}`);
+  for (const a of email.atts) {
+    const ext = extOf(a.name);
+    if ((ext === 'eml' || ext === 'msg') && depth < 6) { try { flatten(ext === 'eml' ? parseEml(a.bytes, depth + 1) : parseMsg(a.bytes.slice().buffer), depth + 1, out); continue; } catch { } }
+    out.atts.push({ ...a, via: depth > 0 ? 'forwarded' : '' });
+  }
+  for (const f of email.forwarded) flatten(f, depth + 1, out);
+  return out;
+}
+const READABLE_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif'];
+const READABLE_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+function classify(a) {
+  const ext = extOf(a.name), size = a.bytes.length; const isImg = a.mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(ext);
+  if (['ics', 'vcs', 'vcf', 'p7s', 'p7m', 'asc', 'sig'].includes(ext) || /^(text\/calendar|text\/x-vcard|application\/(x-)?pkcs7)/.test(a.mime)) return { cls: 'ignore', why: 'calendar / signature file' };
+  if (['emz', 'wmz', 'wmf', 'thmx', 'mso', 'xml'].includes(ext) && a.inline) return { cls: 'ignore', why: 'Outlook formatting file' };
+  if (size === 0) return { cls: 'ignore', why: 'empty file' };
+  if (isImg && (a.inline || /^image\d{3}\./i.test(a.name) || /^outlook-/i.test(a.name)) && size < 60 * 1024) return { cls: 'ignore', why: 'signature logo / small inline picture' };
+  if ((READABLE_EXT.includes(ext) || READABLE_MIME.includes(a.mime)) && size <= 20 * 1048576) return { cls: 'readable', why: a.inline ? 'picture pasted in the email' : '' };
+  return { cls: 'unreadable', why: size > 20 * 1048576 ? 'larger than 20 MB' : 'open in Outlook / Word' };
+}
+function detectMember(text) { const m = normDigits(text).match(/(?<![\d\/.\-])\d{8}(?![\d\/.\-])/); return m ? m[0] : ''; }
+function detectLang(text) { const t = String(text || '').slice(0, 4000); const ar = (t.match(/[؀-ۿ]/g) || []).length, en = (t.match(/[A-Za-z]/g) || []).length; if (!ar && !en) return 'AR'; return ar >= en * 0.3 ? 'AR' : 'EN'; }
+const TICKET_RE = /CHR\s*-?\s*(\d{6})/i;
+function splitQuoted(text) {
+  const lines = String(text || '').split('\n');
+  const re = /^\s*(>|(From|De|Von|من|مِن)\s*:|-{2,}\s*Original Message|_{10,}|On .{4,200}wrote:|في .{4,200}كتب)/i;
+  for (let i = 1; i < lines.length; i++) if (re.test(lines[i])) return [lines.slice(0, i).join('\n').trim(), lines.slice(i).join('\n').trim()];
+  return [String(text || '').trim(), ''];
+}
+
+/* =====================================================================
+   Microsoft 365 sign-in (OAuth 2.0 authorization code + PKCE, no password ever touches this app)
+   ===================================================================== */
+const CONFIG = { tenant: '6dca0c7b-1d89-47a2-860a-9c4d9c3c4594', clientId: 'f6ad1c26-8b80-4737-9186-a7296caf4a43', scopes: 'openid profile offline_access User.Read Files.ReadWrite.All' };
+const REDIRECT = location.origin + location.pathname;
+const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const AUTH = {
+  tok: JSON.parse(lsGet('hd-tok', 'null') || 'null'),
+  user: JSON.parse(lsGet('hd-user', 'null') || 'null'),
+  save() { lsSet('hd-tok', JSON.stringify(this.tok)); lsSet('hd-user', JSON.stringify(this.user)); },
+  async login(hint) {
+    const v = b64url(crypto.getRandomValues(new Uint8Array(32)));
+    const ch = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)));
+    const st = rand(16); try { sessionStorage.setItem('pkce', JSON.stringify({ v, st, back: location.hash })); } catch { }
+    const p = new URLSearchParams({ client_id: CONFIG.clientId, response_type: 'code', redirect_uri: REDIRECT, scope: CONFIG.scopes, code_challenge: ch, code_challenge_method: 'S256', state: st, response_mode: 'query' });
+    if (hint) p.set('login_hint', hint); else p.set('prompt', 'select_account');
+    location.assign(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/authorize?` + p);
+  },
+  async handleRedirect() {
+    const q = new URLSearchParams(location.search); if (!q.get('code') && !q.get('error')) return false;
+    let saved = null; try { saved = JSON.parse(sessionStorage.getItem('pkce') || 'null'); sessionStorage.removeItem('pkce'); } catch { }
+    history.replaceState(null, '', REDIRECT + ((saved && saved.back) || ''));
+    if (q.get('error')) throw new Error(q.get('error_description') || q.get('error'));
+    if (!saved || saved.st !== q.get('state')) throw new Error('The sign-in took too long – please try again.');
+    await this.token({ grant_type: 'authorization_code', code: q.get('code'), code_verifier: saved.v, redirect_uri: REDIRECT });
+    return true;
+  },
+  async token(params) {
+    const r = await fetch(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: CONFIG.clientId, scope: CONFIG.scopes, ...params }) });
+    const j = await r.json(); if (!r.ok) throw Object.assign(new Error(j.error_description || j.error || 'Sign-in failed'), { code: j.error });
+    this.tok = { at: j.access_token, rt: j.refresh_token || (this.tok && this.tok.rt), exp: Date.now() + (j.expires_in - 120) * 1000 }; this.save(); return this.tok.at;
+  },
+  refreshing: null,
+  async access() {
+    if (this.tok && this.tok.at && Date.now() < this.tok.exp) return this.tok.at;
+    if (!this.tok || !this.tok.rt) throw Object.assign(new Error('Not signed in'), { code: 'login' });
+    if (!this.refreshing) this.refreshing = this.token({ grant_type: 'refresh_token', refresh_token: this.tok.rt }).finally(() => { this.refreshing = null; });
+    try { return await this.refreshing; } catch (e) { this.tok = null; this.save(); throw Object.assign(new Error('Please sign in again'), { code: 'login' }); }
+  },
+  signOut() { this.tok = null; this.user = null; this.save(); lsSet('hd-me', ''); location.assign(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(REDIRECT)}`); }
+};
+async function graph(path, opts = {}) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const at = await AUTH.access();
+    const r = await fetch(path.startsWith('http') ? path : 'https://graph.microsoft.com/v1.0' + path, { ...opts, headers: { Authorization: 'Bearer ' + at, ...(opts.headers || {}) } });
+    if (r.status === 401 && attempt === 0) { AUTH.tok.exp = 0; continue; }
+    if (r.status === 429 || r.status === 503 || r.status === 504) { await new Promise(x => setTimeout(x, (+r.headers.get('Retry-After') || 2) * 1000)); continue; }
+    if (!r.ok) { let m = 'Microsoft 365 error ' + r.status; try { const j = await r.json(); m = (j.error && (j.error.message || j.error.code)) || m; } catch { } throw Object.assign(new Error(m), { status: r.status, name: r.status === 404 ? 'NotFoundError' : r.status === 403 ? 'NotAllowedError' : 'GraphError' }); }
+    return r;
+  }
+  throw new Error('Microsoft 365 is busy – trying again shortly');
+}
+
+/* =====================================================================
+   Shared folder on SharePoint / OneDrive (Microsoft Graph) – or, for testing (?demo), the browser's private storage
+   ===================================================================== */
+const encPath = p => String(p || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+const SEL = '$select=id,name,size,lastModifiedDateTime,file,folder,@microsoft.graph.downloadUrl';
+const GraphFS = {
+  kind: 'graph', root: null, // { driveId, id, name, webUrl }
+  base(path) { const p = encPath(path); return `/drives/${this.root.driveId}/items/${this.root.id}` + (p ? `:/${p}:` : ''); },
+  async write(path, data) {
+    const blob = data instanceof Blob ? data : new Blob([data]);
+    if (blob.size <= 3.5 * 1048576) { await graph(this.base(path) + '/content', { method: 'PUT', body: blob, headers: { 'Content-Type': 'application/octet-stream' } }); return; }
+    const s = await (await graph(this.base(path) + '/createUploadSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }) })).json();
+    const CH = 3276800;
+    for (let o = 0; o < blob.size; o += CH) { const part = blob.slice(o, Math.min(o + CH, blob.size)); const r = await fetch(s.uploadUrl, { method: 'PUT', headers: { 'Content-Range': `bytes ${o}-${o + part.size - 1}/${blob.size}` }, body: part }); if (!r.ok) throw new Error('Upload failed (' + r.status + ')'); }
+  },
+  async file(path) {
+    const it = await (await graph(this.base(path) + '?' + SEL)).json();
+    const r = await fetch(it['@microsoft.graph.downloadUrl']); if (!r.ok) throw new Error('Download failed (' + r.status + ')');
+    return new File([await r.blob()], it.name, { lastModified: Date.parse(it.lastModifiedDateTime) || Date.now(), type: mimeFromName(it.name) });
+  },
+  async text(path) { return (await this.file(path)).text(); },
+  async list(path) {
+    const out = []; let url = this.base(path) + '/children?$top=999&' + SEL;
+    try {
+      while (url) { const j = await (await graph(url)).json(); for (const x of j.value || []) out.push({ name: x.name, kind: x.folder ? 'directory' : 'file', childCount: x.folder ? x.folder.childCount : 0, size: x.size, mtime: x.lastModifiedDateTime, url: x['@microsoft.graph.downloadUrl'] }); url = j['@odata.nextLink'] || ''; }
+    } catch (e) { if (e.status === 404) return []; throw e; }
+    return out;
+  },
+  async fetchText(entry) { const r = await fetch(entry.url); if (!r.ok) throw new Error('Download failed'); return r.text(); }
+};
+const LocalFS = { // same interface on the browser's private storage (demo / testing only)
+  kind: 'local', root: null,
+  async dir(path, create = true) { let h = this.root; for (const p of String(path).split('/').filter(Boolean)) h = await h.getDirectoryHandle(p, { create }); return h; },
+  async write(path, data) { const parts = path.split('/'); const name = parts.pop(); const d = await this.dir(parts.join('/')); const fh = await d.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); },
+  async file(path) { const parts = path.split('/'); const name = parts.pop(); const d = await this.dir(parts.join('/'), false); return (await d.getFileHandle(name)).getFile(); },
+  async text(path) { return (await this.file(path)).text(); },
+  async list(path) { let d; try { d = await this.dir(path, false); } catch (e) { if (e.name === 'NotFoundError' || e.name === 'TypeMismatchError') return []; throw e; } const out = []; for await (const [name, h] of d.entries()) { let childCount = 0; if (h.kind === 'directory') for await (const _ of h.keys()) childCount++; out.push({ name, kind: h.kind, handle: h, childCount }); } return out; },
+  async fetchText(entry) { return (await entry.handle.getFile()).text(); }
+};
+let FS = GraphFS;
+const IDB = {
+  db: null,
+  open() { return new Promise(res => { try { const rq = indexedDB.open('chronic-helpdesk', 1); rq.onupgradeneeded = () => { const d = rq.result; d.createObjectStore('kv'); d.createObjectStore('ev'); }; rq.onsuccess = () => { this.db = rq.result; res(true); }; rq.onerror = () => res(false); rq.onblocked = () => res(false); } catch { res(false); } }); },
+  req(store, mode, fn) { return new Promise((res, rej) => { if (!this.db) return res(undefined); const t = this.db.transaction(store, mode); const r = fn(t.objectStore(store)); t.oncomplete = () => res(r ? r.result : undefined); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }); },
+  get(k) { return this.req('kv', 'readonly', s => s.get(k)); },
+  set(k, v) { return this.req('kv', 'readwrite', s => s.put(v, k)); },
+  evAll(rootId) { return this.req('ev', 'readonly', s => s.getAll(IDBKeyRange.bound(rootId + '|', rootId + '|￿'))); },
+  evPut(rootId, list) { return this.req('ev', 'readwrite', s => { let r; for (const [name, e] of list) r = s.put({ n: name, e }, rootId + '|' + name); return r; }); },
+  evClear() { return this.req('ev', 'readwrite', s => s.clear()); }
+};
+
+/* =====================================================================
+   Event store – every change is a small JSON file in _helpdesk/events/<day>/
+   (append-only, so several people can work at once without conflicts)
+   ===================================================================== */
+const HD = '_helpdesk';
+const STORE = { events: new Map(), rootId: '', lastFull: 0, polling: false, connected: false };
+const MACHINE = lsGet('hd-machine', '') || (() => { const m = 'pc-' + rand(8); lsSet('hd-machine', m); return m; })();
+const me = () => lsGet('hd-me', '');
+const DEFAULTS = {
+  statuses: ['Open', 'Pending', 'Waiting on provider', 'Resolved', 'Closed'],
+  paused: ['Pending', 'Waiting on provider'],
+  priorities: ['Low', 'Medium', 'High', 'Urgent'],
+  types: ['New chronic request', 'Renewal', 'Modification', 'Missing documents', 'Inquiry', 'Complaint', 'Other'],
+  groups: ['Chronic review', 'Pharmacy relations', 'Supervisors'],
+  agents: [],
+  sla: { Urgent: { first: 1, resolve: 4 }, High: { first: 2, resolve: 8 }, Medium: { first: 4, resolve: 16 }, Low: { first: 8, resolve: 24 } },
+  hours: { days: [0, 1, 2, 3, 4], start: 9, end: 17 },
+  general: { noAttachTickets: false, roundRobin: false, defaultPriority: 'Medium', defaultType: 'New chronic request', defaultGroup: 'Chronic review', mailbox: 'Chronic@sarwa.life' },
+  importer: { machine: '', label: '' },
+  autoAck: {
+    enabled: false, since: '', skip: 'noreply, no-reply, donotreply, mailer-daemon, postmaster, gmhis',
+    AR: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">نفيدكم بأنه تم استلام طلبكم بخصوص: {{ticket.subject}}<br>وتم تسجيله تحت رقم التذكرة <b>{{ticket.no}}</b>.<br>سيتم مراجعة الطلب والرد عليكم في أقرب وقت.</p>',
+    EN: '<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>We have received your request regarding: {{ticket.subject}}<br>It has been registered under ticket No. <b>{{ticket.no}}</b>.<br>The request will be reviewed and we will reply as soon as possible.</p>'
+  },
+  rules: [],
+  signature: {
+    AR: 'للمتابعة، برجاء ذكر رقم التذكرة {{ticket.no}} في أي مراسلات لاحقة.<br>وتفضلوا بقبول فائق الاحترام والتقدير،،،<br><b>شركة ثروة لتأمينات الحياة – إدارة المطالبات الطبية</b>',
+    EN: 'For follow-up, please quote ticket No. {{ticket.no}} in any further correspondence.<br>Kind regards,<br><b>Sarwa Life Insurance – Medical Claims Department</b>'
+  },
+  canned: [
+    { title: 'Missing documents (AR)', html: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">بالإشارة إلى طلب الموافقة على الأدوية الشهرية المقدم للعضو / {{member.name}} – رقم الكارت {{member.no}} (رقم التذكرة {{ticket.no}})، نحيط سيادتكم علماً بأنه بعد المراجعة الطبية تم اتخاذ القرار التالي:</p><p dir="rtl"><b>المتطلبات الناقصة</b><br>برجاء التكرم بإرسال ما يلي لاستكمال المراجعة:</p><ul dir="rtl"><li>…</li></ul>' },
+    { title: 'Missing documents (EN)', html: '<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>Regarding the submitted request for monthly medication approval for member {{member.name}} – card No. {{member.no}} (ticket No. {{ticket.no}}), please note that after the medical review the decision is as follows:</p><p><b>Missing requirements</b><br>Kindly send the following to complete the review:</p><ul><li>…</li></ul>' },
+    { title: 'Approved medications (AR)', html: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">بالإشارة إلى طلب الموافقة على الأدوية الشهرية المقدم للعضو / {{member.name}} – رقم الكارت {{member.no}} (رقم التذكرة {{ticket.no}})، نحيط سيادتكم علماً بأنه بعد المراجعة الطبية تم اتخاذ القرار التالي:</p><p dir="rtl"><b>الأدوية المعتمدة</b><br>يمكن صرف الأدوية التالية وفقاً للجدول التالي:</p><table dir="rtl"><tr><th>م</th><th>الصنف</th><th>الجرعة</th><th>الكمية الشهرية</th><th>من</th><th>إلى</th></tr><tr><td>1</td><td></td><td></td><td></td><td></td><td></td></tr></table>' },
+    { title: 'Unreadable item (AR)', html: '<p dir="rtl">الصنف رقم (…) بالنموذج (صورة السطر مرفقة): الصنف غير واضح، برجاء توضيح الصنف المطلوب للمتابعة وعمل اللازم.</p>' },
+    { title: 'No claim form (AR)', html: '<p dir="rtl">برجاء إعادة إرسال النموذج الطبي الموضح فيه الأدوية بالجرعات اليومية، وذلك للمراجعة وعمل اللازم.</p>' },
+    { title: 'Member data mismatch (AR)', html: '<p dir="rtl">برجاء التأكد من بيانات العضو، حيث إن الاسم / رقم الكارت المدون على النموذج لا يطابق كارت التأمين المرفق.</p>' },
+    { title: 'Acute medicine (AR)', html: '<p dir="rtl">الصنف (…): يصرف كعلاج حاد (Acute) بموافقة منفصلة من الصيدلية / الفرع.</p>' }
+  ]
+};
+let DB = null; // folded state
+
+async function emit(type, t, d) {
+  const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
+  const e = { id, ts, by: me() || 'Unknown', pc: MACHINE, type, t: t || null, d: d || {} };
+  const name = id + '.json';
+  await FS.write(`${HD}/events/${ts.slice(0, 10)}/${name}`, new Blob([JSON.stringify(e)], { type: 'application/json' }));
+  STORE.events.set(name, e); IDB.evPut(STORE.rootId, [[name, e]]).catch(() => { });
+  applyEv(DB, e); scheduleRender();
+  return e;
+}
+function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0 }; }
+function setStatus(t, s, ts, by) {
+  if (!s || t.status === s) return; const from = t.status; t.status = s; t.history.push({ ts, status: s });
+  if (s === 'Resolved') t.resolvedAt = ts;
+  else if (s === 'Closed') { t.closedAt = ts; if (!t.resolvedAt) t.resolvedAt = ts; }
+  else { t.resolvedAt = null; t.closedAt = null; }
+  t.timeline.push({ ts, by, text: `Status ${from} → ${s}` });
+}
+function applyEv(S, e) {
+  const d = e.d || {}; const t = e.t ? S.tickets.get(e.t) : null;
+  switch (e.type) {
+    case 'settings': if (d.section) S.settings[d.section] = d.value; break;
+    case 'ticket.request': S.reqs.set(e.id, { id: e.id, ts: e.ts, by: e.by, d }); break;
+    case 'request.done': S.reqs.delete(d.requestId); break;
+    case 'ticket.create': {
+      if (S.tickets.has(d.no)) return;
+      const created = d.createdAt || e.ts;
+      S.tickets.set(d.no, {
+        no: d.no, seq: d.seq || 0, source: d.source || 'email', subject: d.subject || '(no subject)', requester: d.requester || {}, member: d.member || '', memberName: d.memberName || '', lang: d.lang || 'AR',
+        status: d.status || 'Open', priority: d.priority || 'Medium', type: d.type || '', group: d.group || '', agent: d.agent || '', tags: d.tags || [],
+        created, createdBy: e.by, updated: e.ts, msgs: [], timeline: [{ ts: e.ts, by: e.by, text: 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : '') }],
+        history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || []
+      });
+      S.maxSeq = Math.max(S.maxSeq, d.seq || 0);
+      if (d.fromKey) { S.processed.add(d.fromKey); S.ignored.delete(d.fromKey); }
+      break;
+    }
+    case 'msg.in': {
+      S.processed.add(d.key); S.ignored.delete(d.key); if (d.mid) S.mids.add(String(d.mid).toLowerCase());
+      if (!t) return;
+      const at = d.date || e.ts; t.msgs.push({ kind: 'in', id: e.id, at, by: d.fromName || d.fromEmail, ...d });
+      if (!t.lastIn || at > t.lastIn) t.lastIn = at; t.updated = e.ts;
+      if (!d.initial && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (provider replied)');
+      if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: 'Provider replied' });
+      break;
+    }
+    case 'msg.out': if (!t) return; t.msgs.push({ kind: 'out', id: e.id, at: e.ts, by: d.auto ? 'Auto-acknowledgement' : e.by, state: 'queued', ...d }); if (!t.firstResponseAt && !d.auto) t.firstResponseAt = e.ts; t.lastOut = e.ts; t.updated = e.ts; break;
+    case 'out.status': { if (!t) return; const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m) { m.state = d.status; m.error = d.error || ''; m.sentAt = d.sentAt || e.ts; } if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break; }
+    case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; break;
+    case 'update': {
+      if (!t) return;
+      for (const [k, v] of Object.entries(d)) {
+        if (k === 'status') { setStatus(t, v, e.ts, e.by); continue; }
+        const from = t[k]; t[k] = v;
+        const show = x => Array.isArray(x) ? (x.join(', ') || '—') : (x || '—');
+        t.timeline.push({ ts: e.ts, by: e.by, text: `${k[0].toUpperCase() + k.slice(1)}: ${show(from)} → ${show(v)}` });
+      }
+      t.updated = e.ts; break;
+    }
+    case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
+    case 'export': for (const no of d.tickets || []) { const x = S.tickets.get(no); if (x) x.exportedAt = e.ts; } break;
+    case 'email.ignored': S.processed.add(d.key); if (!d.silent) S.ignored.set(d.key, { ...d, ts: e.ts }); if (d.mid) S.mids.add(String(d.mid).toLowerCase()); break;
+  }
+}
+function fold() {
+  const S = newState();
+  const evs = [...STORE.events.values()].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.id < b.id ? -1 : 1));
+  for (const e of evs) { try { applyEv(S, e); } catch (err) { console.warn('event', e, err); } }
+  return S;
+}
+const DAY = 86400000;
+const DAYCOUNT = new Map(); // day folder -> number of files already fully read
+async function loadEvents(full) {
+  const days = (await FS.list(`${HD}/events`)).filter(x => x.kind === 'directory');
+  const cutoff = new Date(Date.now() - 3 * DAY).toISOString().slice(0, 10);
+  // recent days every time; older days only when their file count changed
+  const want = days.filter(x => x.name >= cutoff || (full && DAYCOUNT.get(x.name) !== x.childCount));
+  const fresh = [];
+  for (const day of want) {
+    const todo = (await FS.list(`${HD}/events/${day.name}`)).filter(f => f.kind === 'file' && f.name.endsWith('.json') && !STORE.events.has(f.name));
+    let failed = 0;
+    for (let i = 0; i < todo.length; i += 16) {
+      await Promise.all(todo.slice(i, i + 16).map(async f => { try { const e = JSON.parse(await FS.fetchText(f)); if (e && e.type) { STORE.events.set(f.name, e); fresh.push([f.name, e]); } } catch { failed++; /* still uploading – next poll */ } }));
+    }
+    if (!failed) DAYCOUNT.set(day.name, day.childCount);
+  }
+  if (fresh.length) IDB.evPut(STORE.rootId, fresh).catch(() => { });
+  return fresh.length;
+}
+async function poll(forceFull) {
+  if (STORE.polling || !STORE.connected) return; STORE.polling = true; setSync('busy', 'Syncing…');
+  try {
+    const full = forceFull || Date.now() - STORE.lastFull > 5 * 60000;
+    const n = await loadEvents(full); if (full) STORE.lastFull = Date.now();
+    if (n) { DB = fold(); scheduleRender(); }
+    await runImporter();
+    setSync('ok', 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+  } catch (e) {
+    console.error(e);
+    if (e.code === 'login') { STORE.connected = false; showSetup(); }
+    setSync('err', 'Sync error: ' + (e.message || e.name));
+  } finally { STORE.polling = false; }
+}
+function setSync(cls, txt) { const s = $('#sync'); s.className = 'sync' + (cls === 'busy' ? ' busy' : cls === 'err' ? ' err' : ''); $('#syncT').textContent = txt; }
+
+/* =====================================================================
+   SLA (business hours)
+   ===================================================================== */
+function nextStart(t, cal) { const n = new Date(t); n.setDate(n.getDate() + 1); n.setHours(cal.start, 0, 0, 0); return n.getTime(); }
+function bizAdd(startMs, hours, cal) {
+  let t = startMs, rem = hours * 3600e3, g = 0;
+  if (!cal.days.length || cal.end <= cal.start) return t + rem;
+  while (rem > 0 && g++ < 5000) {
+    const d = new Date(t); const s = new Date(d).setHours(cal.start, 0, 0, 0), e = new Date(d).setHours(cal.end, 0, 0, 0);
+    if (!cal.days.includes(d.getDay()) || t >= e) { t = nextStart(t, cal); continue; }
+    if (t < s) t = s; const avail = e - t; if (rem <= avail) return t + rem; rem -= avail; t = nextStart(t, cal);
+  }
+  return t;
+}
+function bizBetween(a, b, cal) {
+  if (b <= a) return 0; if (!cal.days.length || cal.end <= cal.start) return b - a;
+  let t = a, tot = 0, g = 0;
+  while (t < b && g++ < 5000) {
+    const d = new Date(t); const s = new Date(d).setHours(cal.start, 0, 0, 0), e = new Date(d).setHours(cal.end, 0, 0, 0);
+    if (!cal.days.includes(d.getDay()) || t >= e) { t = nextStart(t, cal); continue; }
+    if (t < s) t = s; if (t >= b) break; tot += Math.max(0, Math.min(e, b) - t); t = nextStart(t, cal);
+  }
+  return tot;
+}
+function slaOf(t) {
+  const S = DB.settings, cal = S.hours, cfg = S.sla[t.priority] || S.sla.Medium || { first: 4, resolve: 16 }, now = Date.now();
+  const created = Date.parse(t.created); let paused = 0;
+  for (let i = 0; i < t.history.length; i++) if (S.paused.includes(t.history[i].status)) { const a = Date.parse(t.history[i].ts), b = i + 1 < t.history.length ? Date.parse(t.history[i + 1].ts) : now; paused += bizBetween(a, b, cal); }
+  const frDue = bizAdd(created, cfg.first, cal), resDue = bizAdd(created, cfg.resolve + paused / 3600e3, cal);
+  const done = t.status === 'Resolved' || t.status === 'Closed', isPaused = S.paused.includes(t.status);
+  const frAt = t.firstResponseAt ? Date.parse(t.firstResponseAt) : null, resAt = t.resolvedAt ? Date.parse(t.resolvedAt) : null;
+  const today = new Date(); today.setHours(23, 59, 59, 999);
+  return {
+    frDue, resDue, done, isPaused, frAt, resAt,
+    frLate: frAt ? frAt > frDue : (!done && now > frDue), resLate: resAt ? resAt > resDue : (!done && !isPaused && now > resDue),
+    overdue: !done && !isPaused && now > resDue, dueToday: !done && !isPaused && resDue <= today.getTime() && now <= resDue,
+    frPending: !frAt && !done
+  };
+}
+
+/* =====================================================================
+   Importer – runs only on the PC chosen in Admin › General
+   ===================================================================== */
+const isImporter = () => DB && DB.settings.importer.machine === MACHINE;
+let importing = false;
+const IMP = { counts: new Map(), lastFull: 0, rootDone: false };
+const localDay = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+async function runImporter() {
+  if (importing || !isImporter()) return; importing = true;
+  try {
+    for (const r of [...DB.reqs.values()]) {
+      try {
+        if (r.d.fromFile) await importFile(r.d.fromFile, { force: true, requestId: r.id, by: r.by });
+        else await createManual(r.d, r.id, r.by);
+      } catch (e) { console.error(e); }
+      await emit('request.done', null, { requestId: r.id });
+    }
+    // emails are saved by the Outlook script into inbox/<yyyy-MM-dd>/ (older ones may sit in the folder root)
+    const isMail = x => x.kind === 'file' && /\.(msg|eml)$/i.test(x.name);
+    const full = Date.now() - IMP.lastFull > 10 * 60000; const cutoff = localDay(Date.now() - 3 * DAY); const files = [];
+    for (const d of (await FS.list('inbox')).filter(x => x.kind === 'directory')) {
+      if (!(d.name >= cutoff || (full && IMP.counts.get(d.name) !== d.childCount))) continue;
+      const fl = (await FS.list('inbox/' + d.name)).filter(isMail).map(x => 'inbox/' + d.name + '/' + x.name).filter(p => !DB.processed.has(p));
+      if (!fl.length) IMP.counts.set(d.name, d.childCount); files.push(...fl);
+    }
+    if (full || !IMP.rootDone) { files.push(...(await FS.list('')).filter(isMail).map(x => x.name).filter(p => !DB.processed.has(p))); IMP.rootDone = true; }
+    if (full) IMP.lastFull = Date.now();
+    files.sort((a, b) => a.split('/').pop() < b.split('/').pop() ? -1 : 1);
+    const batch = files.slice(0, 40);
+    for (let i = 0; i < batch.length; i++) { setSync('busy', `Importing email ${i + 1} of ${batch.length}${files.length > 40 ? ' (+' + (files.length - 40) + ' later)' : ''}…`); await importFile(batch[i], {}); }
+    if (batch.length) scheduleRender();
+  } finally { importing = false; }
+}
+function applyRules(base, email, hasAtt) {
+  const S = DB.settings, out = { ...base }, used = [];
+  for (const r of S.rules || []) {
+    if (!r || r.off) continue;
+    const val = f => f === 'subject' ? email.subject : f === 'from' ? (email.fromName + ' ' + email.fromEmail) : f === 'body' ? email.body : f === 'attachment' ? (hasAtt ? 'yes' : 'no') : '';
+    const test = c => { const v = String(val(c.field) || '').toLowerCase(), x = String(c.value || '').toLowerCase(); return c.op === 'not' ? !v.includes(x) : c.op === 'is' ? v === x : v.includes(x); };
+    const conds = (r.conds || []).filter(c => c.value !== '' || c.field === 'attachment');
+    if (!conds.length) continue;
+    const ok = r.match === 'any' ? conds.some(test) : conds.every(test);
+    if (!ok) continue;
+    for (const k of ['type', 'priority', 'group', 'agent', 'status']) if (r.set && r.set[k]) out[k] = r.set[k];
+    if (r.set && r.set.tags) out.tags = [...new Set([...(out.tags || []), ...String(r.set.tags).split(',').map(s => s.trim()).filter(Boolean)])];
+    used.push(r.name || 'Rule');
+  }
+  if (S.general.roundRobin && out.group && !out.agent) {
+    const agents = (S.agents || []).filter(a => a.active !== false && (!a.group || a.group === out.group)).map(a => a.name);
+    if (agents.length) { const load = n => [...DB.tickets.values()].filter(t => t.agent === n && t.status !== 'Resolved' && t.status !== 'Closed').length; out.agent = agents.sort((a, b) => load(a) - load(b))[0]; used.push('Round-robin'); }
+  }
+  out.ruleNames = used; return out;
+}
+async function saveAtts(no, list) {
+  const out = [];
+  for (const a of list) {
+    const path = `${HD}/files/${no}/${rand(5)}_${safeName(a.name)}`;
+    await FS.write(path, new Blob([a.bytes], { type: a.mime || 'application/octet-stream' }));
+    out.push({ name: a.name, mime: a.mime, size: a.bytes.length, path, cls: a.cls, why: a.why, inline: !!a.inline, via: a.via || '' });
+  }
+  return out;
+}
+async function buildMsgIn(no, key, email, flat, atts, counted) {
+  const d = { key, mid: email.messageId || '', fromName: email.fromName, fromEmail: email.fromEmail, to: email.to || '', cc: email.cc || '', date: email.date, subject: email.subject, text: flat.bodies.join('\n').trim().slice(0, 120000), atts: await saveAtts(no, counted), ignoredAtts: atts.length - counted.length };
+  if (email.html && email.html.length < 3e6) { const p = `${HD}/files/${no}/${rand(5)}_original.html`; await FS.write(p, new Blob([email.html], { type: 'text/html' })); d.htmlPath = p; }
+  return d;
+}
+async function importFile(name, opts) {
+  let email;
+  try {
+    const f = await FS.file(name); const buf = await f.arrayBuffer();
+    email = /\.msg$/i.test(name) ? parseMsg(buf) : parseEml(new Uint8Array(buf));
+    if (!email.date) email.date = new Date(f.lastModified).toISOString();
+  } catch (e) { if (e.name === 'NotFoundError') return; await emit('email.ignored', null, { key: name, file: name, why: 'could not be read: ' + e.message }); return; }
+  const flat = flatten(email); const atts = flat.atts.map(a => ({ ...a, ...classify(a) })); const counted = atts.filter(a => a.cls !== 'ignore');
+  const mid = String(email.messageId || '').toLowerCase();
+  if (mid && DB.mids.has(mid) && !opts.force) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'duplicate email', silent: true }); return; }
+  const text = flat.bodies.join('\n');
+  const m = normDigits(email.subject).match(TICKET_RE) || normDigits(text).match(TICKET_RE);
+  let target = m ? DB.tickets.get('CHR-' + m[1]) : null; let g = 0;
+  while (target && target.mergedInto && g++ < 10) target = DB.tickets.get(target.mergedInto);
+  if (target) { await emit('msg.in', target.no, await buildMsgIn(target.no, name, email, flat, atts, counted)); return; }
+  if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force) {
+    await emit('email.ignored', null, { key: name, file: name, mid, why: atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
+  }
+  const G = DB.settings.general;
+  const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: G.defaultGroup, agent: '', tags: [] };
+  const fields = applyRules(base, email, counted.length > 0);
+  const seq = DB.maxSeq + 1, no = 'CHR-' + pad(seq, 6);
+  await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
+  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true;
+  await emit('msg.in', no, d);
+  await maybeAutoAck(no, email);
+}
+/* Automatic acknowledgement: tells the sender the ticket number right away (sent by Outlook like any reply) */
+function ackEligible(email, A) {
+  if (!A || !A.enabled || !email.fromEmail || !/@/.test(email.fromEmail)) return false;
+  if (A.since && Date.parse(email.date || 0) < Date.parse(A.since)) return false;            // never answer old emails
+  const from = email.fromEmail.toLowerCase();
+  if (from === String(DB.settings.general.mailbox || '').toLowerCase()) return false;         // our own mailbox
+  if (String(A.skip || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean).some(s => from.includes(s))) return false;
+  if (/^\s*(automatic reply|auto(matic)?[- ]?reply|out of (the )?office|رد تلقائي|undeliver|delivery (status|failure)|mail delivery|returned mail)/i.test(email.subject || '')) return false;
+  return true;
+}
+async function maybeAutoAck(no, email) {
+  const A = DB.settings.autoAck; if (!ackEligible(email, A)) return;
+  const t = DB.tickets.get(no); if (!t) return; const lang = t.lang === 'EN' ? 'EN' : 'AR';
+  const body = sanitize(fillPlaceholders(A[lang] || A.AR || '', t)); const sig = fillPlaceholders(DB.settings.signature[lang] || '', t);
+  const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br>${sig}</div>`;
+  await queueReply(t, { to: email.fromEmail, cc: '', subject: replySubject(t), html, files: [], auto: true });
+}
+async function createManual(d, requestId, by) {
+  const seq = DB.maxSeq + 1, no = 'CHR-' + pad(seq, 6);
+  await emit('ticket.create', no, { no, seq, source: 'manual', subject: d.subject, requester: d.requester || {}, member: d.member || '', memberName: d.memberName || '', lang: isAr(d.subject + d.desc) ? 'AR' : 'EN', status: 'Open', priority: d.priority, type: d.type, group: d.group, agent: d.agent, tags: d.tags || [], requestId: requestId || '', createdAt: new Date().toISOString() });
+  if (d.desc) await emit('note', no, { html: textToHtml(d.desc), desc: true, onBehalf: by || '' });
+  return no;
+}
+
+/* =====================================================================
+   Router + rendering
+   ===================================================================== */
+let renderQueued = false;
+function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(false); }); }
+function route() { const h = location.hash.replace(/^#\/?/, ''); const [path, qs] = h.split('?'); const parts = path.split('/'); return { name: parts[0] || 'tickets', arg: decodeURIComponent(parts[1] || ''), params: new URLSearchParams(qs || '') }; }
+let CUR = { key: '', view: null };
+window.addEventListener('hashchange', () => render(true));
+function render(nav) {
+  if (!DB || !STORE.connected) return;
+  const r = route(); const key = r.name + '/' + r.arg + '?' + r.params.toString();
+  $$('.rail a').forEach(a => a.classList.toggle('on', a.dataset.r === (r.name === 't' ? 'tickets' : r.name)));
+  updateBadges();
+  const V = VIEWS[r.name] || VIEWS.tickets;
+  if (nav || key !== CUR.key || !CUR.view) {
+    CUR = { key, view: V(r) };
+    const host = $('#view'); host.replaceChildren(CUR.view.el); if (nav) host.scrollTop = 0;
+  } else if (CUR.view.update) CUR.view.update();
+}
+function updateBadges() {
+  const unassigned = [...DB.tickets.values()].filter(t => !t.agent && t.status === 'Open' && !t.mergedInto).length;
+  const c = $('#cntNew'); c.hidden = !unassigned; c.textContent = unassigned > 99 ? '99+' : unassigned;
+  document.title = (unassigned ? `(${unassigned}) ` : '') + 'Sarwa Chronic';
+  const n = me(); $('#meName').textContent = n || 'Set your name'; $('#meAv').replaceWith(Object.assign(avatar(n || '?', true), { id: 'meAv' }));
+}
+const stCls = s => 'st st-' + String(s).split(' ')[0];
+const agentsList = () => [...new Set([...(DB.settings.agents || []).filter(a => a.active !== false).map(a => a.name), ...[...DB.tickets.values()].map(t => t.agent).filter(Boolean)])].sort();
+
+/* ---------------- Tickets list ---------------- */
+const VIEW_DEFS = {
+  unresolved: { label: 'All unresolved tickets', f: t => t.status !== 'Resolved' && t.status !== 'Closed' },
+  mine: { label: 'My unresolved tickets', f: t => t.agent === me() && t.status !== 'Resolved' && t.status !== 'Closed' },
+  unassigned: { label: 'Unassigned tickets', f: t => !t.agent && t.status !== 'Resolved' && t.status !== 'Closed' },
+  overdue: { label: 'Overdue tickets', f: (t, s) => s.overdue },
+  today: { label: 'Due today', f: (t, s) => s.dueToday },
+  responded: { label: 'Provider responded', f: t => t.status !== 'Closed' && t.lastIn && (!t.lastOut || t.lastIn > t.lastOut) && t.msgs.some(m => m.kind === 'in' && !m.initial) },
+  onhold: { label: 'On hold (pending / waiting)', f: t => DB.settings.paused.includes(t.status) },
+  resolved: { label: 'Resolved tickets', f: t => t.status === 'Resolved' },
+  closed: { label: 'Closed tickets', f: t => t.status === 'Closed' },
+  all: { label: 'All tickets', f: () => true }
+};
+const LIST = { sel: new Set(), shown: 50, last: [], filters: JSON.parse(lsGet('hd-filters', '{}') || '{}') };
+function ticketList(r) {
+  const view = r.params.get('view') || 'unresolved', q = r.params.get('q') || '';
+  const F = LIST.filters; F.sort = F.sort || 'created'; F.dir = F.dir || 'desc';
+  const root = el('div', { class: 'lt' }); const left = el('div'); const filters = el('aside', { class: 'filters', 'aria-label': 'Filters' });
+  root.append(left, filters);
+  const head = el('div', { class: 'lhead' }); const tl = el('div', { class: 'tl' }); left.append(head, tl);
+  const saveF = () => lsSet('hd-filters', JSON.stringify(F));
+  function setParam(k, v) { const p = new URLSearchParams(r.params); if (v) p.set(k, v); else p.delete(k); location.hash = '#/tickets?' + p.toString(); }
+
+  function compute() {
+    const out = [];
+    const ql = normDigits(q.trim().toLowerCase());
+    for (const t of DB.tickets.values()) {
+      const s = slaOf(t);
+      if (!VIEW_DEFS[view].f(t, s)) continue;
+      if (view !== 'all' && view !== 'closed' && t.mergedInto) continue;
+      if (F.agent && (F.agent === '__none' ? t.agent : t.agent !== F.agent)) continue;
+      if (F.group && t.group !== F.group) continue;
+      if (F.type && t.type !== F.type) continue;
+      if (F.status && F.status.length && !F.status.includes(t.status)) continue;
+      if (F.priority && F.priority.length && !F.priority.includes(t.priority)) continue;
+      if (F.tag && !t.tags.some(x => x.toLowerCase().includes(F.tag.toLowerCase()))) continue;
+      if (F.created) { const age = Date.now() - Date.parse(t.created); if (F.created === 'today' && new Date(t.created).toDateString() !== new Date().toDateString()) continue; if (F.created === '7' && age > 7 * DAY) continue; if (F.created === '30' && age > 30 * DAY) continue; }
+      if (ql) { const hay = [t.no, t.subject, t.requester.name, t.requester.email, t.member, t.memberName, t.tags.join(' '), t.agent, ...t.msgs.map(m => m.kind === 'in' ? (m.fromEmail + ' ' + (m.text || '').slice(0, 3000)) : '')].join(' ').toLowerCase(); if (!normDigits(hay).includes(ql)) continue; }
+      out.push({ t, s });
+    }
+    const pr = { Low: 1, Medium: 2, High: 3, Urgent: 4 }; const dir = F.dir === 'asc' ? 1 : -1;
+    const key = { created: x => x.t.created, updated: x => x.t.updated, due: x => x.s.resDue, priority: x => pr[x.t.priority] || 0, status: x => x.t.status }[F.sort] || (x => x.t.created);
+    out.sort((a, b) => { const A = key(a), B = key(b); return (A < B ? -1 : A > B ? 1 : 0) * dir; });
+    return out;
+  }
+  function inlineSel(t, field, values, labelNone) {
+    return el('select', { 'aria-label': field, onchange: async e => { await emit('update', t.no, { [field]: e.target.value }); toast(`${t.no}: ${field} updated`); } },
+      labelNone != null ? opt('', labelNone, t[field]) : null, values.map(v => opt(v, v, t[field])));
+  }
+  function row({ t, s }) {
+    const badges = [];
+    if (!t.agent && t.status === 'Open' && !t.lastOut) badges.push(el('span', { class: 'pill p-new' }, 'New'));
+    if (VIEW_DEFS.responded.f(t)) badges.push(el('span', { class: 'pill p-resp' }, 'Provider responded'));
+    if (s.overdue) badges.push(el('span', { class: 'pill p-over' }, 'Overdue'));
+    else if (s.frPending && Date.now() > s.frDue) badges.push(el('span', { class: 'pill p-over' }, 'First response overdue'));
+    else if (s.dueToday) badges.push(el('span', { class: 'pill p-due' }, 'Due today'));
+    if (t.mergedInto) badges.push(el('span', { class: 'pill p-muted' }, 'Merged → ' + t.mergedInto));
+    const unread = t.msgs.some(m => m.kind === 'in' && m.atts && m.atts.some(a => a.cls === 'unreadable'));
+    const cb = el('input', { type: 'checkbox', 'aria-label': 'Select ' + t.no, checked: LIST.sel.has(t.no), onchange: e => { e.target.checked ? LIST.sel.add(t.no) : LIST.sel.delete(t.no); drawHead(); rowEl.classList.toggle('sel', e.target.checked); } });
+    const rowEl = el('div', { class: 'tr pri-' + t.priority + (LIST.sel.has(t.no) ? ' sel' : '') },
+      cb,
+      el('div', { class: 'avcell' }, avatar(t.requester.name || t.requester.email)),
+      el('div', {},
+        badges.length ? el('div', { class: 'row', style: 'gap:5px;margin-bottom:2px' }, badges) : null,
+        el('a', { class: 'subj', href: '#/t/' + t.no, dir: 'auto' }, t.subject),
+        el('div', { class: 'meta' },
+          el('span', { dir: 'auto' }, t.requester.name || t.requester.email || '—'), el('span', {}, t.no),
+          el('span', { title: fmtDate(t.created) }, 'Created ' + rel(t.created)),
+          s.done ? el('span', {}, t.status + ' ' + rel(t.resolvedAt)) : el('span', { title: fmtDate(s.resDue) }, (s.isPaused ? 'SLA paused' : 'Due ' + rel(s.resDue))),
+          t.member ? el('span', {}, 'Member ' + t.member) : null, t.type ? el('span', {}, t.type) : null,
+          unread ? el('span', { style: 'color:var(--bad)' }, 'Word/HEIC file') : null,
+          t.tags.length ? el('span', {}, '#' + t.tags.join(' #')) : null)),
+      el('div', { class: 'props' },
+        inlineSel(t, 'priority', DB.settings.priorities),
+        inlineSel(t, 'agent', agentsList(), '— Unassigned —'),
+        inlineSel(t, 'status', DB.settings.statuses)));
+    return rowEl;
+  }
+  function drawHead() {
+    const vs = el('select', { class: 'viewsel', 'aria-label': 'Ticket view', onchange: e => setParam('view', e.target.value) }, Object.entries(VIEW_DEFS).map(([k, v]) => opt(k, v.label, view)));
+    const sortSel = el('select', { 'aria-label': 'Sort by', onchange: e => { F.sort = e.target.value; saveF(); draw(); } }, [['created', 'Date created'], ['updated', 'Last modified'], ['due', 'Due by time'], ['priority', 'Priority'], ['status', 'Status']].map(([v, l]) => opt(v, 'Sort: ' + l, F.sort)));
+    const dirB = el('button', { class: 'btn sm', type: 'button', title: 'Sort order', onclick: () => { F.dir = F.dir === 'asc' ? 'desc' : 'asc'; saveF(); draw(); } }, F.dir === 'asc' ? '↑ Oldest first' : '↓ Newest first');
+    const parts = [vs, el('span', { class: 'muted small' }, `${LIST.last.length} ticket${LIST.last.length === 1 ? '' : 's'}`), q ? el('span', { class: 'pill p-muted' }, 'Search: ' + q, el('button', { class: 'btn ghost sm', type: 'button', onclick: () => { $('#q').value = ''; setParam('q', ''); } }, '×')) : null, el('div', { style: 'flex:1' }), sortSel, dirB,
+      el('button', { class: 'btn sm', type: 'button', onclick: () => filters.classList.toggle('show') }, 'Filters'),
+      el('button', { class: 'btn sm', type: 'button', onclick: () => exportCsv(LIST.last.map(x => x.t)) }, 'Export')];
+    head.replaceChildren(...parts.filter(Boolean));
+    if (LIST.sel.size) head.append(bulkBar());
+  }
+  function bulkBar() {
+    const n = LIST.sel.size; const sel = [...LIST.sel];
+    const apply = async (field, v) => { if (!v) return; for (const no of sel) await emit('update', no, { [field]: v }); toast(`${n} ticket(s) updated`); LIST.sel.clear(); draw(); };
+    return el('div', { class: 'bulk', style: 'flex-basis:100%' },
+      el('b', {}, `${n} selected`),
+      el('select', { onchange: e => apply('agent', e.target.value) }, opt('', 'Assign to…'), agentsList().map(a => opt(a))),
+      el('select', { onchange: e => apply('status', e.target.value) }, opt('', 'Set status…'), DB.settings.statuses.map(s => opt(s))),
+      el('select', { onchange: e => apply('priority', e.target.value) }, opt('', 'Set priority…'), DB.settings.priorities.map(s => opt(s))),
+      el('select', { onchange: e => apply('group', e.target.value) }, opt('', 'Set group…'), DB.settings.groups.map(s => opt(s))),
+      el('button', { class: 'btn sm', type: 'button', onclick: async () => { const tg = prompt('Add tag to selected tickets:'); if (!tg) return; for (const no of sel) { const t = DB.tickets.get(no); await emit('update', no, { tags: [...new Set([...t.tags, tg.trim()])] }); } LIST.sel.clear(); draw(); } }, 'Add tag'),
+      n > 1 ? el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog(sel) }, 'Merge') : null,
+      el('button', { class: 'btn sm', type: 'button', onclick: () => apply('status', 'Closed') }, 'Close'),
+      el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { LIST.sel.clear(); draw(); } }, 'Clear'));
+  }
+  function drawFilters() {
+    const ck = (field, values) => values.map(v => el('label', { class: 'ck' }, el('input', { type: 'checkbox', checked: (F[field] || []).includes(v), onchange: e => { const a = new Set(F[field] || []); e.target.checked ? a.add(v) : a.delete(v); F[field] = [...a]; saveF(); draw(); } }), v));
+    const sel = (field, values, none) => el('select', { onchange: e => { F[field] = e.target.value; saveF(); draw(); } }, opt('', none, F[field] || ''), values.map(v => Array.isArray(v) ? opt(v[0], v[1], F[field]) : opt(v, v, F[field])));
+    filters.replaceChildren(
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Filters'), el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { for (const k of ['agent', 'group', 'type', 'status', 'priority', 'tag', 'created']) delete F[k]; saveF(); draw(); } }, 'Reset')),
+      el('h3', {}, 'Agent'), sel('agent', [['__none', 'Unassigned'], ...agentsList().map(a => [a, a])], 'Any agent'),
+      el('h3', {}, 'Group'), sel('group', DB.settings.groups, 'Any group'),
+      el('h3', {}, 'Type'), sel('type', DB.settings.types, 'Any type'),
+      el('h3', {}, 'Created'), sel('created', [['today', 'Today'], ['7', 'Last 7 days'], ['30', 'Last 30 days']], 'Any time'),
+      el('h3', {}, 'Status'), ck('status', DB.settings.statuses),
+      el('h3', {}, 'Priority'), ck('priority', DB.settings.priorities),
+      el('h3', {}, 'Tag'), el('input', { type: 'text', value: F.tag || '', placeholder: 'contains…', onchange: e => { F.tag = e.target.value.trim(); saveF(); draw(); } }));
+  }
+  function draw() {
+    LIST.last = compute(); drawHead(); drawFilters();
+    const reqs = [...DB.reqs.values()];
+    tl.replaceChildren(
+      reqs.length ? el('div', { class: 'banner', style: 'border-radius:9px;margin-bottom:8px' }, `${reqs.length} new ticket request(s) waiting for the importer PC to give them a number.`) : null,
+      ...(LIST.last.length ? LIST.last.slice(0, LIST.shown).map(row) : [el('div', { class: 'empty' }, DB.tickets.size ? 'No tickets in this view.' : 'No tickets yet. New emails appear here once the importer PC has read them.')]),
+      LIST.last.length > LIST.shown ? el('div', { style: 'text-align:center' }, el('button', { class: 'btn', type: 'button', onclick: () => { LIST.shown += 50; draw(); } }, `Show more (${LIST.last.length - LIST.shown} left)`)) : null);
+  }
+  LIST.shown = 50; draw();
+  return { el: root, update: draw };
+}
+
+/* ---------------- Ticket detail ---------------- */
+const blobUrls = new Map();
+async function fileUrl(path) { if (blobUrls.has(path)) return blobUrls.get(path); const f = await FS.file(path); const u = URL.createObjectURL(f); blobUrls.set(path, u); return u; }
+function attChip(a) {
+  const ext = (extOf(a.name) || 'file').toUpperCase(); const th = el('div', { class: 'th', title: 'Open' }, ext);
+  const isImg = a.mime && a.mime.startsWith('image/') && a.cls !== 'unreadable';
+  const open = async () => { try { window.open(await fileUrl(a.path), '_blank', 'noopener'); } catch (e) { toast('File not available yet (OneDrive still syncing?)'); } };
+  th.onclick = open;
+  if (isImg) fileUrl(a.path).then(u => th.replaceChildren(el('img', { src: u, alt: a.name, loading: 'lazy' }))).catch(() => { });
+  const save = el('a', { class: 'btn sm', href: '#', onclick: async e => { e.preventDefault(); try { const u = await fileUrl(a.path); const x = el('a', { href: u, download: a.name }); document.body.append(x); x.click(); x.remove(); } catch { toast('File not available yet'); } } }, 'Save');
+  return el('div', { class: 'att' }, th, el('div', { class: 'nm', dir: 'auto' }, a.name),
+    el('div', { class: 'small muted', style: 'padding:0 7px 4px' }, fmtSize(a.size || 0), a.cls === 'unreadable' ? ' · open in Outlook/Word' : '', a.via ? ' · forwarded' : '', a.inline && a.cls === 'readable' ? ' · in email body' : ''),
+    el('div', { class: 'ac' }, el('button', { class: 'btn sm', type: 'button', onclick: open }, 'Open'), save));
+}
+function msgCard(m, t, fromNo) {
+  if (m.kind === 'note') {
+    return el('div', { class: 'msg note' },
+      el('div', { class: 'mh' }, avatar(m.by), el('div', {}, el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill p-note' }, m.desc ? 'Description' : 'Private note'), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', title: fmtDate(m.at) }, rel(m.at) + ' · ' + fmtDate(m.at)))),
+      el('div', { class: 'mb html', dir: 'auto', html: sanitize(m.html) }),
+      m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null);
+  }
+  if (m.kind === 'out') {
+    const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
+    return el('div', { class: 'msg out' },
+      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : ' replied ', state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
+      el('div', { class: 'mb html', dir: 'auto', html: sanitize(m.html) }),
+      m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
+      m.state === 'error' ? el('div', { style: 'padding:0 14px 12px 54px' }, el('button', { class: 'btn sm', type: 'button', onclick: async () => { await queueReply(t, { to: m.to, cc: m.cc, subject: m.subject, html: m.html, files: [], reuseAtts: m.atts || [] }); toast('Queued again'); } }, 'Try again')) : null);
+  }
+  const [main, quoted] = splitQuoted(m.text || '');
+  const qBox = quoted ? el('details', { class: 'quoted' }, el('summary', { class: 'small' }, 'Show quoted text'), el('div', { dir: 'auto' }, quoted)) : null;
+  return el('div', { class: 'msg in' },
+    el('div', { class: 'mh' }, avatar(m.fromName || m.fromEmail), el('div', { style: 'min-width:0' },
+      el('div', {}, el('span', { class: 'who', dir: 'auto' }, m.fromName || m.fromEmail), ' ', el('span', { class: 'muted small' }, '<' + (m.fromEmail || '') + '>'), m.initial ? null : el('span', { class: 'pill p-resp', style: 'margin-left:6px' }, 'reply'), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
+      el('div', { class: 'small muted', dir: 'auto' }, (m.to ? 'To: ' + m.to + ' · ' : '') + fmtDate(m.at) + ' (' + rel(m.at) + ')'),
+      el('div', { class: 'small muted', dir: 'auto' }, m.subject))),
+    el('div', { class: 'mb', dir: 'auto' }, main || '(no text)', qBox),
+    m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
+    el('div', { style: 'padding:0 14px 10px 54px' }, m.ignoredAtts ? el('span', { class: 'small muted' }, `${m.ignoredAtts} signature/calendar file(s) hidden. `) : null,
+      m.htmlPath ? el('button', { class: 'btn sm ghost', type: 'button', onclick: () => showOriginal(m) }, 'View original email') : null));
+}
+async function showOriginal(m) {
+  try {
+    const html = await FS.text(m.htmlPath);
+    const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'">`;
+    const fr = el('iframe', { class: 'orig', sandbox: '', title: 'Original email' }); fr.srcdoc = csp + html;
+    openDialog('Original email', el('div', {}, fr), [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Close')], 'min(1000px,calc(100vw - 24px))');
+  } catch { toast('Original not available yet'); }
+}
+function fillPlaceholders(html, t) {
+  const map = { 'ticket.no': t.no, 'ticket.subject': t.subject, 'requester.name': t.requester.name || '', 'requester.email': t.requester.email || '', 'member.no': t.member || '…', 'member.name': t.memberName || '…', 'agent.name': me() };
+  return String(html).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (x, k) => esc(map[k] ?? x));
+}
+function replySubject(t) { let s = String(t.subject || '').trim(); if (!/^(re|رد)\s*:/i.test(s)) s = 'RE: ' + s; if (!s.includes(t.no)) s += ` [${t.no}]`; return s; }
+async function queueReply(t, { to, cc, subject, html, files, reuseAtts, statusAfter, auto }) {
+  const outId = 'out_' + Date.now().toString(36) + rand(4); const atts = [];
+  for (const f of files || []) { const p = `${HD}/outbox/${outId}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
+  for (const a of reuseAtts || []) atts.push(a);
+  const lastIn = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? -1 : 1).pop();
+  const job = { outId, ticket: t.no, to, cc, subject, html, replyToMid: lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString() };
+  await FS.write(`${HD}/outbox/${outId}.json`, new Blob([JSON.stringify(job, null, 1)], { type: 'application/json' }));
+  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto });
+  if (statusAfter) await emit('update', t.no, { status: statusAfter });
+}
+function ticketView(r) {
+  const no = r.arg; const t0 = DB.tickets.get(no);
+  if (!t0) return { el: el('div', { class: 'empty' }, `Ticket ${no} not found (it may still be syncing).`, el('br'), el('a', { href: '#/tickets' }, 'Back to tickets')) };
+  const root = el('div', { class: 'tv' }); const left = el('div', { class: 'left' }); const side = el('aside', { class: 'side' }); root.append(left, side);
+  const top = el('div'); const thread = el('div'); const edHost = el('div'); left.append(top, thread, edHost);
+  let mode = 'reply'; const files = [];
+  const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
+  const toIn = el('input', { type: 'email', multiple: true, 'aria-label': 'To' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'optional' });
+  const fileIn = el('input', { type: 'file', multiple: true, hidden: true, onchange: e => { files.push(...e.target.files); e.target.value = ''; drawFiles(); } });
+  const filesBox = el('div', { class: 'row', style: 'padding:0 12px' });
+  function drawFiles() { filesBox.replaceChildren(...files.map((f, i) => el('span', { class: 'tag' }, '📎 ' + f.name + ' (' + fmtSize(f.size) + ')', el('button', { type: 'button', 'aria-label': 'Remove', onclick: () => { files.splice(i, 1); drawFiles(); } }, '×')))); }
+  const cmd = (c, v) => { ce.focus(); document.execCommand(c, false, v); };
+  const tool = el('div', { class: 'tool' },
+    el('button', { type: 'button', title: 'Bold', onclick: () => cmd('bold') }, 'B'), el('button', { type: 'button', title: 'Italic', onclick: () => cmd('italic'), style: 'font-style:italic' }, 'I'), el('button', { type: 'button', title: 'Underline', onclick: () => cmd('underline'), style: 'text-decoration:underline' }, 'U'),
+    el('button', { type: 'button', title: 'Bulleted list', onclick: () => cmd('insertUnorderedList') }, '• List'), el('button', { type: 'button', title: 'Numbered list', onclick: () => cmd('insertOrderedList') }, '1. List'),
+    el('button', { type: 'button', title: 'Right-to-left', onclick: () => { ce.dir = ce.dir === 'rtl' ? 'ltr' : 'rtl'; } }, '⇄ RTL'),
+    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const c = (DB.settings.canned || [])[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', 'Insert canned response…'), (DB.settings.canned || []).map((c, i) => opt(String(i), c.title))),
+    el('button', { type: 'button', onclick: () => fileIn.click() }, '📎 Attach'));
+  const afterSel = el('select', { 'aria-label': 'Status after sending' }, opt('', 'Keep status'), DB.settings.statuses.map(s => opt(s, 'Then set ' + s, '')));
+  const sendBtn = el('button', { class: 'btn primary', type: 'button', onclick: send }, 'Send');
+  const tabs = el('div', { class: 'tabs' });
+  function drawEditor() {
+    const t = DB.tickets.get(no);
+    tabs.replaceChildren(el('button', { type: 'button', class: mode === 'reply' ? 'on' : '', onclick: () => { mode = 'reply'; drawEditor(); } }, 'Reply'), el('button', { type: 'button', class: mode === 'note' ? 'on' : '', onclick: () => { mode = 'note'; drawEditor(); } }, 'Add private note'));
+    if (!toIn.value) toIn.value = t.requester.email || '';
+    ce.dataset.ph = mode === 'reply' ? 'Write your reply… (signature and ticket number are added automatically)' : 'Write a private note for the team (not sent to the provider)…';
+    sendBtn.textContent = mode === 'reply' ? 'Send' : 'Add note';
+    edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
+      mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
+      tool, ce, filesBox, fileIn,
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' by Outlook on the importer PC.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+  }
+  async function send() {
+    const t = DB.tickets.get(no); const body = sanitize(ce.innerHTML).trim();
+    if (!htmlToPlain(body) && !files.length) { toast('Write something first.'); ce.focus(); return; }
+    if (!me()) { askName(); return; }
+    sendBtn.disabled = true;
+    try {
+      if (mode === 'note') {
+        const fl = []; for (const f of files) { const p = `${HD}/files/${no}/${rand(5)}_${safeName(f.name)}`; await FS.write(p, f); fl.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
+        await emit('note', no, { html: body || '<i>Attached files</i>', atts: fl });
+        if (afterSel.value) await emit('update', no, { status: afterSel.value });
+        toast('Note added');
+      } else {
+        const to = toIn.value.trim(); if (!/@/.test(to)) { toast('Enter the provider email in "To".'); toIn.focus(); sendBtn.disabled = false; return; }
+        const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
+        const sig = fillPlaceholders(DB.settings.signature[lang] || '', t);
+        const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br><br>${sig}</div>`;
+        await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), statusAfter: afterSel.value });
+        toast('Reply queued – Outlook sends it within a few minutes');
+      }
+      ce.innerHTML = ''; files.length = 0; drawFiles(); afterSel.value = '';
+    } catch (e) { toast('Could not save: ' + e.message); }
+    sendBtn.disabled = false;
+  }
+  function drawTop() {
+    const t = DB.tickets.get(no); const idx = LIST.last.findIndex(x => x.t.no === no);
+    const prev = idx > 0 ? LIST.last[idx - 1].t.no : '', next = idx >= 0 && idx < LIST.last.length - 1 ? LIST.last[idx + 1].t.no : '';
+    top.replaceChildren(
+      el('div', { class: 'tbar' },
+        el('a', { class: 'btn sm', href: '#/tickets' }, '← Tickets'),
+        el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'reply'; drawEditor(); ce.focus(); } }, 'Reply ', el('span', { class: 'kbd' }, 'r')),
+        el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'note'; drawEditor(); ce.focus(); } }, 'Note ', el('span', { class: 'kbd' }, 'n')),
+        el('button', { class: 'btn sm primary', type: 'button', onclick: () => validationDialog(no) }, t.validation ? '✓ Validation' : 'Validate medicines'),
+        el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog([no]) }, 'Merge'),
+        t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Closed' }) }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
+        el('div', { style: 'flex:1' }),
+        prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
+      t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
+      el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'muted' }, t.no), el('span', { class: stCls(t.status) }, t.status), el('span', { class: 'pri pri-' + t.priority }, t.priority), t.tags.map(x => el('span', { class: 'tag' }, '#' + x))),
+      el('h2', { class: 'tsub', dir: 'auto' }, t.subject));
+  }
+  function drawThread() {
+    const t = DB.tickets.get(no); const all = t.msgs.map(m => ({ m, from: '' }));
+    for (const s of t.mergedFrom) { const st = DB.tickets.get(s); if (st) all.push(...st.msgs.map(m => ({ m, from: s }))); }
+    all.sort((a, b) => a.m.at < b.m.at ? -1 : a.m.at > b.m.at ? 1 : 0);
+    thread.replaceChildren(...(all.length ? all.map(x => msgCard(x.m, t, x.from)) : [el('div', { class: 'sys' }, 'No messages yet.')]),
+      el('div', { class: 'sys' }, `Created ${fmtDate(t.created)}${t.ruleNames && t.ruleNames.length ? ' · rules applied: ' + t.ruleNames.join(', ') : ''}`));
+  }
+  function drawSide() {
+    const t = DB.tickets.get(no), s = slaOf(t), S = DB.settings;
+    const f = {}; const sel = (k, vals, none) => (f[k] = el('select', { id: 'f-' + k }, none != null ? opt('', none, t[k]) : null, vals.map(v => opt(v, v, t[k]))));
+    const memberIn = el('input', { type: 'text', value: t.member, inputmode: 'numeric' }), memberNameIn = el('input', { type: 'text', value: t.memberName, dir: 'auto' });
+    const langSel = el('select', {}, opt('AR', 'العربية', t.lang), opt('EN', 'English', t.lang));
+    const tagIn = el('input', { type: 'text', placeholder: 'Add tag + Enter', onkeydown: async e => { if (e.key === 'Enter' && e.target.value.trim()) { e.preventDefault(); await emit('update', no, { tags: [...new Set([...t.tags, e.target.value.trim()])] }); } } });
+    const other = [...DB.tickets.values()].filter(x => x.no !== no && ((t.requester.email && x.requester.email === t.requester.email) || (t.member && x.member === t.member))).sort((a, b) => a.created < b.created ? 1 : -1).slice(0, 8);
+    const slaLine = (label, due, at, late, pending) => el('div', {}, el('span', { class: 'muted' }, label + ': '), at ? el('span', {}, (late ? '⚠ late · ' : '✓ ') + fmtDate(at)) : pending ? el('span', { style: late ? 'color:var(--bad);font-weight:600' : '' }, (late ? 'overdue · ' : 'due ') + fmtDate(due) + ` (${rel(due)})`) : el('span', {}, '—'));
+    side.replaceChildren(
+      el('h3', {}, 'Properties'),
+      el('div', { class: 'f' }, el('label', { for: 'f-status' }, 'Status'), sel('status', S.statuses)),
+      el('div', { class: 'f' }, el('label', { for: 'f-priority' }, 'Priority'), sel('priority', S.priorities)),
+      el('div', { class: 'f' }, el('label', { for: 'f-type' }, 'Type'), sel('type', S.types, '—')),
+      el('div', { class: 'f' }, el('label', { for: 'f-group' }, 'Group'), sel('group', S.groups, '—')),
+      el('div', { class: 'f' }, el('label', { for: 'f-agent' }, 'Agent'), sel('agent', agentsList(), '— Unassigned —')),
+      el('div', { class: 'f' }, el('label', {}, 'Member card no.'), memberIn),
+      el('div', { class: 'f' }, el('label', {}, 'Member name'), memberNameIn),
+      el('div', { class: 'f' }, el('label', {}, 'Reply language'), langSel),
+      el('div', { class: 'f' }, el('label', {}, 'Tags'), el('div', { class: 'tags' }, t.tags.map(x => el('span', { class: 'tag' }, x, el('button', { type: 'button', 'aria-label': 'Remove tag ' + x, onclick: () => emit('update', no, { tags: t.tags.filter(y => y !== x) }) }, '×'))), tagIn)),
+      el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+        const ch = {}; for (const k of ['status', 'priority', 'type', 'group', 'agent']) if (f[k].value !== (t[k] || '')) ch[k] = f[k].value;
+        if (normDigits(memberIn.value).trim() !== t.member) ch.member = normDigits(memberIn.value).trim();
+        if (memberNameIn.value.trim() !== t.memberName) ch.memberName = memberNameIn.value.trim();
+        if (langSel.value !== t.lang) ch.lang = langSel.value;
+        if (!Object.keys(ch).length) { toast('Nothing changed'); return; }
+        await emit('update', no, ch); toast('Ticket updated');
+      } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null),
+      t.validation ? [el('h3', {}, 'Validation'), el('div', { class: 'slabox' },
+        (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to)) : null)),
+        el('div', { class: 'small muted' }, 'by ' + t.validation.by + ' · ' + fmtDate(t.validation.at) + (t.exportedAt ? ' · exported to GlobeMed ' + fmtDate(t.exportedAt) : '')))] : null,
+      el('h3', {}, 'SLA'),
+      el('div', { class: 'slabox' }, s.isPaused ? el('div', { class: 'pill p-due' }, 'Timer paused – ' + t.status) : null,
+        slaLine('First response', s.frDue, s.frAt, s.frLate, s.frPending), slaLine('Resolution', s.resDue, s.resAt, s.resLate, !s.done)),
+      el('h3', {}, 'Requester'),
+      el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(t.requester.name || t.requester.email), el('div', { style: 'min-width:0' }, el('div', { dir: 'auto', style: 'font-weight:600' }, t.requester.name || '—'), el('div', { class: 'small muted', style: 'overflow-wrap:anywhere' }, t.requester.email || ''))),
+      other.length ? el('div', { style: 'margin-top:8px' }, el('div', { class: 'small muted' }, 'Other tickets (same sender or member)'), other.map(x => el('div', { class: 'small' }, el('a', { href: '#/t/' + x.no }, x.no), ' ', el('span', { class: stCls(x.status) }, x.status), ' ', el('span', { dir: 'auto' }, x.subject.slice(0, 50))))) : null,
+      el('h3', {}, 'Activity'),
+      el('div', {}, [...t.timeline].reverse().slice(0, 40).map(x => el('div', { class: 'tline' }, el('div', { style: 'color:var(--text)' }, x.text), (x.by || '') + ' · ' + fmtDate(x.ts)))));
+  }
+  // keep what the user is doing: don't redraw the properties while they are being edited,
+  // and redraw the conversation only when something in it changed
+  let sideDirty = false, threadSig = '';
+  side.addEventListener('input', () => { sideDirty = true; }); side.addEventListener('change', e => { if (!e.target.closest('.tags')) sideDirty = true; });
+  side.addEventListener('click', e => { if (e.target.closest('button')) setTimeout(() => { sideDirty = false; }, 0); });
+  const sigOf = t => t.msgs.length + '|' + t.msgs.map(m => m.state || '').join('') + '|' + t.mergedFrom.join(',') + '|' + t.mergedFrom.map(n => (DB.tickets.get(n) || { msgs: [] }).msgs.length).join(',');
+  const drawThreadIfChanged = () => { const s = sigOf(DB.tickets.get(no)); if (s !== threadSig) { threadSig = s; drawThread(); } };
+  drawTop(); drawThreadIfChanged(); drawEditor(); drawSide();
+  const view = { el: root, insertReply(html) { mode = 'reply'; drawEditor(); ce.innerHTML = sanitize(html); ce.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, update() { if (!DB.tickets.get(no)) return; drawTop(); drawThreadIfChanged(); if (!sideDirty && !side.contains(document.activeElement)) drawSide(); }, keys(k) { if (k === 'r') { mode = 'reply'; drawEditor(); ce.focus(); return true; } if (k === 'n') { mode = 'note'; drawEditor(); ce.focus(); return true; } } };
+  return view;
+}
+
+/* ---------------- Dashboard ---------------- */
+function bars(rows, max) { const m = max || Math.max(1, ...rows.map(r => r[1])); return rows.map(([l, v, href]) => el('div', { class: 'bar' }, href ? el('a', { class: 'lbl', href, dir: 'auto' }, l) : el('span', { class: 'lbl', dir: 'auto' }, l), el('div', { class: 'tr2' }, el('div', { class: 'fill', style: `width:${Math.round(v / m * 100)}%` })), el('span', { class: 'v' }, v))); }
+function dashboard() {
+  const root = el('div', { class: 'pad' });
+  function draw() {
+    const T = [...DB.tickets.values()].filter(t => !t.mergedInto); const un = T.filter(t => t.status !== 'Resolved' && t.status !== 'Closed');
+    const sl = new Map(un.map(t => [t.no, slaOf(t)]));
+    const k = (label, v, href, cls) => el('a', { class: 'kpi' + (cls ? ' ' + cls : ''), href }, el('b', {}, v), el('span', {}, label));
+    const byAgent = {}; un.forEach(t => { const a = t.agent || 'Unassigned'; byAgent[a] = (byAgent[a] || 0) + 1; });
+    const byStatus = DB.settings.statuses.map(s => [s, T.filter(t => t.status === s).length, '#/tickets?view=all']);
+    const byType = {}; un.forEach(t => { const a = t.type || '—'; byType[a] = (byType[a] || 0) + 1; });
+    // 14-day created vs resolved
+    const days = [...Array(14)].map((_, i) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 13 + i); return d; });
+    const cnt = (f) => days.map(d => T.filter(t => { const x = f(t); return x && new Date(x).toDateString() === d.toDateString(); }).length);
+    const cr = cnt(t => t.created), rs = cnt(t => t.resolvedAt); const mx = Math.max(1, ...cr, ...rs); const W = 560, H = 160, bw = W / 14;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', `0 0 ${W} ${H + 22}`); svg.setAttribute('width', '100%'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'Tickets created and resolved per day, last 14 days');
+    days.forEach((d, i) => {
+      const mk = (v, x, col, lab) => { const r = document.createElementNS(svg.namespaceURI, 'rect'); const h = v / mx * H; r.setAttribute('x', x); r.setAttribute('y', H - h); r.setAttribute('width', bw * .34); r.setAttribute('height', Math.max(h, v ? 1 : 0)); r.setAttribute('rx', 2); r.setAttribute('fill', col); const tt = document.createElementNS(svg.namespaceURI, 'title'); tt.textContent = `${fmtDay(d)}: ${v} ${lab}`; r.append(tt); svg.append(r); };
+      mk(cr[i], i * bw + bw * .12, 'var(--accent)', 'created'); mk(rs[i], i * bw + bw * .5, 'var(--ok)', 'resolved');
+      if (i % 2 === 0) { const tx = document.createElementNS(svg.namespaceURI, 'text'); tx.setAttribute('x', i * bw + bw / 2); tx.setAttribute('y', H + 16); tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('font-size', '11'); tx.setAttribute('fill', 'var(--muted)'); tx.textContent = `${d.getDate()}/${d.getMonth() + 1}`; svg.append(tx); }
+    });
+    root.replaceChildren(
+      el('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Dashboard'), el('span', { class: 'muted small' }, isImporter() ? 'This PC imports new emails.' : 'Importer PC: ' + (DB.settings.importer.label || 'not set – see Admin › General'))),
+      el('div', { class: 'kpis' },
+        k('Unresolved', un.length, '#/tickets?view=unresolved'),
+        k('Overdue', [...sl.values()].filter(s => s.overdue).length, '#/tickets?view=overdue', 'bad'),
+        k('Due today', [...sl.values()].filter(s => s.dueToday).length, '#/tickets?view=today', 'warn'),
+        k('Unassigned', un.filter(t => !t.agent).length, '#/tickets?view=unassigned'),
+        k('Provider responded', un.filter(t => VIEW_DEFS.responded.f(t)).length, '#/tickets?view=responded'),
+        k('On hold', un.filter(t => DB.settings.paused.includes(t.status)).length, '#/tickets?view=onhold'),
+        k('My open', un.filter(t => t.agent === me()).length, '#/tickets?view=mine')),
+      el('div', { class: 'grid2' },
+        el('div', { class: 'panel' }, el('h2', {}, 'Created vs resolved – last 14 days'), svg, el('div', { class: 'row small muted' }, el('span', {}, el('span', { style: 'display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px' }), ' Created'), el('span', {}, el('span', { style: 'display:inline-block;width:10px;height:10px;background:var(--ok);border-radius:2px' }), ' Resolved'))),
+        el('div', { class: 'panel' }, el('h2', {}, 'Unresolved by agent'), Object.keys(byAgent).length ? bars(Object.entries(byAgent).sort((a, b) => b[1] - a[1]).map(([a, v]) => [a, v])) : el('div', { class: 'muted' }, 'Nothing open.')),
+        el('div', { class: 'panel' }, el('h2', {}, 'All tickets by status'), bars(byStatus)),
+        el('div', { class: 'panel' }, el('h2', {}, 'Unresolved by type'), Object.keys(byType).length ? bars(Object.entries(byType).sort((a, b) => b[1] - a[1])) : el('div', { class: 'muted' }, 'Nothing open.'))));
+  }
+  draw(); return { el: root, update: draw };
+}
+
+/* ---------------- Ignored emails ---------------- */
+function ignoredView() {
+  const root = el('div', { class: 'pad' });
+  function draw() {
+    const list = [...DB.ignored.values()].sort((a, b) => String(b.date || b.ts) < String(a.date || a.ts) ? -1 : 1);
+    const pending = new Set([...DB.reqs.values()].map(r => r.d.fromFile).filter(Boolean));
+    root.replaceChildren(el('h2', { style: 'margin:0 0 4px;font-size:18px' }, 'Emails not turned into tickets'),
+      el('p', { class: 'muted', style: 'margin:0 0 12px' }, 'Emails without attachments (and files that could not be read) are kept here. Press "Create ticket" to open a ticket for one.'),
+      list.length ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, el('th', {}, 'Received'), el('th', {}, 'From / subject'), el('th', {}, 'Reason'), el('th', {}, ''))),
+        el('tbody', {}, list.slice(0, 300).map(x => el('tr', {}, el('td', { class: 'n' }, fmtDate(x.date || x.ts)), el('td', { dir: 'auto' }, el('div', { style: 'font-weight:600' }, x.subject || x.file), el('div', { class: 'small muted' }, [x.fromName, x.fromEmail].filter(Boolean).join(' · '))), el('td', { class: 'small' }, x.why),
+          el('td', {}, pending.has(x.file) ? el('span', { class: 'small muted' }, 'Waiting for importer…') : el('button', { class: 'btn sm', type: 'button', onclick: async () => { if (!me()) return askName(); await emit('ticket.request', null, { fromFile: x.file }); toast('Ticket requested'); } }, 'Create ticket'))))))) : el('div', { class: 'empty' }, 'Nothing here.'));
+  }
+  draw(); return { el: root, update: draw };
+}
+
+/* ---------------- Contacts & members ---------------- */
+function contactsView(r) {
+  const root = el('div', { class: 'pad' }); const tab = r.params.get('tab') || 'req'; let q = '';
+  const box = el('div');
+  function draw() {
+    const T = [...DB.tickets.values()]; const map = new Map();
+    for (const t of T) {
+      const k = tab === 'req' ? (t.requester.email || t.requester.name || '—').toLowerCase() : (t.member || ''); if (!k) continue;
+      const c = map.get(k) || { key: k, name: '', email: '', member: '', count: 0, open: 0, last: '' };
+      c.count++; if (t.status !== 'Resolved' && t.status !== 'Closed') c.open++; if (!c.last || t.created > c.last) c.last = t.created;
+      if (tab === 'req') { c.name = t.requester.name || c.name; c.email = t.requester.email || c.email; } else { c.member = t.member; c.name = t.memberName || c.name; }
+      map.set(k, c);
+    }
+    const ql = normDigits(q.toLowerCase()); const rows = [...map.values()].filter(c => !ql || normDigits([c.name, c.email, c.member].join(' ').toLowerCase()).includes(ql)).sort((a, b) => b.count - a.count);
+    box.replaceChildren(rows.length ? el('div', { class: 'tw' }, el('table', { class: 't' },
+      el('thead', {}, el('tr', {}, tab === 'req' ? [el('th', {}, 'Name'), el('th', {}, 'Email')] : [el('th', {}, 'Member no.'), el('th', {}, 'Member name')], el('th', {}, 'Tickets'), el('th', {}, 'Open'), el('th', {}, 'Last ticket'))),
+      el('tbody', {}, rows.slice(0, 500).map(c => el('tr', {},
+        tab === 'req' ? [el('td', { dir: 'auto' }, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.email || c.name) }, c.name || '—')), el('td', {}, c.email)] : [el('td', {}, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.member) }, c.member)), el('td', { dir: 'auto' }, c.name || '—')],
+        el('td', { class: 'n' }, c.count), el('td', { class: 'n' }, c.open), el('td', { class: 'n' }, fmtDate(c.last))))))) : el('div', { class: 'empty' }, 'No contacts yet.'));
+  }
+  root.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Contacts'),
+    el('a', { class: 'btn sm' + (tab === 'req' ? ' primary' : ''), href: '#/contacts?tab=req' }, 'Providers / senders'), el('a', { class: 'btn sm' + (tab === 'mem' ? ' primary' : ''), href: '#/contacts?tab=mem' }, 'Members'),
+    el('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search contacts', oninput: e => { q = e.target.value; draw(); } })), box);
+  draw(); return { el: root, update: draw };
+}
+
+/* ---------------- Reports ---------------- */
+function reportsView() {
+  const root = el('div', { class: 'pad' });
+  const d0 = new Date(Date.now() - 30 * DAY).toISOString().slice(0, 10), d1 = new Date().toISOString().slice(0, 10);
+  const from = el('input', { type: 'date', value: d0 }), to = el('input', { type: 'date', value: d1 }); const box = el('div');
+  from.onchange = to.onchange = () => draw();
+  let lastRows = [];
+  function draw() {
+    const a = new Date(from.value + 'T00:00:00').getTime(), b = new Date(to.value + 'T23:59:59').getTime(); const cal = DB.settings.hours;
+    const T = [...DB.tickets.values()].filter(t => !t.mergedInto);
+    const inR = x => x && Date.parse(x) >= a && Date.parse(x) <= b;
+    const groups = new Map(); const add = (k, t) => { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); };
+    T.forEach(t => { if (inR(t.created) || inR(t.resolvedAt)) { add('All agents', t); add(t.agent || 'Unassigned', t); } });
+    const avgH = arr => arr.length ? (arr.reduce((s, v) => s + v, 0) / arr.length / 3600e3).toFixed(1) : '—';
+    lastRows = [...groups.entries()].map(([k, ts]) => {
+      const created = ts.filter(t => inR(t.created)), resolved = ts.filter(t => inR(t.resolvedAt));
+      const fr = created.filter(t => t.firstResponseAt).map(t => bizBetween(Date.parse(t.created), Date.parse(t.firstResponseAt), cal));
+      const rt = resolved.map(t => bizBetween(Date.parse(t.created), Date.parse(t.resolvedAt), cal));
+      const sl = created.map(slaOf); const frMet = sl.filter(s => s.frAt).length ? Math.round(sl.filter(s => s.frAt && !s.frLate).length / sl.filter(s => s.frAt).length * 100) + '%' : '—';
+      const rsl = resolved.map(slaOf); const resMet = rsl.length ? Math.round(rsl.filter(s => !s.resLate).length / rsl.length * 100) + '%' : '—';
+      return [k, created.length, resolved.length, avgH(fr), avgH(rt), frMet, resMet];
+    }).sort((x, y) => x[0] === 'All agents' ? -1 : y[0] === 'All agents' ? 1 : y[1] - x[1]);
+    box.replaceChildren(lastRows.length ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Agent', 'Created', 'Resolved', 'Avg first response (business h)', 'Avg resolution (business h)', 'First response SLA met', 'Resolution SLA met'].map(h => el('th', {}, h)))),
+      el('tbody', {}, lastRows.map(r => el('tr', { style: r[0] === 'All agents' ? 'font-weight:650' : '' }, r.map((c, i) => el('td', { class: i ? 'n' : '' }, c))))))) : el('div', { class: 'empty' }, 'No tickets in this period.'));
+  }
+  root.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Reports'), el('label', { class: 'small' }, 'From ', from), el('label', { class: 'small' }, 'To ', to),
+    el('button', { class: 'btn sm', type: 'button', onclick: () => downloadCsv('report', [['Agent', 'Created', 'Resolved', 'Avg first response h', 'Avg resolution h', 'First response SLA met', 'Resolution SLA met'], ...lastRows]) }, 'Export CSV'),
+    el('button', { class: 'btn sm', type: 'button', onclick: () => exportCsv([...DB.tickets.values()].filter(t => { const x = Date.parse(t.created); return x >= new Date(from.value).getTime() && x <= new Date(to.value + 'T23:59:59').getTime(); })) }, 'Export tickets (CSV)')),
+    el('p', { class: 'small muted', style: 'margin:0 0 10px' }, 'Times count business hours only (Admin › Business hours & SLA).'), box,
+    el('div', { class: 'panel', style: 'margin-top:16px' }, el('h2', {}, 'GlobeMed upload (approved medicines)'),
+      el('p', { class: 'small muted' }, 'Approved items of resolved/closed tickets that were validated. Columns: Individual number · Item · Units per day · Quantity per month · Start date · Expiry date.'),
+      el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { const nos = globemedExport(true); if (nos && nos.length && confirm(`Mark ${nos.length} ticket(s) as exported so the next file doesn't repeat them?`)) { await emit('export', null, { tickets: nos }); toast('Marked as exported'); } } }, 'Download new (not yet exported)'),
+        el('button', { class: 'btn', type: 'button', onclick: () => globemedExport(false) }, 'Download all validated'))));
+  draw(); return { el: root, update: null };
+}
+
+/* ---------------- Admin ---------------- */
+function adminView(r) {
+  const sec = r.arg || 'general'; const S = DB.settings;
+  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['agents', 'Agents'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data & folder']];
+  const panel = el('div', { class: 'panel' });
+  const save = async (section, value) => { await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
+  const lines = arr => arr.join('\n'); const unlines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
+  const b = {
+    general() {
+      const g = clone(S.general); const imp = S.importer;
+      const ck = (k, label) => el('label', { class: 'row', style: 'margin-bottom:8px' }, el('input', { type: 'checkbox', checked: !!g[k], onchange: e => g[k] = e.target.checked }), label);
+      const sel = (k, vals) => el('select', { onchange: e => g[k] = e.target.value }, vals.map(v => opt(v, v, g[k])));
+      return [el('h2', {}, 'Importer PC'),
+        el('p', { class: 'small muted' }, 'One PC reads new emails from the shared folder and gives ticket numbers, so numbers never clash. Use the PC where Outlook and the email-saving script run.'),
+        el('div', { class: 'row', style: 'margin-bottom:16px' }, el('span', {}, 'Current: ', el('b', {}, imp.machine ? (imp.label || imp.machine) + (imp.machine === MACHINE ? ' (this PC)' : '') : 'not set')),
+          imp.machine === MACHINE ? null : el('button', { class: 'btn primary', type: 'button', onclick: async () => { const label = prompt('Name for this PC (e.g. "Chronic PC – Outlook"):', (me() || 'Importer') + ' PC'); if (label == null) return; await save('importer', { machine: MACHINE, label }); render(true); } }, 'Make this PC the importer')),
+        el('h2', {}, 'Tickets'),
+        ck('noAttachTickets', 'Create tickets also for emails without attachments'),
+        ck('roundRobin', 'Auto-assign new tickets to the agent in the group with the fewest open tickets'),
+        el('label', { class: 'blk' }, 'Default priority', sel('defaultPriority', S.priorities)),
+        el('label', { class: 'blk' }, 'Default type', sel('defaultType', S.types)),
+        el('label', { class: 'blk' }, 'Default group', sel('defaultGroup', S.groups)),
+        el('label', { class: 'blk' }, 'Mailbox that sends replies', el('input', { type: 'email', value: g.mailbox, onchange: e => g.mailbox = e.target.value.trim() })),
+        el('button', { class: 'btn primary', type: 'button', onclick: () => save('general', g) }, 'Save')];
+    },
+    autoack() {
+      const a = Object.assign(clone(DEFAULTS.autoAck), clone(S.autoAck || {}));
+      const mk = k => el('div', { class: 'ce card', contenteditable: 'true', dir: k === 'AR' ? 'rtl' : 'ltr', html: sanitize(a[k]), style: 'min-height:90px', oninput: e => a[k] = e.target.innerHTML });
+      const on = el('input', { type: 'checkbox', checked: !!a.enabled });
+      return [el('h2', {}, 'Automatic acknowledgement'),
+        el('p', { class: 'small muted' }, 'When a new email becomes a ticket, the sender gets an automatic reply with the ticket number, in the same email thread. Replies to existing tickets, our own mailbox, no-reply/system senders and out-of-office messages never get one. Sent by Outlook on the importer PC, so the helpdesk must be open there and the Outlook script running.'),
+        el('label', { class: 'row', style: 'margin:8px 0' }, on, el('b', {}, 'Send the ticket number automatically')),
+        a.enabled && a.since ? el('p', { class: 'small muted' }, 'On since ' + fmtDate(a.since) + ' – only emails received after that are answered.') : null,
+        el('label', { class: 'blk' }, 'Never auto-reply to senders containing (comma-separated)', el('input', { type: 'text', value: a.skip, onchange: e => a.skip = e.target.value })),
+        el('h3', {}, 'Arabic message'), mk('AR'), el('h3', {}, 'English message'), mk('EN'),
+        el('p', { class: 'small muted' }, 'The email signature (Admin › Email signature) is added under it. Placeholders: {{ticket.no}} {{ticket.subject}} {{requester.name}} {{member.no}}'),
+        el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          if (on.checked && !a.enabled) a.since = new Date().toISOString(); a.enabled = on.checked;
+          await save('autoAck', { ...a, AR: sanitize(a.AR), EN: sanitize(a.EN) }); render(true);
+        } }, 'Save')];
+    },
+    agents() {
+      const list = clone(S.agents || []); const body = el('tbody');
+      const draw = () => body.replaceChildren(...list.map((a, i) => el('tr', {},
+        el('td', {}, el('input', { type: 'text', value: a.name, 'aria-label': 'Name', onchange: e => a.name = e.target.value.trim() })),
+        el('td', {}, el('input', { type: 'email', value: a.email || '', 'aria-label': 'Email', onchange: e => a.email = e.target.value.trim() })),
+        el('td', {}, el('select', { 'aria-label': 'Group', onchange: e => a.group = e.target.value }, opt('', 'Any group', a.group || ''), S.groups.map(g => opt(g, g, a.group)))),
+        el('td', {}, el('input', { type: 'checkbox', 'aria-label': 'Active', checked: a.active !== false, onchange: e => a.active = e.target.checked })),
+        el('td', {}, el('button', { class: 'btn sm danger', type: 'button', onclick: () => { list.splice(i, 1); draw(); } }, 'Remove')))));
+      draw();
+      return [el('h2', {}, 'Agents'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Name', 'Email', 'Group', 'Active', ''].map(h => el('th', {}, h)))), body)),
+        el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn', type: 'button', onclick: () => { list.push({ name: '', email: '', group: '', active: true }); draw(); } }, '+ Add agent'), el('button', { class: 'btn primary', type: 'button', onclick: () => save('agents', list.filter(a => a.name)) }, 'Save'))];
+    },
+    groups() {
+      const g = el('textarea', { rows: 6, style: 'width:100%' }, lines(S.groups)), ty = el('textarea', { rows: 8, style: 'width:100%' }, lines(S.types));
+      return [el('h2', {}, 'Groups'), el('p', { class: 'small muted' }, 'One per line.'), g, el('h2', { style: 'margin-top:14px' }, 'Ticket types'), ty,
+        el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { await save('groups', unlines(g.value)); await save('types', unlines(ty.value)); } }, 'Save'))];
+    },
+    sla() {
+      const h = clone(S.hours), sla = clone(S.sla); const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      return [el('h2', {}, 'Business hours'),
+        el('div', { class: 'row', style: 'margin-bottom:8px' }, DAYS.map((d, i) => el('label', { class: 'row', style: 'gap:4px' }, el('input', { type: 'checkbox', checked: h.days.includes(i), onchange: e => { h.days = e.target.checked ? [...new Set([...h.days, i])] : h.days.filter(x => x !== i); } }), d))),
+        el('div', { class: 'row', style: 'margin-bottom:14px' }, el('label', {}, 'From ', el('input', { type: 'number', min: 0, max: 23, value: h.start, style: 'width:70px', onchange: e => h.start = +e.target.value })), el('label', {}, 'to ', el('input', { type: 'number', min: 1, max: 24, value: h.end, style: 'width:70px', onchange: e => h.end = +e.target.value })), el('span', { class: 'small muted' }, 'hour of day (24h)')),
+        el('h2', {}, 'SLA targets (business hours)'),
+        el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Priority', 'First response within', 'Resolve within'].map(x => el('th', {}, x)))),
+          el('tbody', {}, S.priorities.map(p => { sla[p] = sla[p] || { first: 4, resolve: 16 }; return el('tr', {}, el('td', {}, el('span', { class: 'pri pri-' + p }, p)), el('td', {}, el('input', { type: 'number', min: 0, step: .5, value: sla[p].first, style: 'width:90px', onchange: e => sla[p].first = +e.target.value }), ' h'), el('td', {}, el('input', { type: 'number', min: 0, step: .5, value: sla[p].resolve, style: 'width:90px', onchange: e => sla[p].resolve = +e.target.value }), ' h')); })))),
+        el('p', { class: 'small muted' }, 'The resolution timer pauses while a ticket is Pending or Waiting on provider.'),
+        el('button', { class: 'btn primary', type: 'button', onclick: async () => { if (h.end <= h.start) return toast('End hour must be after start hour'); await save('hours', h); await save('sla', sla); } }, 'Save')];
+    },
+    canned() {
+      const list = clone(S.canned || []); const box = el('div');
+      const draw = () => box.replaceChildren(...list.map((c, i) => { const ed = el('div', { class: 'ce card', contenteditable: 'true', dir: 'auto', html: sanitize(c.html), style: 'min-height:90px', oninput: e => c.html = e.target.innerHTML });
+        return el('div', { class: 'rule' }, el('div', { class: 'row' }, el('input', { type: 'text', value: c.title, style: 'flex:1', 'aria-label': 'Title', onchange: e => c.title = e.target.value }), el('button', { class: 'btn sm danger', type: 'button', onclick: () => { list.splice(i, 1); draw(); } }, 'Delete')), ed); }));
+      draw();
+      return [el('h2', {}, 'Canned responses'), el('p', { class: 'small muted' }, 'Placeholders: {{ticket.no}} {{ticket.subject}} {{requester.name}} {{member.no}} {{member.name}} {{agent.name}}'), box,
+        el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => { list.push({ title: 'New response', html: '' }); draw(); } }, '+ Add'), el('button', { class: 'btn primary', type: 'button', onclick: () => save('canned', list.map(c => ({ title: c.title, html: sanitize(c.html) }))) }, 'Save'))];
+    },
+    rules() {
+      const list = clone(S.rules || []); const box = el('div');
+      const F = [['subject', 'Subject'], ['from', 'Sender (name/email)'], ['body', 'Email text'], ['attachment', 'Has attachment (yes/no)']], OP = [['contains', 'contains'], ['not', 'does not contain'], ['is', 'is exactly']];
+      const draw = () => box.replaceChildren(...list.map((r, i) => {
+        r.conds = r.conds || []; r.set = r.set || {};
+        const conds = el('div', { style: 'display:grid;gap:6px' }, r.conds.map((c, j) => el('div', { class: 'row' }, el('select', { onchange: e => c.field = e.target.value }, F.map(([v, l]) => opt(v, l, c.field))), el('select', { onchange: e => c.op = e.target.value }, OP.map(([v, l]) => opt(v, l, c.op))), el('input', { type: 'text', value: c.value || '', dir: 'auto', onchange: e => c.value = e.target.value }), el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { r.conds.splice(j, 1); draw(); } }, '×'))));
+        const set = (k, vals) => el('label', { class: 'small' }, k[0].toUpperCase() + k.slice(1) + ' ', el('select', { onchange: e => r.set[k] = e.target.value }, opt('', '(keep)', r.set[k] || ''), vals.map(v => opt(v, v, r.set[k]))));
+        return el('div', { class: 'rule' },
+          el('div', { class: 'row' }, el('input', { type: 'text', value: r.name || '', placeholder: 'Rule name', 'aria-label': 'Rule name', style: 'flex:1', onchange: e => r.name = e.target.value }), el('label', { class: 'small row' }, el('input', { type: 'checkbox', checked: !r.off, onchange: e => r.off = !e.target.checked }), 'On'), el('button', { class: 'btn sm danger', type: 'button', onclick: () => { list.splice(i, 1); draw(); } }, 'Delete')),
+          el('div', { class: 'small' }, 'When a new ticket is created from an email and ', el('select', { onchange: e => r.match = e.target.value }, opt('all', 'all', r.match || 'all'), opt('any', 'any', r.match)), ' of these match:'),
+          conds, el('div', {}, el('button', { class: 'btn sm', type: 'button', onclick: () => { r.conds.push({ field: 'subject', op: 'contains', value: '' }); draw(); } }, '+ Condition')),
+          el('div', { class: 'small' }, 'Then set:'),
+          el('div', { class: 'row' }, set('type', S.types), set('priority', S.priorities), set('group', S.groups), set('agent', agentsList()), set('status', S.statuses), el('label', { class: 'small' }, 'Add tags ', el('input', { type: 'text', value: r.set.tags || '', placeholder: 'tag1, tag2', onchange: e => r.set.tags = e.target.value }))));
+      }));
+      draw();
+      return [el('h2', {}, 'Automation rules'), el('p', { class: 'small muted' }, 'Run in order on every new ticket created from an email. Example: subject contains "Renewal" → type Renewal.'), box,
+        el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => { list.push({ name: '', match: 'all', conds: [{ field: 'subject', op: 'contains', value: '' }], set: {} }); draw(); } }, '+ Add rule'), el('button', { class: 'btn primary', type: 'button', onclick: () => save('rules', list) }, 'Save'))];
+    },
+    signature() {
+      const s = clone(S.signature); const mk = (k) => el('div', { class: 'ce card', contenteditable: 'true', dir: k === 'AR' ? 'rtl' : 'ltr', html: sanitize(s[k]), style: 'min-height:80px', oninput: e => s[k] = e.target.innerHTML });
+      return [el('h2', {}, 'Email signature'), el('p', { class: 'small muted' }, 'Added under every reply in the reply language. {{ticket.no}} becomes the ticket number.'), el('h3', {}, 'Arabic'), mk('AR'), el('h3', {}, 'English'), mk('EN'),
+        el('div', { style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('signature', { AR: sanitize(s.AR), EN: sanitize(s.EN) }) }, 'Save'))];
+    },
+    data() {
+      return [el('h2', {}, 'Shared folder'), el('p', {}, 'Connected to: ', el('b', {}, FS.root ? FS.root.name : '—')),
+        el('p', { class: 'small muted' }, `${STORE.events.size} change records · ${DB.tickets.size} tickets · ${DB.processed.size} emails processed.`),
+        el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => exportCsv([...DB.tickets.values()]) }, 'Export all tickets (CSV)'),
+          el('button', { class: 'btn', type: 'button', onclick: async () => { await IDB.evClear(); location.reload(); } }, 'Clear this browser\'s cache & reload'),
+          el('button', { class: 'btn', type: 'button', onclick: chooseFolder }, 'Connect a different folder'))];
+    }
+  };
+  panel.append(...b[sec]());
+  const root = el('div', { class: 'adm' }, el('nav', { 'aria-label': 'Admin sections' }, SECS.map(([k, l]) => el('a', { href: '#/admin/' + k, class: k === sec ? 'on' : '' }, l))), panel);
+  return { el: root, update: null };
+}
+const VIEWS = { tickets: ticketList, t: ticketView, dashboard, ignored: ignoredView, contacts: contactsView, reports: reportsView, admin: adminView };
+
+/* =====================================================================
+   Chronic medication validation (Sarwa rules – from the Chronic Medication Review Module spec)
+   ===================================================================== */
+const TESTS = {
+  hba1c: { en: 'HbA1c', ar: 'السكر التراكمي (HbA1c)' }, lipid: { en: 'Lipid profile', ar: 'صورة دهون الدم (Lipid profile)' },
+  hbv: { en: 'HBsAg and HBV DNA PCR', ar: 'الأنتيجين السطحي لفيروس بي (HBsAg) والـ PCR' }, hcv: { en: 'HCV PCR', ar: 'تحليل PCR لفيروس سي' },
+  tsh: { en: 'TSH, FT4', ar: 'وظائف الغدة الدرقية (TSH, FT4)' }, uric: { en: 'Uric acid', ar: 'حمض اليوريك (Uric acid)' },
+  renal: { en: 'Creatinine, eGFR', ar: 'وظائف الكلى (Creatinine, eGFR)' }, echo: { en: 'ECG / Echo', ar: 'رسم قلب أو إيكو على القلب (ECG / Echo)' },
+  neuro: { en: 'Doctor report of neuropathy', ar: 'تقرير الطبيب يوضح الاعتلال العصبي' }, cbc: { en: 'CBC, Ferritin', ar: 'صورة دم كاملة ومخزون الحديد (CBC, Ferritin)' },
+  ibs: { en: 'Stool analysis, CBC or colonoscopy', ar: 'تحاليل البراز وصورة دم أو منظار قولون (لاستمرار الصرف بعد 3 أشهر)' }, dexa: { en: 'DEXA scan', ar: 'قياس كثافة العظام (DEXA)' },
+  oa: { en: 'MRI / X-ray showing osteoarthritis', ar: 'أشعة رنين أو أشعة عادية توضح خشونة المفصل' }, vitd: { en: '25-OH Vitamin D', ar: 'فيتامين د (25-OH Vitamin D)' }
+};
+const CLASSES = [ // [key, label, test that confirms it]
+  ['antidiabetic', 'Antidiabetic (tablets / GLP-1)', 'hba1c'], ['insulin', 'Insulin', 'hba1c'], ['antihypertensive', 'Blood pressure (BB, ACEi, ARB, CCB, diuretic)', ''],
+  ['statin', 'Lipid lowering (statin, ezetimibe, fenofibrate)', 'lipid'], ['cardiac', 'Heart (antiplatelet, nitrate, heart failure)', 'echo'], ['hbv', 'Hepatitis B antiviral', 'hbv'],
+  ['hcv', 'Hepatitis C antiviral', 'hcv'], ['thyroid', 'Thyroid', 'tsh'], ['gout', 'Gout / uric acid', 'uric'], ['neuro', 'Vitamin B / thioctic acid (Milga, Neurovit, Thiotacid)', ''],
+  ['ibs', 'Colon / IBS (mebeverine, Colona, probiotics…)', 'ibs'], ['osteoporosis', 'Osteoporosis', 'dexa'], ['oa', 'Osteoarthritis / joint', 'oa'], ['vitd', 'Vitamin D', 'vitd'],
+  ['iron', 'Iron / anaemia', 'cbc'], ['renal', 'Kidney', 'renal'], ['acute', 'Acute – antibiotic, short course, cold / pain', ''], ['other', 'Other / not listed', '']
+];
+const CLS = Object.fromEntries(CLASSES.map(c => [c[0], { label: c[1], test: c[2] }]));
+const UNITS = [['tablet', 'قرص'], ['capsule', 'كبسولة'], ['unit (IU)', 'وحدة'], ['ml', 'مل'], ['puff', 'بخة'], ['drop', 'نقطة'], ['sachet', 'كيس'], ['patch', 'لاصقة'], ['injection', 'حقنة'], ['pen', 'قلم'], ['vial', 'فيال'], ['application', 'دهان'], ['suppository', 'لبوس'], ['g', 'جم'], ['mg', 'مجم']];
+const PERIOD = { day: 1, week: 7, month: 30 }; const PERIOD_AR = { day: 'يومياً', week: 'أسبوعياً', month: 'شهرياً' };
+const DEC = { APPROVED: { en: 'Approved', ar: 'معتمد', c: 'p-ok' }, MORE_INFO: { en: 'Needs more evidence', ar: 'مطلوب مستندات', c: 'p-due' }, ACUTE: { en: 'Acute – not monthly', ar: 'علاج حاد', c: 'p-muted' }, NOT_JUSTIFIED: { en: 'Not justified', ar: 'مرفوض', c: 'p-over' }, UNREADABLE: { en: 'Unreadable – ask provider', ar: 'غير واضح', c: 'p-muted' } };
+const CONFIRMS = ['high', 'positive', 'abnormal'];
+function addMonths(iso, m) { const d = new Date(iso + 'T00:00:00'); const day = d.getDate(); d.setMonth(d.getMonth() + m); if (d.getDate() < day) d.setDate(0); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+const dmy = iso => iso ? iso.split('-').reverse().join('/') : '';
+function monthsBetween(a, b) { return (Date.parse(b) - Date.parse(a)) / (30.44 * DAY); }
+function itemCalc(it, V) { const per = PERIOD[it.per] || 1; const upd = (+it.dose || 0) * (+it.times || 0) / per; return { upd: Math.round(upd * 100) / 100, qty: Math.ceil(upd * (+V.daysPerMonth || 30) - 1e-9) }; }
+function diabetesShown(V) { return V.items.some(i => i.cls === 'antidiabetic' || i.cls === 'insulin') || V.labs.some(l => l.test === 'hba1c' && CONFIRMS.includes(l.result)) || /diab|\bDM\b|T2DM|سكر/i.test(V.diagnosis || ''); }
+function suggest(it, V) {
+  if (it.unreadable) return { d: 'UNREADABLE', why: 'Item could not be read – ask provider' };
+  if (it.cls === 'acute') return { d: 'ACUTE', why: 'Acute medicine – separate acute approval' };
+  if (it.cls === 'antihypertensive') return { d: 'APPROVED', why: 'Hypertension on doctor diagnosis (Sarwa rule)' };
+  if (it.cls === 'neuro') return diabetesShown(V) ? { d: 'APPROVED', why: 'Diabetes shown – neuropathy support (Sarwa rule)' } : { d: 'MORE_INFO', why: 'Diabetes not shown', req: 'hba1c' };
+  if (it.cls === 'ibs') return (+it.prior || 0) >= 3 ? { d: 'MORE_INFO', why: 'Already 3 months approved – labs needed (Sarwa rule)', req: 'ibs' } : { d: 'APPROVED', why: 'Colon / IBS up to 3 months (Sarwa rule)', maxMonths: Math.max(1, 3 - (+it.prior || 0)) };
+  if (!it.cls || it.cls === 'other') return { d: '', why: 'Assessor to decide' };
+  const test = CLS[it.cls].test; const labs = V.labs.filter(l => l.test === test).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  if (!labs.length) return { d: 'MORE_INFO', why: 'No ' + TESTS[test].en + ' attached', req: test };
+  const l = labs[0]; const val = l.value ? ' ' + l.value : '';
+  if (l.date && monthsBetween(l.date, V.start) > 6) return { d: 'MORE_INFO', why: TESTS[test].en + ' older than 6 months (' + dmy(l.date) + ')', req: test };
+  if (CONFIRMS.includes(l.result)) return { d: 'APPROVED', why: TESTS[test].en + val + ' confirms (' + (dmy(l.date) || 'no date') + ')' };
+  if (l.result === 'normal' || l.result === 'negative') return { d: 'NOT_JUSTIFIED', why: TESTS[test].en + val + ' ' + l.result + ' – does not confirm' };
+  return { d: 'MORE_INFO', why: 'Set the result of ' + TESTS[test].en, req: test };
+}
+function computeValidation(V) {
+  return V.items.map((it, i) => { const c = itemCalc(it, V); const s = suggest(it, V); const final = it.final || s.d; const months = Math.min(+it.months || +V.months || 3, s.maxMonths || 12);
+    const fq = it.finalQty !== '' && it.finalQty != null ? +it.finalQty : c.qty;
+    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', final, finalQty: fq, months, from: final === 'APPROVED' ? V.start : '', to: final === 'APPROVED' ? addMonths(V.start, months) : '', overridden: (final !== s.d) || fq !== c.qty }; });
+}
+function valSummary(d) { const r = d.result || []; const c = k => r.filter(x => x.final === k).length; return ['APPROVED', 'MORE_INFO', 'NOT_JUSTIFIED', 'ACUTE', 'UNREADABLE'].filter(k => c(k)).map(k => c(k) + ' ' + DEC[k].en.toLowerCase()).join(', ') || 'no items'; }
+function decisionEmail(t, V, R, lang) {
+  const AR = lang === 'AR', ord = AR ? ['أولاً', 'ثانياً', 'ثالثاً', 'رابعاً'] : ['1-', '2-', '3-', '4-']; let k = 0; const H = s => `<p dir="${AR ? 'rtl' : 'ltr'}"><b>${ord[k++]}${AR ? ': ' : ' '}${s}</b></p>`;
+  const name = esc(t.memberName || '…'), card = esc(t.member || '…'), dir = AR ? 'rtl' : 'ltr'; const out = [];
+  out.push(AR ? `<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">بالإشارة إلى طلب الموافقة على الأدوية الشهرية المقدم للعضو / ${name} – رقم الكارت ${card} (رقم التذكرة ${t.no})، نحيط سيادتكم علماً بأنه بعد المراجعة الطبية تم اتخاذ القرار التالي:</p>`
+    : `<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>Regarding the submitted request for monthly medication approval for member ${name} – card No. ${card} (ticket No. ${t.no}), please note that after the medical review the decision is as follows:</p>`);
+  const appr = R.filter(x => x.final === 'APPROVED');
+  if (appr.length) {
+    const from = dmy(V.start), to = dmy(appr.map(x => x.to).sort().pop());
+    out.push(H(AR ? 'الأدوية المعتمدة' : 'Approved medications'), `<p dir="${dir}">${AR ? `يمكن صرف الأدوية التالية بدءاً من ${from} وحتى ${to} وفقاً للجدول التالي:` : `You can dispense the following medications from ${from} until ${to} as per the table below:`}</p>`);
+    const unitAr = u => (UNITS.find(x => x[0] === u) || [u, u])[1];
+    const dose = x => AR ? `${x.dose} ${unitAr(x.unit)} × ${x.times} ${PERIOD_AR[x.per] || ''}` : `${x.dose} ${x.unit} × ${x.times} per ${x.per}`;
+    out.push(`<table dir="${dir}" style="border-collapse:collapse"><tr>${(AR ? ['م', 'الصنف', 'الجرعة', 'الكمية الشهرية', 'من', 'إلى'] : ['No.', 'Item', 'Dose', 'Qty / month', 'From', 'To']).map(h => `<th style="border:1px solid #999;padding:3px 8px;background:#eee">${h}</th>`).join('')}</tr>` +
+      appr.map((x, i) => `<tr>${[i + 1, esc(x.name), esc(dose(x)), x.finalQty + (x.finalQty < x.qty ? (AR ? ` (المطلوب ${x.qty})` : ` (requested ${x.qty})`) : ''), dmy(x.from), dmy(x.to)].map(c => `<td style="border:1px solid #999;padding:3px 8px">${c}</td>`).join('')}</tr>`).join('') + '</table>');
+  }
+  const more = R.filter(x => x.final === 'MORE_INFO'), unread = R.filter(x => x.final === 'UNREADABLE');
+  if (more.length || unread.length || V.mismatch || V.noForm) {
+    out.push(H(AR ? 'المتطلبات الناقصة' : 'Missing requirements'), `<p dir="${dir}">${AR ? 'برجاء التكرم بإرسال ما يلي لاستكمال المراجعة:' : 'Kindly send the following to complete the review:'}</p>`);
+    const groups = new Map(); for (const x of more) { const key = x.req || 'other'; if (!groups.has(key)) groups.set(key, []); groups.get(key).push(x.name); }
+    const li = [...groups.entries()].map(([r, names]) => `<li>${r !== 'other' && TESTS[r] ? (AR ? TESTS[r].ar : TESTS[r].en) : (AR ? 'مستندات تؤكد الحاجة للعلاج' : 'Documents confirming the need')} ← ${esc(names.join('، '))}</li>`);
+    unread.forEach(x => li.push(`<li>${AR ? `الصنف رقم ${x.n} بالنموذج (صورة السطر مرفقة): الصنف غير واضح، برجاء توضيح الصنف المطلوب للمتابعة وعمل اللازم.` : `Item No. ${x.n} on the form (picture attached) is not clear – please clarify the requested item for follow-up.`}</li>`));
+    if (V.mismatch) li.push(`<li>${AR ? 'برجاء التأكد من بيانات العضو، حيث إن الاسم / رقم الكارت المدون على النموذج لا يطابق كارت التأمين المرفق.' : 'Please confirm the member details – the name / card number on the form does not match the attached insurance card.'}</li>`);
+    if (V.noForm) li.push(`<li>${AR ? 'برجاء إعادة إرسال النموذج الطبي الموضح فيه الأدوية بالجرعات اليومية، وذلك للمراجعة وعمل اللازم.' : 'Please resend the medical form showing the medicines with their daily doses.'}</li>`);
+    out.push(`<ul dir="${dir}">${li.join('')}</ul>`);
+  }
+  const rej = R.filter(x => x.final === 'NOT_JUSTIFIED' || x.final === 'ACUTE');
+  if (rej.length) out.push(H(AR ? 'الأصناف المرفوضة وسبب الرفض' : 'Rejected items and reason'), `<ul dir="${dir}">${rej.map(x => `<li>${esc(x.name)}: ${x.final === 'ACUTE' ? (AR ? 'يصرف كعلاج حاد (Acute) بموافقة منفصلة من الصيدلية / الفرع.' : 'not a monthly chronic medicine – to be dispensed as an acute prescription with a separate approval from the pharmacy / branch.') : esc(x.reason || (AR ? 'النتيجة المرفقة لا تؤكد الحاجة للعلاج.' : 'the attached result does not confirm the need for this medicine.'))}</li>`).join('')}</ul>`);
+  return out.join('');
+}
+function validationDialog(no) {
+  const t = DB.tickets.get(no); if (!t) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const V = t.validation ? clone({ diagnosis: t.validation.diagnosis, start: t.validation.start, months: t.validation.months, daysPerMonth: t.validation.daysPerMonth, mismatch: t.validation.mismatch, noForm: t.validation.noForm, labs: t.validation.labs || [], items: t.validation.items || [] })
+    : { diagnosis: '', start: today, months: 3, daysPerMonth: 30, mismatch: false, noForm: false, labs: [], items: [] };
+  if (!V.items.length) V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' });
+  const box = el('div', { style: 'display:grid;gap:12px' });
+  const inp = (obj, k, attrs = {}) => el('input', { value: obj[k] ?? '', ...attrs, oninput: e => { obj[k] = attrs.type === 'checkbox' ? e.target.checked : e.target.value; if (attrs.live !== false) recalc(); }, onchange: e => { obj[k] = attrs.type === 'checkbox' ? e.target.checked : e.target.value; recalc(); } });
+  const sel = (obj, k, opts, none) => el('select', { onchange: e => { obj[k] = e.target.value; draw(); } }, none != null ? opt('', none, obj[k] || '') : null, opts.map(o => Array.isArray(o) ? opt(o[0], o[1], obj[k]) : opt(o, o, obj[k])));
+  let resultBox;
+  function recalc() { const R = computeValidation(V); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
+  function resRow(x) { return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'), el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty), el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)), el('td', { class: 'n' }, x.final === 'APPROVED' ? dmy(x.from) + ' → ' + dmy(x.to) : '—')); }
+  function draw() {
+    const caseRow = el('div', { class: 'g2' },
+      el('label', {}, 'Diagnosis written on the form', el('textarea', { rows: 2, dir: 'auto', oninput: e => { V.diagnosis = e.target.value; recalc(); } }, V.diagnosis)),
+      el('div', { style: 'display:grid;gap:6px' }, el('div', { class: 'row' }, el('label', {}, 'Start ', inp(V, 'start', { type: 'date' })), el('label', {}, 'Months ', inp(V, 'months', { type: 'number', min: 1, max: 12, style: 'width:64px' })), el('label', {}, 'Days/month ', inp(V, 'daysPerMonth', { type: 'number', min: 28, max: 31, style: 'width:64px' }))),
+        el('label', { class: 'row' }, inp(V, 'mismatch', { type: 'checkbox', checked: V.mismatch }), 'Member card / name does not match'),
+        el('label', { class: 'row' }, inp(V, 'noForm', { type: 'checkbox', checked: V.noForm }), 'No claim form / prescription attached')));
+    const labs = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Lab / scan', 'Result value', 'Date', 'Interpretation', ''].map(h => el('th', {}, h)))),
+      el('tbody', {}, V.labs.map((l, i) => el('tr', {}, el('td', {}, sel(l, 'test', Object.entries(TESTS).map(([k, v]) => [k, v.en]))), el('td', {}, inp(l, 'value', { type: 'text', placeholder: 'e.g. 8.1 %', style: 'width:110px' })), el('td', {}, inp(l, 'date', { type: 'date' })),
+        el('td', {}, sel(l, 'result', [['high', 'High / abnormal – confirms'], ['positive', 'Positive – confirms'], ['normal', 'Normal'], ['negative', 'Negative']], '—')), el('td', {}, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.labs.splice(i, 1); draw(); } }, '×')))))));
+    const items = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Medicine (as identified)', 'Class', 'Dose', 'Unit', 'Times', 'Per', 'IBS months already', 'Unreadable', 'Final decision', 'Final qty', 'Months', 'Reason to provider (if rejected)', ''].map(h => el('th', {}, h)))),
+      el('tbody', {}, V.items.map((it, i) => el('tr', {}, el('td', { class: 'n' }, i + 1), el('td', {}, inp(it, 'name', { type: 'text', dir: 'auto', style: 'width:170px', live: false })), el('td', {}, sel(it, 'cls', CLASSES.map(c => [c[0], c[1]]), '— class —')),
+        el('td', {}, inp(it, 'dose', { type: 'number', min: 0, step: .25, style: 'width:62px' })), el('td', {}, sel(it, 'unit', UNITS.map(u => u[0]))), el('td', {}, inp(it, 'times', { type: 'number', min: 0, step: .5, style: 'width:56px' })), el('td', {}, sel(it, 'per', ['day', 'week', 'month'])),
+        el('td', {}, it.cls === 'ibs' ? inp(it, 'prior', { type: 'number', min: 0, style: 'width:56px' }) : '—'), el('td', {}, inp(it, 'unreadable', { type: 'checkbox', checked: it.unreadable })),
+        el('td', {}, sel(it, 'final', Object.entries(DEC).map(([k, v]) => [k, v.en]), 'As suggested')), el('td', {}, inp(it, 'finalQty', { type: 'number', min: 0, placeholder: 'auto', style: 'width:64px' })), el('td', {}, inp(it, 'months', { type: 'number', min: 1, max: 12, placeholder: String(V.months), style: 'width:56px' })),
+        el('td', {}, inp(it, 'reason', { type: 'text', dir: 'auto', style: 'width:180px', live: false })), el('td', {}, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.items.splice(i, 1); draw(); } }, '×')))))));
+    resultBox = el('tbody');
+    box.replaceChildren(caseRow,
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Lab and scan results'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.labs.push({ test: 'hba1c', value: '', date: '', result: '' }); draw(); } }, '+ Add result')), labs,
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Requested items'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
+      el('b', {}, 'Suggested decisions (Sarwa rules)'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
+      el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; colon/IBS up to 3 months then labs; acute medicines need a separate acute approval. Decisions are suggestions – the assessor decides.'));
+    recalc();
+  }
+  draw();
+  const save = async (toReply) => {
+    const R = computeValidation(V); const missingCls = R.filter(x => !x.final);
+    if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
+    await emit('validation', no, { ...V, result: R.map(x => ({ n: x.n, name: x.name, cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
+    if (toReply) { const tt = DB.tickets.get(no); const html = decisionEmail(tt, V, R, tt.lang); closeDialog(); if (CUR.view && CUR.view.insertReply) CUR.view.insertReply(html); toast('Decision email placed in the reply – check it and press Send'); }
+    else { closeDialog(); toast('Validation saved'); }
+  };
+  openDialog('Chronic validation – ' + no, box, [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn', type: 'button', onclick: () => save(false) }, 'Save'), el('button', { class: 'btn primary', type: 'button', onclick: () => save(true) }, 'Save & write decision email')], 'min(1180px,calc(100vw - 16px))');
+}
+function globemedExport(onlyNew) {
+  const T = [...DB.tickets.values()].filter(t => t.validation && (t.status === 'Closed' || t.status === 'Resolved') && (!onlyNew || !t.exportedAt));
+  const rows = [['Individual number', 'Item', 'Units per day', 'Quantity per month', 'Start date', 'Expiry date', 'Ticket']];
+  for (const t of T) for (const x of t.validation.result || []) if (x.final === 'APPROVED' && x.finalQty > 0) rows.push([t.member, x.name, x.upd, x.finalQty, dmy(x.from), dmy(x.to), t.no]);
+  if (rows.length === 1) return toast('No approved items to export'); downloadCsv('globemed-upload', rows); return T.map(t => t.no);
+}
+
+/* ---------------- Dialogs ---------------- */
+function openDialog(title, body, actions, width) { const d = $('#dlg'); d.style.width = width || ''; d.replaceChildren(el('div', { class: 'dh' }, el('span', {}, title), el('button', { class: 'btn ghost sm', type: 'button', 'aria-label': 'Close', onclick: closeDialog }, '×')), el('div', { class: 'db' }, body), el('div', { class: 'df' }, actions)); if (!d.open) d.showModal(); }
+function closeDialog() { const d = $('#dlg'); if (d.open) d.close(); }
+function newTicketDialog() {
+  if (!me()) return askName();
+  const S = DB.settings; const f = {};
+  const inp = (k, label, type = 'text', extra = {}) => el('label', {}, label, f[k] = el('input', { type, dir: 'auto', ...extra }));
+  const sel = (k, label, vals, def, none) => el('label', {}, label, f[k] = el('select', {}, none != null ? opt('', none, def) : null, vals.map(v => opt(v, v, def))));
+  const desc = el('textarea', { rows: 5, dir: 'auto' });
+  openDialog('New ticket', [inp('subject', 'Subject *'), el('div', { class: 'g2' }, inp('rname', 'Requester name'), inp('remail', 'Requester email', 'email')), el('div', { class: 'g2' }, inp('member', 'Member card no.', 'text', { inputmode: 'numeric' }), inp('memberName', 'Member name')),
+    el('div', { class: 'g2' }, sel('type', 'Type', S.types, S.general.defaultType), sel('priority', 'Priority', S.priorities, S.general.defaultPriority)), el('div', { class: 'g2' }, sel('group', 'Group', S.groups, S.general.defaultGroup, '—'), sel('agent', 'Agent', agentsList(), me(), '— Unassigned —')),
+    el('label', {}, 'Description (e.g. phone call details)', desc)],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      const d = { subject: f.subject.value.trim(), requester: { name: f.rname.value.trim(), email: f.remail.value.trim() }, member: normDigits(f.member.value).trim(), memberName: f.memberName.value.trim(), type: f.type.value, priority: f.priority.value, group: f.group.value, agent: f.agent.value, desc: desc.value.trim() };
+      if (!d.subject) { f.subject.focus(); return toast('Subject is required'); }
+      closeDialog();
+      if (isImporter()) { const no = await createManual(d, '', me()); location.hash = '#/t/' + no; }
+      else { await emit('ticket.request', null, d); toast('Ticket requested – the importer PC gives it a number within a minute'); }
+    } }, 'Create')]);
+  f.subject.focus();
+}
+function mergeDialog(nos) {
+  const list = nos.map(n => DB.tickets.get(n)).filter(Boolean); let target = el('input', { type: 'text', placeholder: 'CHR-000123', value: list.length > 1 ? list.slice().sort((a, b) => a.seq - b.seq)[0].no : '' });
+  openDialog('Merge tickets', [el('p', { style: 'margin:0' }, 'Merge ', el('b', {}, list.map(t => t.no).join(', ')), ' into the primary ticket. Their messages show inside the primary ticket and they are closed.'), el('label', {}, 'Primary ticket number', target)],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      const tn = target.value.trim().toUpperCase(); const tg = DB.tickets.get(tn); if (!tg) return toast('Ticket ' + tn + ' not found');
+      for (const t of list) if (t.no !== tn && !t.mergedInto) await emit('merge', t.no, { into: tn });
+      closeDialog(); LIST.sel.clear(); toast('Merged'); location.hash = '#/t/' + tn;
+    } }, 'Merge')]);
+}
+function askName() {
+  const names = (DB && DB.settings.agents || []).filter(a => a.active !== false).map(a => a.name);
+  const inp = el('input', { type: 'text', value: me(), list: 'agentNames', placeholder: 'Your name as agent' });
+  const add = el('input', { type: 'checkbox', checked: true });
+  openDialog('Who is using this browser?', [el('datalist', { id: 'agentNames' }, names.map(n => el('option', { value: n }))), el('label', {}, 'Your name', inp), el('label', { class: 'row' }, add, 'Add me to the agents list')],
+    [el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      const n = inp.value.trim(); if (!n) return inp.focus(); lsSet('hd-me', n); closeDialog();
+      if (add.checked && DB && !names.includes(n)) await emit('settings', null, { section: 'agents', value: [...(DB.settings.agents || []), { name: n, email: '', group: '', active: true }] });
+      render(true);
+    } }, 'Save')]);
+  inp.focus();
+}
+function downloadCsv(name, rows) {
+  const q = v => { v = v == null ? '' : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+  const a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(q).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' })), download: `${name}-${new Date().toISOString().slice(0, 10)}.csv` });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+function exportCsv(tickets) {
+  const rows = [['Ticket', 'Subject', 'Status', 'Priority', 'Type', 'Group', 'Agent', 'Requester', 'Requester email', 'Member no.', 'Member name', 'Tags', 'Created', 'First response', 'Resolved', 'Closed', 'Resolution due', 'Overdue', 'Messages in', 'Replies', 'Merged into']];
+  for (const t of tickets.slice().sort((a, b) => a.seq - b.seq)) { const s = slaOf(t); rows.push([t.no, t.subject, t.status, t.priority, t.type, t.group, t.agent, t.requester.name, t.requester.email, t.member, t.memberName, t.tags.join('; '), fmtDate(t.created), fmtDate(t.firstResponseAt), fmtDate(t.resolvedAt), fmtDate(t.closedAt), fmtDate(s.resDue), s.overdue ? 'Yes' : '', t.msgs.filter(m => m.kind === 'in').length, t.msgs.filter(m => m.kind === 'out').length, t.mergedInto]); }
+  downloadCsv('tickets', rows);
+}
+
+/* =====================================================================
+   Setup / connect to the shared folder
+   ===================================================================== */
+function showSetup() {
+  setSync('err', 'Not connected');
+  const card = el('div', { class: 'setup card' });
+  $('#view').replaceChildren(card);
+  if (!AUTH.tok) {
+    card.append(el('h2', {}, 'Sarwa Chronic – sign in'),
+      el('p', {}, 'Sign in with your Sarwa Microsoft 365 account (the same one you use for OneDrive / Teams). Microsoft handles your password, password reset and the code on your phone.'),
+      el('button', { class: 'btn primary', type: 'button', onclick: () => AUTH.login() }, 'Sign in with Microsoft 365'),
+      el('p', { class: 'small muted', style: 'margin-top:16px' }, 'Tickets and attachments stay in Sarwa’s SharePoint / OneDrive. This page only shows them.'));
+    return;
+  }
+  card.append(el('h2', {}, 'Choose the shared Chronic folder'), el('p', { class: 'muted' }, 'Pick the folder where the Chronic emails are saved, e.g. “Outlook Chronic _ ContactChronic”. Everyone in the team must pick the same folder (it has to be shared with them).'), el('div', { class: 'empty' }, 'Loading your folders…'));
+  (async () => {
+    const pick = (root) => el('button', { class: 'btn' + (/chronic/i.test(root.name) ? ' primary' : ''), type: 'button', style: 'justify-content:flex-start;width:100%', onclick: () => { lsSet('hd-root', JSON.stringify(root)); FS.root = root; connect(); } }, '📁 ' + root.name, root.shared ? el('span', { class: 'small', style: 'opacity:.75' }, ' – shared by ' + root.shared) : null);
+    const lists = [];
+    try {
+      const mine = await (await graph('/me/drive/root/children?$top=200&$select=id,name,folder,parentReference')).json();
+      const f = (mine.value || []).filter(x => x.folder).map(x => ({ driveId: x.parentReference.driveId, id: x.id, name: x.name }));
+      lists.push(el('h3', {}, 'My files'), el('div', { style: 'display:grid;gap:6px' }, f.sort((a, b) => (/chronic/i.test(b.name) - /chronic/i.test(a.name)) || a.name.localeCompare(b.name)).map(pick)));
+    } catch (e) { lists.push(el('p', { class: 'banner' }, 'Could not read your OneDrive: ' + e.message)); }
+    try {
+      const sh = await (await graph('/me/drive/sharedWithMe')).json();
+      const f = (sh.value || []).map(x => x.remoteItem || x).filter(x => x.folder).map(x => ({ driveId: x.parentReference.driveId, id: x.id, name: x.name, shared: (x.shared && x.shared.owner && x.shared.owner.user && x.shared.owner.user.displayName) || 'a colleague' }));
+      if (f.length) lists.push(el('h3', {}, 'Shared with me'), el('div', { style: 'display:grid;gap:6px' }, f.map(pick)));
+    } catch { }
+    card.lastChild.replaceWith(el('div', {}, lists));
+  })().catch(e => { if (e.code === 'login') { AUTH.tok = null; showSetup(); } else toast(e.message); });
+}
+async function loadMe() {
+  const u = await (await graph('/me?$select=displayName,mail,userPrincipalName')).json();
+  AUTH.user = { name: u.displayName, email: u.mail || u.userPrincipalName, upn: u.userPrincipalName }; AUTH.save();
+  lsSet('hd-me', u.displayName || u.userPrincipalName);
+}
+async function connect() {
+  setSync('busy', 'Loading…');
+  $('#view').replaceChildren(el('div', { class: 'empty' }, 'Loading tickets…'));
+  try {
+    let meta; try { meta = JSON.parse(await FS.text(`${HD}/meta.json`)); } catch (e) { if (e.code === 'login') throw e; meta = { id: 'hd-' + rand(10), created: new Date().toISOString() }; await FS.write(`${HD}/meta.json`, JSON.stringify(meta)); }
+    STORE.rootId = meta.id; STORE.events.clear(); DAYCOUNT.clear();
+    try { for (const x of (await IDB.evAll(STORE.rootId)) || []) STORE.events.set(x.n, x.e); } catch { }
+    await loadEvents(true); STORE.lastFull = Date.now(); STORE.connected = true;
+    DB = fold();
+    if (!DB.settings.importer.machine && !DB.tickets.size) await emit('settings', null, { section: 'importer', value: { machine: MACHINE, label: (me() || 'First') + ' device' } });
+    const n = me(); if (n && !(DB.settings.agents || []).some(a => a.name === n)) await emit('settings', null, { section: 'agents', value: [...(DB.settings.agents || []), { name: n, email: AUTH.user ? AUTH.user.email : '', group: '', active: true }] });
+    render(true); setSync('ok', 'Synced'); poll();
+  } catch (e) {
+    if (e.code === 'login') return showSetup();
+    $('#view').replaceChildren(el('div', { class: 'setup card' }, el('h2', {}, 'Could not open the folder'), el('p', {}, e.message), el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: connect }, 'Try again'), el('button', { class: 'btn', type: 'button', onclick: () => { lsSet('hd-root', 'null'); showSetup(); } }, 'Choose another folder'))));
+    setSync('err', 'Error');
+  }
+}
+function chooseFolder() { lsSet('hd-root', 'null'); STORE.connected = false; showSetup(); }
+function accountDialog() {
+  const u = AUTH.user || {};
+  openDialog('Account', [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(u.name || me()), el('div', {}, el('b', {}, u.name || me() || '—'), el('div', { class: 'small muted' }, u.email || ''))),
+    el('div', { class: 'small muted' }, 'Folder: ', el('b', {}, FS.root ? FS.root.name : '—')),
+    INSTALL.prompt ? el('button', { class: 'btn', type: 'button', onclick: installApp }, '⬇ Install the app on this device') : el('div', { class: 'small muted' }, INSTALL.hint())],
+    [el('button', { class: 'btn', type: 'button', onclick: () => { closeDialog(); chooseFolder(); } }, 'Change folder'), FS.kind === 'graph' ? el('button', { class: 'btn danger', type: 'button', onclick: () => AUTH.signOut() }, 'Sign out') : null, el('button', { class: 'btn primary', type: 'button', onclick: closeDialog }, 'Close')]);
+}
+/* install as an app (PWA) */
+const INSTALL = { prompt: null, hint() { return /iphone|ipad/i.test(navigator.userAgent) ? 'To install on iPhone: Share button › “Add to Home Screen”.' : matchMedia('(display-mode: standalone)').matches ? 'Running as an installed app.' : 'To install: browser menu › “Install app” / “Add to Home screen”.'; } };
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); INSTALL.prompt = e; $('#installBtn').hidden = false; });
+async function installApp() { if (!INSTALL.prompt) return toast(INSTALL.hint()); INSTALL.prompt.prompt(); await INSTALL.prompt.userChoice; INSTALL.prompt = null; $('#installBtn').hidden = true; closeDialog(); }
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => { });
+
+/* =====================================================================
+   Start
+   ===================================================================== */
+$('#searchForm').addEventListener('submit', e => { e.preventDefault(); const q = $('#q').value.trim(); location.hash = '#/tickets?view=all' + (q ? '&q=' + encodeURIComponent(q) : ''); });
+$('#newBtn').onclick = () => DB ? newTicketDialog() : toast('Connect the shared folder first');
+$('#meBtn').onclick = () => accountDialog();
+$('#meBtn').onkeydown = e => { if (e.key === 'Enter') accountDialog(); };
+$('#installBtn').onclick = installApp;
+document.addEventListener('keydown', e => {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target.tagName || '').toLowerCase(); if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+  if (e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
+  if (CUR.view && CUR.view.keys && CUR.view.keys(e.key)) e.preventDefault();
+});
+window.addEventListener('focus', () => poll());
+setInterval(() => poll(), 20000);
+(async () => {
+  await IDB.open();
+  if (new URLSearchParams(location.search).has('demo') && navigator.storage && navigator.storage.getDirectory) { // offline test mode – browser storage, no sign-in
+    FS = LocalFS; LocalFS.root = await (await navigator.storage.getDirectory()).getDirectoryHandle('helpdesk-demo', { create: true });
+    if (!me()) lsSet('hd-me', 'Demo user'); return connect();
+  }
+  try { await AUTH.handleRedirect(); } catch (e) { toast(e.message); }
+  if (!AUTH.tok) return showSetup();
+  try { await loadMe(); } catch (e) { if (e.code === 'login') return showSetup(); toast(e.message); }
+  const root = JSON.parse(lsGet('hd-root', 'null') || 'null');
+  if (root && root.id) { FS.root = root; return connect(); }
+  showSetup();
+})();
+window.HD_TEST = { FS, emit, poll, importFile, get DB() { return DB; }, STORE, fold, runImporter };
+</script>
+</body>
+</html>
