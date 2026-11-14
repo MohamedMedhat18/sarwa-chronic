@@ -1317,16 +1317,28 @@ function adminView(r) {
     ai() {
       const a = Object.assign({ enabled: false, model: 'claude-opus-5-5' }, clone(S.ai || {}));
       const on = el('input', { type: 'checkbox', checked: !!a.enabled });
-      const keyIn = el('input', { type: 'password', value: lsGet('hd-aikey', ''), placeholder: 'sk-ant-...', autocomplete: 'off', style: 'width:100%' });
+      try { localStorage.removeItem('hd-aikey'); } catch { }   // old per-device keys are no longer used
+      const isAdmin = ME && ME.role === 'admin';
+      const keyIn = el('input', { type: 'password', placeholder: 'sk-ant-api03-…', autocomplete: 'off', spellcheck: 'false', dir: 'ltr', style: 'width:100%' });
+      const keyState = el('div', { class: 'small', style: 'margin:-4px 0 10px' }, 'Checking…');
+      const showKey = s => keyState.replaceChildren(s.configured ? el('span', { class: 'pill p-ok' }, '✓ Team key saved ' + s.hint) : el('span', { class: 'pill p-over' }, 'No key yet'), s.updated_at ? el('span', { class: 'muted' }, ' · ' + fmtDate(s.updated_at)) : null);
+      AI.call({ action: 'status' }).then(showKey).catch(e => keyState.textContent = e.message);
       const model = el('select', { onchange: e => a.model = e.target.value }, [['claude-opus-5-5', 'Claude Opus 5.5 — best reading'], ['claude-sonnet-5-5', 'Claude Sonnet 5.5 — cheaper'], ['claude-haiku-5-5', 'Claude Haiku 5.5 — cheapest']].map(m => opt(m[0], m[1], a.model)));
+      const saveKey = async e => {
+        const k = keyIn.value.trim(); if (!k) return keyIn.focus(); e.target.disabled = true; keyState.textContent = 'Checking the key with Anthropic…';
+        try { await AI.call({ action: 'set_key', key: k }); keyIn.value = ''; toast('Key works – saved for the whole team'); showKey(await AI.call({ action: 'status' })); }
+        catch (x) { keyState.replaceChildren(el('span', { style: 'color:var(--bad)' }, x.message)); }
+        e.target.disabled = false;
+      };
       return [el('h2', {}, 'AI reading of prescriptions'),
-        el('p', { class: 'small muted' }, 'When on, an "AI read from attachments" button appears in the Validate screen. It sends the ticket’s prescription and lab images to the Anthropic API, reads the medicines, doses and lab results, and fills the validation table. The assessor always reviews and makes the final decision.'),
-        el('label', { class: 'row', style: 'margin:8px 0' }, on, el('b', {}, 'Turn on AI reading')),
+        el('p', { class: 'small muted' }, 'When on, an "AI read from attachments" button appears in the Validate screen. It reads the ticket’s prescription and lab images, fills the medicines, doses and lab results into the validation table, and proposes a decision. The assessor always reviews and makes the final decision.'),
+        el('label', { class: 'row', style: 'margin:8px 0' }, on, el('b', {}, 'Turn on AI reading for the team')),
         el('label', { class: 'blk' }, 'Model', model),
-        el('label', { class: 'blk' }, 'Anthropic API key (kept on THIS device only)', keyIn),
-        el('p', { class: 'small muted' }, 'The key is stored only in this browser — not shared with the team, not in the folder. Each device needs its own key, from console.anthropic.com. Reading sends member prescription images to the Anthropic API (the same AI the GlobeMed Chronic tool already uses) and uses paid API credit.'),
-        el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { lsSet('hd-aikey', keyIn.value.trim()); a.enabled = on.checked; await save('ai', { enabled: a.enabled, model: a.model }); toast('Saved'); } }, 'Save'),
-          lsGet('hd-aikey', '') ? el('button', { class: 'btn', type: 'button', onclick: () => { lsSet('hd-aikey', ''); keyIn.value = ''; toast('Key removed from this device'); } }, 'Remove key from this device') : null)];
+        el('button', { class: 'btn primary', type: 'button', onclick: async () => { a.enabled = on.checked; await save('ai', { enabled: a.enabled, model: a.model }); } }, 'Save'),
+        el('h2', { style: 'margin-top:18px' }, 'Anthropic API key'), keyState,
+        isAdmin ? [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, keyIn, el('button', { class: 'btn', type: 'button', onclick: saveKey }, 'Check & save')),
+          el('p', { class: 'small muted' }, 'One key for the whole team, kept on the server – it never reaches phones or browsers, so nobody else needs a key. Get it at console.anthropic.com › API keys › Create key (it starts with sk-ant-). The account needs API credit (Billing). Reading sends the member’s prescription images to Anthropic.')]
+          : el('p', { class: 'small muted' }, 'Only an admin can set the key.')];
     },
     autoack() {
       const a = Object.assign(clone(DEFAULTS.autoAck), clone(S.autoAck || {}));
@@ -1524,15 +1536,19 @@ function decisionEmail(t, V, R, lang) {
   return out.join('');
 }
 async function blobToB64(blob) { return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(new Error('read failed')); r.readAsDataURL(blob); }); }
+// AI reading runs on the server with ONE team key (Admin › AI reading); browsers never see the key.
 const AI = {
-  key: () => lsGet('hd-aikey', ''),
   model: () => (DB.settings.ai && DB.settings.ai.model) || 'claude-opus-5-5',
-  async extract(blocks) {
-    const r = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': AI.key(), 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }, body: JSON.stringify({ model: AI.model(), max_tokens: 8000, messages: [{ role: 'user', content: blocks }] }) });
-    let j; try { j = await r.json(); } catch { throw new Error('API returned ' + r.status); }
-    if (!r.ok) throw new Error((j.error && j.error.message) || ('API error ' + r.status));
-    const text = (j.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-    const m = text.match(/\{[\s\S]*\}/); if (!m) throw new Error('AI did not return readable data');
+  on: () => !!(DB.settings.ai && DB.settings.ai.enabled),
+  async call(body) {
+    const { data, error } = await SB.functions.invoke('ai', { body });
+    if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { } throw new Error(msg); }
+    if (data && data.error) throw new Error(data.error);
+    return data;
+  },
+  async extract(files, prompt) {
+    const r = await AI.call({ action: 'read', model: AI.model(), files, prompt });
+    const m = String(r.text || '').match(/\{[\s\S]*\}/); if (!m) throw new Error('AI did not return readable data');
     return JSON.parse(m[0]);
   }
 };
@@ -1566,23 +1582,20 @@ function validationDialog(no) {
   let resultBox, aiStatusEl;
   function aiStatus(msg, busy) { if (aiStatusEl) { aiStatusEl.textContent = msg || ''; aiStatusEl.style.color = busy ? 'var(--muted)' : 'var(--text)'; } }
   function aiBar() {
-    aiStatusEl = el('span', { class: 'small muted', style: 'overflow-wrap:anywhere;flex:1;text-align:right' }, AI.key() ? '' : 'Add your Anthropic API key in Admin › AI reading to turn this on.');
+    aiStatusEl = el('span', { class: 'small muted', style: 'overflow-wrap:anywhere;flex:1;text-align:right' }, AI.on() ? '' : 'AI reading is off – an admin turns it on in Admin › AI reading.');
     return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;background:var(--accent-soft);border-radius:8px;padding:6px 10px' },
-      el('div', { class: 'row' }, el('button', { class: 'btn sm primary', type: 'button', disabled: !AI.key(), onclick: runAI }, '✨ AI read from attachments'), el('span', { class: 'small muted' }, 'Beta — AI fills the table, the assessor decides.')),
+      el('div', { class: 'row' }, el('button', { class: 'btn sm primary', type: 'button', disabled: !AI.on(), onclick: runAI }, '✨ AI read from attachments'), el('span', { class: 'small muted' }, 'Beta — AI fills the table, the assessor decides.')),
       aiStatusEl);
   }
-  async function runAI() {
-    if (!AI.key()) { toast('Add your Anthropic API key in Admin › AI reading'); return; }
+  async function runAI(ev) {
+    if (!AI.on()) { toast('AI reading is off – see Admin › AI reading'); return; }
     const tk = DB.tickets.get(no); const atts = [];
-    for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/|application\/pdf)/.test(a.mime || '')) atts.push(a);
+    for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) atts.push({ path: a.path, mime: a.mime });
     if (!atts.length) { toast('No readable images or PDFs on this ticket'); return; }
-    aiStatus('Reading ' + atts.length + ' file(s) with AI…', true);
+    const btn = ev && ev.target; if (btn) btn.disabled = true;
+    aiStatus('Reading ' + Math.min(atts.length, 12) + ' file(s) with AI… (up to a minute)', true);
     try {
-      const blocks = []; let n = 0;
-      for (const a of atts) { if (n >= 12) break; try { const f = await FS.file(a.path); if (f.size > 6 * 1048576) continue; const b64 = await blobToB64(f); blocks.push(a.mime === 'application/pdf' ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } } : { type: 'image', source: { type: 'base64', media_type: a.mime, data: b64 } }); n++; } catch { } }
-      if (!blocks.length) { aiStatus('Could not load the files (still syncing?). Try again shortly.'); return; }
-      blocks.push({ type: 'text', text: aiPrompt(V.diagnosis) });
-      const data = await AI.extract(blocks);
+      const data = await AI.extract(atts.slice(0, 16), aiPrompt(V.diagnosis));
       if (data.diagnosis && !V.diagnosis) V.diagnosis = data.diagnosis;
       const okTest = new Set(Object.keys(TESTS)), okCls = new Set(CLASSES.map(c => c[0])), okUnit = new Set(UNITS.map(u => u[0])), okDec = new Set(Object.keys(DEC)), okRes = ['high', 'positive', 'normal', 'negative'];
       for (const l of (data.labs || [])) if (okTest.has(l.test)) V.labs.push({ test: l.test, value: String(l.value || ''), date: /^\d{4}-\d{2}-\d{2}$/.test(l.date || '') ? l.date : '', result: okRes.includes(l.result) ? l.result : '' });
@@ -1592,6 +1605,7 @@ function validationDialog(no) {
       draw();
       aiStatus('AI filled ' + items.length + ' item(s) and ' + (data.labs || []).length + ' lab(s)' + (data.member ? ' · card on form: ' + data.member : '') + '. Check every line before sending — AI can misread.');
     } catch (e) { aiStatus('AI error: ' + e.message); }
+    finally { if (btn) btn.disabled = false; }
   }
   function recalc() { const R = computeValidation(V); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
   function resRow(x) { return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'), el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty), el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)), el('td', { class: 'n' }, x.final === 'APPROVED' ? dmy(x.from) + ' → ' + dmy(x.to) : '—')); }
