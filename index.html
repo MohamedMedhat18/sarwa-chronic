@@ -618,6 +618,7 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'ai.request': if (!t) return; t.aiRequested = e.ts; t.timeline.push({ ts: e.ts, by: e.by, text: 'Asked Claude to read the attachments' }); break;
     case 'ai.read': if (!t) return; t.aiRead = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: d.error ? 'AI reader: ' + d.error : 'AI read the prescription: ' + ((d.data && d.data.items) || []).length + ' item(s), ' + ((d.data && d.data.labs) || []).length + ' lab(s)' }); break;
     case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
     case 'export': for (const no of d.tickets || []) { const x = S.tickets.get(no); if (x) x.exportedAt = e.ts; } break;
@@ -1594,9 +1595,22 @@ function validationDialog(no) {
     if (data.noForm === true) V.noForm = true;
     return items.length;
   }
-  const RD = t.aiRead; let prefilled = false;
+  let RD = t.aiRead; let prefilled = false;
   if (!t.validation && RD && RD.data) { fillFromAi(RD.data); prefilled = true; }
-  const readerNote = () => !RD ? 'Not read yet – Claude reads new prescriptions automatically every few minutes.'
+  const tableEmpty = () => !V.labs.length && V.items.every(i => !i.name && !i.cls);
+  // Claude's reading can arrive while this screen is open (live) – show it straight away
+  const watch = setInterval(() => {
+    const dlg = $('#dlg'); if (!dlg.open || !box.isConnected) { clearInterval(watch); return; }
+    const now = (DB.tickets.get(no) || {}).aiRead;
+    if (now && now !== RD && (!RD || now.at !== RD.at)) {
+      RD = now; prefilled = false;
+      if (RD.data && tableEmpty() && !t.validation) { V.labs = []; V.items = [{ name: '', cls: '' }]; fillFromAi(RD.data); prefilled = true; }
+      draw(); toast('Claude’s reading arrived');
+    }
+  }, 3000);
+  const requested = () => { const tk = DB.tickets.get(no) || {}; return tk.aiRequested && (!RD || tk.aiRequested > RD.at); };
+  const readerNote = () => requested() ? 'Sent to Claude – the reading appears here by itself within about 10 minutes (keep working meanwhile).'
+    : !RD ? 'Not read yet – Claude reads new prescriptions automatically every 10 minutes.'
     : RD.error ? 'Claude AI reader (' + rel(RD.at) + '): ' + RD.error
     : (prefilled ? 'Pre-filled by Claude AI reader ' : 'Read by Claude AI reader ') + rel(RD.at) + ' – ' + ((RD.data.items || []).length) + ' item(s), ' + ((RD.data.labs || []).length) + ' lab(s)' + (RD.data.member ? ' · card on form: ' + RD.data.member : '') + (RD.notes ? ' · ' + RD.notes : '') + '. Check every line before sending.';
   function aiBar() {
@@ -1604,12 +1618,20 @@ function validationDialog(no) {
     const useBtn = RD && RD.data && !prefilled ? el('button', { class: 'btn sm', type: 'button', onclick: () => { if (!confirm('Replace the table with the AI reading?')) return; V.labs = []; V.items = [{ name: '', cls: '' }]; const n = fillFromAi(RD.data); prefilled = true; draw(); aiStatus('AI reading applied: ' + n + ' item(s). Check every line.'); } }, 'Use AI reading') : null;
     return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;background:var(--accent-soft);border-radius:8px;padding:6px 10px' },
       el('div', { class: 'row' }, el('span', { class: 'pill', style: 'background:var(--accent);color:#fff' }, '✨ Claude AI'), useBtn,
-        AI.on() ? el('button', { class: 'btn sm', type: 'button', onclick: runAI, title: 'Read now with the team API key' }, 'Read now') : null,
+        el('button', { class: 'btn sm', type: 'button', onclick: readNow, title: 'Ask Claude to read this ticket now' }, RD ? 'Read again' : 'Read now'),
         el('span', { class: 'small muted' }, 'AI fills the table, the assessor decides.')),
       aiStatusEl);
   }
+  // with a team API key: read instantly on the server; without one: ask the Claude AI reader to do this ticket next
+  async function readNow(ev) {
+    if (AI.on()) {
+      if (AI.keyOk == null) { try { AI.keyOk = !!(await AI.call({ action: 'status' })).configured; } catch { AI.keyOk = false; } }
+      if (AI.keyOk) return runAI(ev);
+    }
+    if (requested()) { toast('Already sent to Claude'); return; }
+    try { await emit('ai.request', no, {}); aiStatus(readerNote()); toast('Sent to Claude'); } catch (e) { toast(e.message); }
+  }
   async function runAI(ev) {
-    if (!AI.on()) { toast('AI reading is off – see Admin › AI reading'); return; }
     const tk = DB.tickets.get(no); const atts = [];
     for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) atts.push({ path: a.path, mime: a.mime });
     if (!atts.length) { toast('No readable images or PDFs on this ticket'); return; }
@@ -1781,7 +1803,22 @@ function accountDialog() {
 const INSTALL = { prompt: null, hint() { return /iphone|ipad/i.test(navigator.userAgent) ? 'To install on iPhone: Share button › “Add to Home Screen”.' : matchMedia('(display-mode: standalone)').matches ? 'Running as an installed app.' : 'To install: browser menu › “Install app” / “Add to Home screen”.'; } };
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); INSTALL.prompt = e; $('#installBtn').hidden = false; });
 async function installApp() { if (!INSTALL.prompt) return toast(INSTALL.hint()); INSTALL.prompt.prompt(); await INSTALL.prompt.userChoice; INSTALL.prompt = null; $('#installBtn').hidden = true; closeDialog(); }
-if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) navigator.serviceWorker.register('sw.js').catch(() => { });
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
+}
+// new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
+const APP_VERSION = '2026-11-14d';
+async function checkVersion() {
+  try {
+    const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
+    const m = h.match(/const APP_VERSION = '([^']+)'/);
+    if (m && m[1] !== APP_VERSION) {
+      const busy = $('#dlg').open || [...document.querySelectorAll('.ce, textarea')].some(x => (x.value || x.textContent || '').trim());
+      if (!busy) location.reload(); else if (!checkVersion.told) { checkVersion.told = true; toast('A new version of the app is ready – it loads next time you open it.'); }
+    }
+  } catch { }
+}
+setInterval(checkVersion, 5 * 60000); window.addEventListener('focus', checkVersion);
 
 /* =====================================================================
    Start
