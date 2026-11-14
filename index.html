@@ -618,6 +618,7 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'ai.read': if (!t) return; t.aiRead = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: d.error ? 'AI reader: ' + d.error : 'AI read the prescription: ' + ((d.data && d.data.items) || []).length + ' item(s), ' + ((d.data && d.data.labs) || []).length + ' lab(s)' }); break;
     case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
     case 'export': for (const no of d.tickets || []) { const x = S.tickets.get(no); if (x) x.exportedAt = e.ts; } break;
     case 'email.ignored': S.processed.add(d.key); if (!d.silent) S.ignored.set(d.key, { ...d, ts: e.ts }); if (d.mid) S.mids.add(String(d.mid).toLowerCase()); break;
@@ -907,6 +908,7 @@ function ticketList(r) {
     const badges = [];
     if (!t.agent && t.status === 'Open' && !t.lastOut) badges.push(el('span', { class: 'pill p-new' }, 'New'));
     if (VIEW_DEFS.responded.f(t)) badges.push(el('span', { class: 'pill p-resp' }, 'Provider responded'));
+    if (t.aiRead && t.aiRead.data && !t.validation) badges.push(el('span', { class: 'pill', style: 'background:var(--accent-soft);color:var(--accent)', title: 'Claude read the prescription – open Validate to review' }, '✨ AI read'));
     if (s.overdue) badges.push(el('span', { class: 'pill p-over' }, 'Overdue'));
     else if (s.frPending && Date.now() > s.frDue) badges.push(el('span', { class: 'pill p-over' }, 'First response overdue'));
     else if (s.dueToday) badges.push(el('span', { class: 'pill p-due' }, 'Due today'));
@@ -1581,10 +1583,29 @@ function validationDialog(no) {
   const sel = (obj, k, opts, none) => el('select', { onchange: e => { obj[k] = e.target.value; draw(); } }, none != null ? opt('', none, obj[k] || '') : null, opts.map(o => Array.isArray(o) ? opt(o[0], o[1], obj[k]) : opt(o, o, obj[k])));
   let resultBox, aiStatusEl;
   function aiStatus(msg, busy) { if (aiStatusEl) { aiStatusEl.textContent = msg || ''; aiStatusEl.style.color = busy ? 'var(--muted)' : 'var(--text)'; } }
+  function fillFromAi(data) {
+    if (data.diagnosis && !V.diagnosis) V.diagnosis = String(data.diagnosis).slice(0, 500);
+    const okTest = new Set(Object.keys(TESTS)), okCls = new Set(CLASSES.map(c => c[0])), okUnit = new Set(UNITS.map(u => u[0])), okDec = new Set(Object.keys(DEC)), okRes = ['high', 'positive', 'normal', 'negative'];
+    for (const l of (data.labs || [])) if (okTest.has(l.test)) V.labs.push({ test: l.test, value: String(l.value || ''), date: /^\d{4}-\d{2}-\d{2}$/.test(l.date || '') ? l.date : '', result: okRes.includes(l.result) ? l.result : '' });
+    const items = (data.items || []);
+    if (items.length && V.items.length === 1 && !V.items[0].name && !V.items[0].cls) V.items = [];
+    for (const it of items) V.items.push({ name: String(it.name || '').slice(0, 200), cls: okCls.has(it.cls) ? it.cls : '', dose: +it.dose || 1, unit: okUnit.has(it.unit) ? it.unit : 'tablet', times: +it.times || 1, per: ['day', 'week', 'month'].includes(it.per) ? it.per : 'day', prior: 0, unreadable: it.decision === 'UNREADABLE', final: okDec.has(it.decision) ? it.decision : '', finalQty: '', months: '', reason: String(it.reason || '').slice(0, 200), ai: true });
+    if (data.mismatch === true) V.mismatch = true;
+    if (data.noForm === true) V.noForm = true;
+    return items.length;
+  }
+  const RD = t.aiRead; let prefilled = false;
+  if (!t.validation && RD && RD.data) { fillFromAi(RD.data); prefilled = true; }
+  const readerNote = () => !RD ? 'Not read yet – Claude reads new prescriptions automatically every few minutes.'
+    : RD.error ? 'Claude AI reader (' + rel(RD.at) + '): ' + RD.error
+    : (prefilled ? 'Pre-filled by Claude AI reader ' : 'Read by Claude AI reader ') + rel(RD.at) + ' – ' + ((RD.data.items || []).length) + ' item(s), ' + ((RD.data.labs || []).length) + ' lab(s)' + (RD.data.member ? ' · card on form: ' + RD.data.member : '') + (RD.notes ? ' · ' + RD.notes : '') + '. Check every line before sending.';
   function aiBar() {
-    aiStatusEl = el('span', { class: 'small muted', style: 'overflow-wrap:anywhere;flex:1;text-align:right' }, AI.on() ? '' : 'AI reading is off – an admin turns it on in Admin › AI reading.');
+    aiStatusEl = el('span', { class: 'small', style: 'overflow-wrap:anywhere;flex:1;text-align:right', dir: 'auto' }, readerNote());
+    const useBtn = RD && RD.data && !prefilled ? el('button', { class: 'btn sm', type: 'button', onclick: () => { if (!confirm('Replace the table with the AI reading?')) return; V.labs = []; V.items = [{ name: '', cls: '' }]; const n = fillFromAi(RD.data); prefilled = true; draw(); aiStatus('AI reading applied: ' + n + ' item(s). Check every line.'); } }, 'Use AI reading') : null;
     return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;background:var(--accent-soft);border-radius:8px;padding:6px 10px' },
-      el('div', { class: 'row' }, el('button', { class: 'btn sm primary', type: 'button', disabled: !AI.on(), onclick: runAI }, '✨ AI read from attachments'), el('span', { class: 'small muted' }, 'Beta — AI fills the table, the assessor decides.')),
+      el('div', { class: 'row' }, el('span', { class: 'pill', style: 'background:var(--accent);color:#fff' }, '✨ Claude AI'), useBtn,
+        AI.on() ? el('button', { class: 'btn sm', type: 'button', onclick: runAI, title: 'Read now with the team API key' }, 'Read now') : null,
+        el('span', { class: 'small muted' }, 'AI fills the table, the assessor decides.')),
       aiStatusEl);
   }
   async function runAI(ev) {
@@ -1596,14 +1617,9 @@ function validationDialog(no) {
     aiStatus('Reading ' + Math.min(atts.length, 12) + ' file(s) with AI… (up to a minute)', true);
     try {
       const data = await AI.extract(atts.slice(0, 16), aiPrompt(V.diagnosis));
-      if (data.diagnosis && !V.diagnosis) V.diagnosis = data.diagnosis;
-      const okTest = new Set(Object.keys(TESTS)), okCls = new Set(CLASSES.map(c => c[0])), okUnit = new Set(UNITS.map(u => u[0])), okDec = new Set(Object.keys(DEC)), okRes = ['high', 'positive', 'normal', 'negative'];
-      for (const l of (data.labs || [])) if (okTest.has(l.test)) V.labs.push({ test: l.test, value: String(l.value || ''), date: /^\d{4}-\d{2}-\d{2}$/.test(l.date || '') ? l.date : '', result: okRes.includes(l.result) ? l.result : '' });
-      const items = (data.items || []);
-      if (items.length && V.items.length === 1 && !V.items[0].name && !V.items[0].cls) V.items = [];
-      for (const it of items) V.items.push({ name: String(it.name || '').slice(0, 200), cls: okCls.has(it.cls) ? it.cls : '', dose: +it.dose || 1, unit: okUnit.has(it.unit) ? it.unit : 'tablet', times: +it.times || 1, per: ['day', 'week', 'month'].includes(it.per) ? it.per : 'day', prior: 0, unreadable: it.decision === 'UNREADABLE', final: okDec.has(it.decision) ? it.decision : '', finalQty: '', months: '', reason: String(it.reason || '').slice(0, 200), ai: true });
+      const n = fillFromAi(data);
       draw();
-      aiStatus('AI filled ' + items.length + ' item(s) and ' + (data.labs || []).length + ' lab(s)' + (data.member ? ' · card on form: ' + data.member : '') + '. Check every line before sending — AI can misread.');
+      aiStatus('AI filled ' + n + ' item(s) and ' + (data.labs || []).length + ' lab(s)' + (data.member ? ' · card on form: ' + data.member : '') + '. Check every line before sending — AI can misread.');
     } catch (e) { aiStatus('AI error: ' + e.message); }
     finally { if (btn) btn.disabled = false; }
   }
