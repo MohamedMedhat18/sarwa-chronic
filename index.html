@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sarwa Chronic</title>
 <link rel="manifest" href="manifest.webmanifest">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <meta name="theme-color" content="#13353a">
 <link rel="icon" href="icon-192.png">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -180,6 +181,8 @@ table.t td.n{font-variant-numeric:tabular-nums;white-space:nowrap}
 .setup{max-width:640px;margin:40px auto;padding:24px}
 .setup h2{margin-top:0}
 .setup ol{padding-left:18px} .setup li{margin:6px 0}
+.setup form label{display:grid;gap:4px;font-size:13px} .setup form input{width:100%;box-sizing:border-box;padding:9px 10px;font-size:15px}
+#meAv.av{flex:none}
 dialog{border:0;border-radius:14px;padding:0;background:var(--surface);color:var(--text);width:min(620px,calc(100vw - 24px));max-height:calc(100vh - 24px);box-shadow:0 20px 60px rgba(0,0,0,.35)}
 dialog::backdrop{background:rgba(10,15,20,.5)}
 .dh{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-weight:650;font-size:16px}
@@ -261,7 +264,7 @@ const fmtSize = b => b < 1024 ? b + ' B' : b < 1048576 ? Math.round(b / 1024) + 
 const normDigits = s => String(s || '').replace(/[٠-٩]/g, d => d.charCodeAt(0) - 0x660).replace(/[۰-۹]/g, d => d.charCodeAt(0) - 0x6F0);
 const extOf = n => { const m = String(n || '').toLowerCase().match(/\.([a-z0-9]{1,6})$/); return m ? m[1] : ''; };
 const rand = n => { const a = new Uint8Array(n); crypto.getRandomValues(a); return [...a].map(x => (x % 36).toString(36)).join(''); };
-const safeName = n => String(n || 'file').replace(/[\\/:*?"<>|\x00-\x1f]/g, '_').replace(/\s+/g, ' ').trim().slice(-90) || 'file';
+const safeName = n => { const s = String(n || 'file'); const m = s.match(/(\.[A-Za-z0-9]{1,6})$/); const ext = m ? m[1].toLowerCase() : ''; const base = (m ? s.slice(0, -m[1].length) : s).replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_').replace(/^[_.]+|_+$/g, '').slice(-70); return (base || 'file') + ext; }; // storage keys must be plain ASCII
 const clone = o => JSON.parse(JSON.stringify(o));
 function hashStr(str) { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h >>> 0; }
 const AVC = ['#0d6b6b', '#2f6fb0', '#8a4fb5', '#b0532f', '#2f8a4f', '#a0742a', '#3d5a99', '#b03a6b'];
@@ -469,98 +472,35 @@ function splitQuoted(text) {
 }
 
 /* =====================================================================
-   Microsoft 365 sign-in (OAuth 2.0 authorization code + PKCE, no password ever touches this app)
+   Cloud back end (Supabase, EU): team sign-in, database, live updates, file storage
    ===================================================================== */
-const CONFIG = { tenant: '6dca0c7b-1d89-47a2-860a-9c4d9c3c4594', clientId: 'f6ad1c26-8b80-4737-9186-a7296caf4a43', scopes: 'openid profile offline_access User.Read Files.ReadWrite.All' };
-const REDIRECT = location.origin + location.pathname;
-const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const AUTH = {
-  tok: JSON.parse(lsGet('hd-tok', 'null') || 'null'),
-  user: JSON.parse(lsGet('hd-user', 'null') || 'null'),
-  save() { lsSet('hd-tok', JSON.stringify(this.tok)); lsSet('hd-user', JSON.stringify(this.user)); },
-  async login(hint) {
-    const v = b64url(crypto.getRandomValues(new Uint8Array(32)));
-    const ch = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)));
-    const st = rand(16); try { sessionStorage.setItem('pkce', JSON.stringify({ v, st, back: location.hash })); } catch { }
-    const p = new URLSearchParams({ client_id: CONFIG.clientId, response_type: 'code', redirect_uri: REDIRECT, scope: CONFIG.scopes, code_challenge: ch, code_challenge_method: 'S256', state: st, response_mode: 'query' });
-    if (hint) p.set('login_hint', hint); else p.set('prompt', 'select_account');
-    location.assign(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/authorize?` + p);
-  },
-  async handleRedirect() {
-    const q = new URLSearchParams(location.search); if (!q.get('code') && !q.get('error')) return false;
-    let saved = null; try { saved = JSON.parse(sessionStorage.getItem('pkce') || 'null'); sessionStorage.removeItem('pkce'); } catch { }
-    history.replaceState(null, '', REDIRECT + ((saved && saved.back) || ''));
-    if (q.get('error')) throw new Error(q.get('error_description') || q.get('error'));
-    if (!saved || saved.st !== q.get('state')) throw new Error('The sign-in took too long – please try again.');
-    await this.token({ grant_type: 'authorization_code', code: q.get('code'), code_verifier: saved.v, redirect_uri: REDIRECT });
-    return true;
-  },
-  async token(params) {
-    const r = await fetch(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/token`, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: CONFIG.clientId, scope: CONFIG.scopes, ...params }) });
-    const j = await r.json(); if (!r.ok) throw Object.assign(new Error(j.error_description || j.error || 'Sign-in failed'), { code: j.error });
-    this.tok = { at: j.access_token, rt: j.refresh_token || (this.tok && this.tok.rt), exp: Date.now() + (j.expires_in - 120) * 1000 }; this.save(); return this.tok.at;
-  },
-  refreshing: null,
-  async access() {
-    if (this.tok && this.tok.at && Date.now() < this.tok.exp) return this.tok.at;
-    if (!this.tok || !this.tok.rt) throw Object.assign(new Error('Not signed in'), { code: 'login' });
-    if (!this.refreshing) this.refreshing = this.token({ grant_type: 'refresh_token', refresh_token: this.tok.rt }).finally(() => { this.refreshing = null; });
-    try { return await this.refreshing; } catch (e) { this.tok = null; this.save(); throw Object.assign(new Error('Please sign in again'), { code: 'login' }); }
-  },
-  signOut() { this.tok = null; this.user = null; this.save(); lsSet('hd-me', ''); location.assign(`https://login.microsoftonline.com/${CONFIG.tenant}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(REDIRECT)}`); }
-};
-async function graph(path, opts = {}) {
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const at = await AUTH.access();
-    const r = await fetch(path.startsWith('http') ? path : 'https://graph.microsoft.com/v1.0' + path, { ...opts, headers: { Authorization: 'Bearer ' + at, ...(opts.headers || {}) } });
-    if (r.status === 401 && attempt === 0) { AUTH.tok.exp = 0; continue; }
-    if (r.status === 429 || r.status === 503 || r.status === 504) { await new Promise(x => setTimeout(x, (+r.headers.get('Retry-After') || 2) * 1000)); continue; }
-    if (!r.ok) { let m = 'Microsoft 365 error ' + r.status; try { const j = await r.json(); m = (j.error && (j.error.message || j.error.code)) || m; } catch { } throw Object.assign(new Error(m), { status: r.status, name: r.status === 404 ? 'NotFoundError' : r.status === 403 ? 'NotAllowedError' : 'GraphError' }); }
-    return r;
-  }
-  throw new Error('Microsoft 365 is busy – trying again shortly');
+const SUPA = { url: 'https://dqjkmhorcusaynbmjcxx.supabase.co', anon: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRxamttaG9yY3VzYXluYm1qY3h4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ2ODIyOTMsImV4cCI6MjExMDI1ODI5M30.HpHZlQAGS66Je1CMJpe9vj_yJ9OQLjVFLg3na7GzWto', bucket: 'chronic' };
+const SB = window.supabase ? window.supabase.createClient(SUPA.url, SUPA.anon, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'sarwa-chronic-auth' } }) : null;
+let ME = null;        // { id, name, email, role, active }
+let TEAM = [];        // all profiles
+async function teamCall(body) {
+  const { data, error } = await SB.functions.invoke('team', { body });
+  if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { } throw new Error(msg); }
+  if (data && data.error) throw new Error(data.error);
+  return data;
 }
-
-/* =====================================================================
-   Shared folder on SharePoint / OneDrive (Microsoft Graph) – or, for testing (?demo), the browser's private storage
-   ===================================================================== */
-const encPath = p => String(p || '').split('/').filter(Boolean).map(encodeURIComponent).join('/');
-const SEL = '$select=id,name,size,lastModifiedDateTime,file,folder,@microsoft.graph.downloadUrl';
-const GraphFS = {
-  kind: 'graph', root: null, // { driveId, id, name, webUrl }
-  base(path) { const p = encPath(path); return `/drives/${this.root.driveId}/items/${this.root.id}` + (p ? `:/${p}:` : ''); },
+async function loadTeam() { const { data, error } = await SB.from('profiles').select('id,name,email,role,active,created_at').order('name'); if (error) throw error; TEAM = data || []; }
+// files (attachments, original emails, reply attachments) in the private "chronic" bucket
+const FS = {
+  kind: 'cloud',
   async write(path, data) {
     const blob = data instanceof Blob ? data : new Blob([data]);
-    if (blob.size <= 3.5 * 1048576) { await graph(this.base(path) + '/content', { method: 'PUT', body: blob, headers: { 'Content-Type': 'application/octet-stream' } }); return; }
-    const s = await (await graph(this.base(path) + '/createUploadSession', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ item: { '@microsoft.graph.conflictBehavior': 'replace' } }) })).json();
-    const CH = 3276800;
-    for (let o = 0; o < blob.size; o += CH) { const part = blob.slice(o, Math.min(o + CH, blob.size)); const r = await fetch(s.uploadUrl, { method: 'PUT', headers: { 'Content-Range': `bytes ${o}-${o + part.size - 1}/${blob.size}` }, body: part }); if (!r.ok) throw new Error('Upload failed (' + r.status + ')'); }
+    const { error } = await SB.storage.from(SUPA.bucket).upload(path, blob, { upsert: true, contentType: blob.type || mimeFromName(path) });
+    if (error) throw new Error('Upload failed: ' + error.message);
   },
   async file(path) {
-    const it = await (await graph(this.base(path) + '?' + SEL)).json();
-    const r = await fetch(it['@microsoft.graph.downloadUrl']); if (!r.ok) throw new Error('Download failed (' + r.status + ')');
-    return new File([await r.blob()], it.name, { lastModified: Date.parse(it.lastModifiedDateTime) || Date.now(), type: mimeFromName(it.name) });
+    const { data, error } = await SB.storage.from(SUPA.bucket).download(path);
+    if (error) { const e = new Error('Download failed: ' + (error.message || path)); e.name = 'NotFoundError'; throw e; }
+    const name = String(path).split('/').pop();
+    return new File([data], name, { type: data.type && data.type !== 'application/octet-stream' ? data.type : mimeFromName(name) });
   },
-  async text(path) { return (await this.file(path)).text(); },
-  async list(path) {
-    const out = []; let url = this.base(path) + '/children?$top=999&' + SEL;
-    try {
-      while (url) { const j = await (await graph(url)).json(); for (const x of j.value || []) out.push({ name: x.name, kind: x.folder ? 'directory' : 'file', childCount: x.folder ? x.folder.childCount : 0, size: x.size, mtime: x.lastModifiedDateTime, url: x['@microsoft.graph.downloadUrl'] }); url = j['@odata.nextLink'] || ''; }
-    } catch (e) { if (e.status === 404) return []; throw e; }
-    return out;
-  },
-  async fetchText(entry) { const r = await fetch(entry.url); if (!r.ok) throw new Error('Download failed'); return r.text(); }
+  async text(path) { return (await this.file(path)).text(); }
 };
-const LocalFS = { // same interface on the browser's private storage (demo / testing only)
-  kind: 'local', root: null,
-  async dir(path, create = true) { let h = this.root; for (const p of String(path).split('/').filter(Boolean)) h = await h.getDirectoryHandle(p, { create }); return h; },
-  async write(path, data) { const parts = path.split('/'); const name = parts.pop(); const d = await this.dir(parts.join('/')); const fh = await d.getFileHandle(name, { create: true }); const w = await fh.createWritable(); await w.write(data); await w.close(); },
-  async file(path) { const parts = path.split('/'); const name = parts.pop(); const d = await this.dir(parts.join('/'), false); return (await d.getFileHandle(name)).getFile(); },
-  async text(path) { return (await this.file(path)).text(); },
-  async list(path) { let d; try { d = await this.dir(path, false); } catch (e) { if (e.name === 'NotFoundError' || e.name === 'TypeMismatchError') return []; throw e; } const out = []; for await (const [name, h] of d.entries()) { let childCount = 0; if (h.kind === 'directory') for await (const _ of h.keys()) childCount++; out.push({ name, kind: h.kind, handle: h, childCount }); } return out; },
-  async fetchText(entry) { return (await entry.handle.getFile()).text(); }
-};
-let FS = GraphFS;
 const IDB = {
   db: null,
   open() { return new Promise(res => { try { const rq = indexedDB.open('chronic-helpdesk', 1); rq.onupgradeneeded = () => { const d = rq.result; d.createObjectStore('kv'); d.createObjectStore('ev'); }; rq.onsuccess = () => { this.db = rq.result; res(true); }; rq.onerror = () => res(false); rq.onblocked = () => res(false); } catch { res(false); } }); },
@@ -573,13 +513,13 @@ const IDB = {
 };
 
 /* =====================================================================
-   Event store – every change is a small JSON file in _helpdesk/events/<day>/
-   (append-only, so several people can work at once without conflicts)
+   Event store – every change is one row in the "events" table
+   (append-only, so the whole team can work at once without conflicts; new rows arrive live)
    ===================================================================== */
-const HD = '_helpdesk';
-const STORE = { events: new Map(), rootId: '', lastFull: 0, polling: false, connected: false };
+const HD = 'hd';
+const STORE = { events: new Map(), rootId: 'sb-dqjkmhorcusaynbmjcxx', maxSeq: 0, polling: false, connected: false, live: false };
 const MACHINE = lsGet('hd-machine', '') || (() => { const m = 'pc-' + rand(8); lsSet('hd-machine', m); return m; })();
-const me = () => lsGet('hd-me', '');
+const me = () => (ME && (ME.name || ME.email)) || '';
 const DEFAULTS = {
   statuses: ['Open', 'Pending', 'Waiting on provider', 'Resolved', 'Closed'],
   paused: ['Pending', 'Waiting on provider'],
@@ -616,13 +556,18 @@ let DB = null; // folded state
 
 async function emit(type, t, d) {
   const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
-  const e = { id, ts, by: me() || 'Unknown', pc: MACHINE, type, t: t || null, d: d || {} };
-  const name = id + '.json';
-  await FS.write(`${HD}/events/${ts.slice(0, 10)}/${name}`, new Blob([JSON.stringify(e)], { type: 'application/json' }));
-  STORE.events.set(name, e); IDB.evPut(STORE.rootId, [[name, e]]).catch(() => { });
+  const sys = type === 'msg.in' || type === 'email.ignored' || (type === 'ticket.create' && d && d.source === 'email') || (type === 'msg.out' && d && d.auto);
+  const e = { id, ts, by: sys ? 'System' : (me() || 'Unknown'), pc: MACHINE, type, t: t || null, d: d || {} };
+  const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type, t: e.t, d: e.d });
+  if (error) { toast('Could not save: ' + error.message); throw new Error(error.message); }
+  STORE.events.set(id, e);
   applyEv(DB, e); scheduleRender();
   return e;
 }
+const rowToEv = r => ({ id: r.id, ts: new Date(r.ts).toISOString(), by: r.actor, pc: r.pc, type: r.type, t: r.t, d: r.d || {}, seq: r.seq });
+let refoldT = null;
+function refoldSoon() { clearTimeout(refoldT); refoldT = setTimeout(() => { DB = fold(); scheduleRender(); updateBadges(); }, 120); }
+async function nextNo() { const { data, error } = await SB.rpc('next_ticket'); if (error) throw new Error('Could not get a ticket number: ' + error.message); return data; }
 function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0 }; }
 function setStatus(t, s, ts, by) {
   if (!s || t.status === s) return; const from = t.status; t.status = s; t.history.push({ ts, status: s });
@@ -682,38 +627,46 @@ function fold() {
   const S = newState();
   const evs = [...STORE.events.values()].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.id < b.id ? -1 : 1));
   for (const e of evs) { try { applyEv(S, e); } catch (err) { console.warn('event', e, err); } }
+  // agents = the team's sign-in accounts (group per agent is a team setting)
+  const groups = S.settings.agentGroups || {};
+  S.settings.agents = TEAM.map(p => ({ name: p.name || p.email, email: p.email, group: groups[p.id] || '', active: p.active !== false }));
   return S;
 }
 const DAY = 86400000;
-const DAYCOUNT = new Map(); // day folder -> number of files already fully read
-async function loadEvents(full) {
-  const days = (await FS.list(`${HD}/events`)).filter(x => x.kind === 'directory');
-  const cutoff = new Date(Date.now() - 3 * DAY).toISOString().slice(0, 10);
-  // recent days every time; older days only when their file count changed
-  const want = days.filter(x => x.name >= cutoff || (full && DAYCOUNT.get(x.name) !== x.childCount));
-  const fresh = [];
-  for (const day of want) {
-    const todo = (await FS.list(`${HD}/events/${day.name}`)).filter(f => f.kind === 'file' && f.name.endsWith('.json') && !STORE.events.has(f.name));
-    let failed = 0;
-    for (let i = 0; i < todo.length; i += 16) {
-      await Promise.all(todo.slice(i, i + 16).map(async f => { try { const e = JSON.parse(await FS.fetchText(f)); if (e && e.type) { STORE.events.set(f.name, e); fresh.push([f.name, e]); } } catch { failed++; /* still uploading – next poll */ } }));
+// new rows since the last one we have (cached in this browser, so start-up is instant)
+async function loadEvents() {
+  let n = 0; const fresh = [];
+  for (;;) {
+    const { data, error } = await SB.from('events').select('id,ts,actor,pc,type,t,d,seq').gt('seq', STORE.maxSeq).order('seq').limit(1000);
+    if (error) throw new Error(error.message);
+    for (const r of data || []) {
+      STORE.maxSeq = Math.max(STORE.maxSeq, r.seq);
+      const e = rowToEv(r); const known = STORE.events.get(e.id);
+      STORE.events.set(e.id, e); fresh.push([e.id, e]); if (!known) n++;
     }
-    if (!failed) DAYCOUNT.set(day.name, day.childCount);
+    if (!data || data.length < 1000) break;
   }
   if (fresh.length) IDB.evPut(STORE.rootId, fresh).catch(() => { });
-  return fresh.length;
+  return n;
 }
-async function poll(forceFull) {
-  if (STORE.polling || !STORE.connected) return; STORE.polling = true; setSync('busy', 'Syncing…');
+function goLive() {
+  if (STORE.live) return; STORE.live = true;
+  SB.channel('events-live').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'events' }, p => {
+    const e = rowToEv(p.new); STORE.maxSeq = Math.max(STORE.maxSeq, e.seq || 0);
+    const known = STORE.events.has(e.id); STORE.events.set(e.id, e); IDB.evPut(STORE.rootId, [[e.id, e]]).catch(() => { });
+    if (!known) refoldSoon();
+  }).subscribe(st => { STORE.liveOk = st === 'SUBSCRIBED'; if (st === 'SUBSCRIBED') setSync('ok', 'Live'); else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') setSync('err', 'Reconnecting…'); });
+  SB.channel('mail-live').on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'mail_inbox' }, () => setTimeout(() => runImporter(), 300)).subscribe();
+}
+async function poll() {
+  if (STORE.polling || !STORE.connected) return; STORE.polling = true;
   try {
-    const full = forceFull || Date.now() - STORE.lastFull > 5 * 60000;
-    const n = await loadEvents(full); if (full) STORE.lastFull = Date.now();
+    const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
     await runImporter();
-    setSync('ok', 'Synced ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+    setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
-    if (e.code === 'login') { STORE.connected = false; showSetup(); }
     setSync('err', 'Sync error: ' + (e.message || e.name));
   } finally { STORE.polling = false; }
 }
@@ -760,36 +713,32 @@ function slaOf(t) {
 }
 
 /* =====================================================================
-   Importer – runs only on the PC chosen in Admin › General
+   Importer – any signed-in device turns new emails into tickets.
+   The server hands each email to exactly one device (claim_mail), and ticket numbers
+   come from the server (next_ticket), so numbers never clash.
    ===================================================================== */
-const isImporter = () => DB && DB.settings.importer.machine === MACHINE;
 let importing = false;
-const IMP = { counts: new Map(), lastFull: 0, rootDone: false };
-const localDay = ms => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
 async function runImporter() {
-  if (importing || !isImporter()) return; importing = true;
+  if (importing || !DB || !STORE.connected) return; importing = true;
   try {
-    for (const r of [...DB.reqs.values()]) {
-      try {
-        if (r.d.fromFile) await importFile(r.d.fromFile, { force: true, requestId: r.id, by: r.by });
-        else await createManual(r.d, r.id, r.by);
-      } catch (e) { console.error(e); }
-      await emit('request.done', null, { requestId: r.id });
+    for (let round = 0; round < 20; round++) {
+      const { data, error } = await SB.rpc('claim_mail', { n: 5 });
+      if (error) throw new Error(error.message);
+      if (!data || !data.length) break;
+      if (await loadEvents()) DB = fold();   // see what other devices did just now (duplicates, replies)
+      for (let i = 0; i < data.length; i++) {
+        const row = data[i];
+        setSync('busy', `Importing email ${i + 1} of ${data.length}…`);
+        try {
+          if (!DB.processed.has(row.path)) await importFile(row.path, { receivedAt: row.received_at });
+          await SB.from('mail_inbox').update({ status: 'done', error: null }).eq('id', row.id);
+        } catch (e) {
+          console.error(e);
+          await SB.from('mail_inbox').update({ status: 'error', error: String(e.message || e).slice(0, 500) }).eq('id', row.id);
+        }
+      }
+      scheduleRender();
     }
-    // emails are saved by the Outlook script into inbox/<yyyy-MM-dd>/ (older ones may sit in the folder root)
-    const isMail = x => x.kind === 'file' && /\.(msg|eml)$/i.test(x.name);
-    const full = Date.now() - IMP.lastFull > 10 * 60000; const cutoff = localDay(Date.now() - 3 * DAY); const files = [];
-    for (const d of (await FS.list('inbox')).filter(x => x.kind === 'directory')) {
-      if (!(d.name >= cutoff || (full && IMP.counts.get(d.name) !== d.childCount))) continue;
-      const fl = (await FS.list('inbox/' + d.name)).filter(isMail).map(x => 'inbox/' + d.name + '/' + x.name).filter(p => !DB.processed.has(p));
-      if (!fl.length) IMP.counts.set(d.name, d.childCount); files.push(...fl);
-    }
-    if (full || !IMP.rootDone) { files.push(...(await FS.list('')).filter(isMail).map(x => x.name).filter(p => !DB.processed.has(p))); IMP.rootDone = true; }
-    if (full) IMP.lastFull = Date.now();
-    files.sort((a, b) => a.split('/').pop() < b.split('/').pop() ? -1 : 1);
-    const batch = files.slice(0, 40);
-    for (let i = 0; i < batch.length; i++) { setSync('busy', `Importing email ${i + 1} of ${batch.length}${files.length > 40 ? ' (+' + (files.length - 40) + ' later)' : ''}…`); await importFile(batch[i], {}); }
-    if (batch.length) scheduleRender();
   } finally { importing = false; }
 }
 function applyRules(base, email, hasAtt) {
@@ -828,11 +777,11 @@ async function buildMsgIn(no, key, email, flat, atts, counted) {
 }
 async function importFile(name, opts) {
   let email;
+  const f = await FS.file(name); const buf = await f.arrayBuffer();   // download problems: retried later
   try {
-    const f = await FS.file(name); const buf = await f.arrayBuffer();
     email = /\.msg$/i.test(name) ? parseMsg(buf) : parseEml(new Uint8Array(buf));
-    if (!email.date) email.date = new Date(f.lastModified).toISOString();
-  } catch (e) { if (e.name === 'NotFoundError') return; await emit('email.ignored', null, { key: name, file: name, why: 'could not be read: ' + e.message }); return; }
+    if (!email.date) email.date = opts.receivedAt || new Date().toISOString();
+  } catch (e) { await emit('email.ignored', null, { key: name, file: name, why: 'could not be read: ' + e.message }); return; }
   const flat = flatten(email); const atts = flat.atts.map(a => ({ ...a, ...classify(a) })); const counted = atts.filter(a => a.cls !== 'ignore');
   const mid = String(email.messageId || '').toLowerCase();
   if (mid && DB.mids.has(mid) && !opts.force) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'duplicate email', silent: true }); return; }
@@ -847,7 +796,7 @@ async function importFile(name, opts) {
   const G = DB.settings.general;
   const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: G.defaultGroup, agent: '', tags: [] };
   const fields = applyRules(base, email, counted.length > 0);
-  const seq = DB.maxSeq + 1, no = 'CHR-' + pad(seq, 6);
+  const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
   const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true;
   await emit('msg.in', no, d);
@@ -871,7 +820,7 @@ async function maybeAutoAck(no, email) {
   await queueReply(t, { to: email.fromEmail, cc: '', subject: replySubject(t), html, files: [], auto: true });
 }
 async function createManual(d, requestId, by) {
-  const seq = DB.maxSeq + 1, no = 'CHR-' + pad(seq, 6);
+  const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'manual', subject: d.subject, requester: d.requester || {}, member: d.member || '', memberName: d.memberName || '', lang: isAr(d.subject + d.desc) ? 'AR' : 'EN', status: 'Open', priority: d.priority, type: d.type, group: d.group, agent: d.agent, tags: d.tags || [], requestId: requestId || '', createdAt: new Date().toISOString() });
   if (d.desc) await emit('note', no, { html: textToHtml(d.desc), desc: true, onBehalf: by || '' });
   return no;
@@ -1024,8 +973,8 @@ function ticketList(r) {
     LIST.last = compute(); drawHead(); drawFilters();
     const reqs = [...DB.reqs.values()];
     tl.replaceChildren(
-      reqs.length ? el('div', { class: 'banner', style: 'border-radius:9px;margin-bottom:8px' }, `${reqs.length} new ticket request(s) waiting for the importer PC to give them a number.`) : null,
-      ...(LIST.last.length ? LIST.last.slice(0, LIST.shown).map(row) : [el('div', { class: 'empty' }, DB.tickets.size ? 'No tickets in this view.' : 'No tickets yet. New emails appear here once the importer PC has read them.')]),
+      reqs.length ? null : null,
+      ...(LIST.last.length ? LIST.last.slice(0, LIST.shown).map(row) : [el('div', { class: 'empty' }, DB.tickets.size ? 'No tickets in this view.' : 'No tickets yet. New emails to the Chronic mailbox appear here within a couple of minutes.')]),
       LIST.last.length > LIST.shown ? el('div', { style: 'text-align:center' }, el('button', { class: 'btn', type: 'button', onclick: () => { LIST.shown += 50; draw(); } }, `Show more (${LIST.last.length - LIST.shown} left)`)) : null);
   }
   LIST.shown = 50; draw();
@@ -1091,8 +1040,9 @@ async function queueReply(t, { to, cc, subject, html, files, reuseAtts, statusAf
   for (const f of files || []) { const p = `${HD}/outbox/${outId}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   for (const a of reuseAtts || []) atts.push(a);
   const lastIn = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? -1 : 1).pop();
-  const job = { outId, ticket: t.no, to, cc, subject, html, replyToMid: lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString() };
-  await FS.write(`${HD}/outbox/${outId}.json`, new Blob([JSON.stringify(job, null, 1)], { type: 'application/json' }));
+  const job = { outId, ticket: t.no, to, cc, subject, html, replyToMid: lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString() };
+  const { error } = await SB.from('outbox').insert({ id: outId, ticket: t.no, job, status: 'queued' });
+  if (error) { toast('Reply not queued: ' + error.message); throw new Error(error.message); }
   await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
 }
@@ -1126,7 +1076,7 @@ function ticketView(r) {
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
       mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' by Outlook on the importer PC.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   async function send() {
     const t = DB.tickets.get(no); const body = sanitize(ce.innerHTML).trim();
@@ -1248,7 +1198,7 @@ function dashboard() {
       if (i % 2 === 0) { const tx = document.createElementNS(svg.namespaceURI, 'text'); tx.setAttribute('x', i * bw + bw / 2); tx.setAttribute('y', H + 16); tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('font-size', '11'); tx.setAttribute('fill', 'var(--muted)'); tx.textContent = `${d.getDate()}/${d.getMonth() + 1}`; svg.append(tx); }
     });
     root.replaceChildren(
-      el('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Dashboard'), el('span', { class: 'muted small' }, isImporter() ? 'This PC imports new emails.' : 'Importer PC: ' + (DB.settings.importer.label || 'not set – see Admin › General'))),
+      el('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Dashboard'), el('span', { class: 'muted small' }, 'Live for the whole team · ' + TEAM.filter(p => p.active).length + ' members')),
       el('div', { class: 'kpis' },
         k('Unresolved', un.length, '#/tickets?view=unresolved'),
         k('Overdue', [...sl.values()].filter(s => s.overdue).length, '#/tickets?view=overdue', 'bad'),
@@ -1276,7 +1226,7 @@ function ignoredView() {
       el('p', { class: 'muted', style: 'margin:0 0 12px' }, 'Emails without attachments (and files that could not be read) are kept here. Press "Create ticket" to open a ticket for one.'),
       list.length ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, el('th', {}, 'Received'), el('th', {}, 'From / subject'), el('th', {}, 'Reason'), el('th', {}, ''))),
         el('tbody', {}, list.slice(0, 300).map(x => el('tr', {}, el('td', { class: 'n' }, fmtDate(x.date || x.ts)), el('td', { dir: 'auto' }, el('div', { style: 'font-weight:600' }, x.subject || x.file), el('div', { class: 'small muted' }, [x.fromName, x.fromEmail].filter(Boolean).join(' · '))), el('td', { class: 'small' }, x.why),
-          el('td', {}, pending.has(x.file) ? el('span', { class: 'small muted' }, 'Waiting for importer…') : el('button', { class: 'btn sm', type: 'button', onclick: async () => { if (!me()) return askName(); await emit('ticket.request', null, { fromFile: x.file }); toast('Ticket requested'); } }, 'Create ticket'))))))) : el('div', { class: 'empty' }, 'Nothing here.'));
+          el('td', {}, pending.has(x.file) ? el('span', { class: 'small muted' }, 'Creating…') : el('button', { class: 'btn sm', type: 'button', onclick: async e => { e.target.disabled = true; try { await importFile(x.file, { force: true }); toast('Ticket created'); } catch (err) { toast(err.message); e.target.disabled = false; } } }, 'Create ticket'))))))) : el('div', { class: 'empty' }, 'Nothing here.'));
   }
   draw(); return { el: root, update: draw };
 }
@@ -1346,20 +1296,16 @@ function reportsView() {
 /* ---------------- Admin ---------------- */
 function adminView(r) {
   const sec = r.arg || 'general'; const S = DB.settings;
-  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Agents'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data & folder']];
+  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Team'], ['bridge', 'Outlook bridge'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data']];
   const panel = el('div', { class: 'panel' });
-  const save = async (section, value) => { await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
+  const save = async (section, value) => { if (!ME || ME.role !== 'admin') return toast('Only an admin can change team settings'); await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
   const lines = arr => arr.join('\n'); const unlines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
   const b = {
     general() {
-      const g = clone(S.general); const imp = S.importer;
+      const g = clone(S.general);
       const ck = (k, label) => el('label', { class: 'row', style: 'margin-bottom:8px' }, el('input', { type: 'checkbox', checked: !!g[k], onchange: e => g[k] = e.target.checked }), label);
       const sel = (k, vals) => el('select', { onchange: e => g[k] = e.target.value }, vals.map(v => opt(v, v, g[k])));
-      return [el('h2', {}, 'Importer PC'),
-        el('p', { class: 'small muted' }, 'One PC reads new emails from the shared folder and gives ticket numbers, so numbers never clash. Use the PC where Outlook and the email-saving script run.'),
-        el('div', { class: 'row', style: 'margin-bottom:16px' }, el('span', {}, 'Current: ', el('b', {}, imp.machine ? (imp.label || imp.machine) + (imp.machine === MACHINE ? ' (this PC)' : '') : 'not set')),
-          imp.machine === MACHINE ? null : el('button', { class: 'btn primary', type: 'button', onclick: async () => { const label = prompt('Name for this PC (e.g. "Chronic PC – Outlook"):', (me() || 'Importer') + ' PC'); if (label == null) return; await save('importer', { machine: MACHINE, label }); render(true); } }, 'Make this PC the importer')),
-        el('h2', {}, 'Tickets'),
+      return [el('h2', {}, 'Tickets'),
         ck('noAttachTickets', 'Create tickets also for emails without attachments'),
         ck('roundRobin', 'Auto-assign new tickets to the agent in the group with the fewest open tickets'),
         el('label', { class: 'blk' }, 'Default priority', sel('defaultPriority', S.priorities)),
@@ -1387,7 +1333,7 @@ function adminView(r) {
       const mk = k => el('div', { class: 'ce card', contenteditable: 'true', dir: k === 'AR' ? 'rtl' : 'ltr', html: sanitize(a[k]), style: 'min-height:90px', oninput: e => a[k] = e.target.innerHTML });
       const on = el('input', { type: 'checkbox', checked: !!a.enabled });
       return [el('h2', {}, 'Automatic acknowledgement'),
-        el('p', { class: 'small muted' }, 'When a new email becomes a ticket, the sender gets an automatic reply with the ticket number, in the same email thread. Replies to existing tickets, our own mailbox, no-reply/system senders and out-of-office messages never get one. Sent by Outlook on the importer PC, so the helpdesk must be open there and the Outlook script running.'),
+        el('p', { class: 'small muted' }, 'When a new email becomes a ticket, the sender gets an automatic reply with the ticket number, in the same email thread. Replies to existing tickets, our own mailbox, no-reply/system senders and out-of-office messages never get one. Sent from the Chronic mailbox by the Outlook bridge PC.'),
         el('label', { class: 'row', style: 'margin:8px 0' }, on, el('b', {}, 'Send the ticket number automatically')),
         a.enabled && a.since ? el('p', { class: 'small muted' }, 'On since ' + fmtDate(a.since) + ' – only emails received after that are answered.') : null,
         el('label', { class: 'blk' }, 'Never auto-reply to senders containing (comma-separated)', el('input', { type: 'text', value: a.skip, onchange: e => a.skip = e.target.value })),
@@ -1399,16 +1345,45 @@ function adminView(r) {
         } }, 'Save')];
     },
     agents() {
-      const list = clone(S.agents || []); const body = el('tbody');
-      const draw = () => body.replaceChildren(...list.map((a, i) => el('tr', {},
-        el('td', {}, el('input', { type: 'text', value: a.name, 'aria-label': 'Name', onchange: e => a.name = e.target.value.trim() })),
-        el('td', {}, el('input', { type: 'email', value: a.email || '', 'aria-label': 'Email', onchange: e => a.email = e.target.value.trim() })),
-        el('td', {}, el('select', { 'aria-label': 'Group', onchange: e => a.group = e.target.value }, opt('', 'Any group', a.group || ''), S.groups.map(g => opt(g, g, a.group)))),
-        el('td', {}, el('input', { type: 'checkbox', 'aria-label': 'Active', checked: a.active !== false, onchange: e => a.active = e.target.checked })),
-        el('td', {}, el('button', { class: 'btn sm danger', type: 'button', onclick: () => { list.splice(i, 1); draw(); } }, 'Remove')))));
-      draw();
-      return [el('h2', {}, 'Agents'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Name', 'Email', 'Group', 'Active', ''].map(h => el('th', {}, h)))), body)),
-        el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn', type: 'button', onclick: () => { list.push({ name: '', email: '', group: '', active: true }); draw(); } }, '+ Add agent'), el('button', { class: 'btn primary', type: 'button', onclick: () => save('agents', list.filter(a => a.name)) }, 'Save'))];
+      const isAdmin = ME && ME.role === 'admin'; const groups = clone(S.agentGroups || {}); const body = el('tbody');
+      const act = async (body2, okMsg) => { try { await teamCall(body2); await loadTeam(); DB = fold(); toast(okMsg); render(true); } catch (e) { toast(e.message); } };
+      body.replaceChildren(...TEAM.map(p => el('tr', {},
+        el('td', {}, el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(p.name || p.email, true), el('div', {}, el('b', {}, p.name || '—'), el('div', { class: 'small muted' }, p.email)))),
+        el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('admin', 'Admin', p.role)) : (p.role === 'admin' ? 'Admin' : 'Agent')),
+        el('td', {}, el('select', { 'aria-label': 'Group', disabled: !isAdmin, onchange: e => { groups[p.id] = e.target.value; } }, opt('', 'Any group', groups[p.id] || ''), S.groups.map(g => opt(g, g, groups[p.id])))),
+        el('td', {}, p.active ? el('span', { class: 'pill p-ok' }, 'Active') : el('span', { class: 'pill p-muted' }, 'Disabled')),
+        el('td', { class: 'n' }, isAdmin ? el('div', { class: 'row' },
+          el('button', { class: 'btn sm', type: 'button', onclick: () => { const pw = prompt('New password for ' + (p.name || p.email) + ' (8+ characters). Tell it to them privately; they can change it from their account menu.'); if (pw == null) return; if (pw.length < 8) return toast('At least 8 characters'); act({ action: 'set_password', user_id: p.id, password: pw }, 'Password reset'); } }, 'Reset password'),
+          p.id === ME.id ? null : el('button', { class: 'btn sm' + (p.active ? ' danger' : ''), type: 'button', onclick: () => act({ action: 'update', user_id: p.id, active: !p.active }, p.active ? 'Access removed' : 'Access restored') }, p.active ? 'Disable' : 'Enable')) : null))));
+      const nf = {}; const inp = (k, label, type = 'text', extra = {}) => el('label', {}, label, nf[k] = el('input', { type, ...extra }));
+      return [el('h2', {}, 'Team'),
+        el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; agents work tickets.'),
+        el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Member', 'Role', 'Group', 'Status', ''].map(h => el('th', {}, h)))), body)),
+        isAdmin ? el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('agentGroups', groups) }, 'Save groups')) : null,
+        isAdmin ? el('div', { class: 'panel', style: 'margin-top:16px;background:var(--surface-2)' }, el('h2', {}, 'Add a team member'),
+          el('div', { class: 'g2' }, inp('name', 'Name'), inp('email', 'Work email', 'email', { placeholder: 'name@sarwa.life', dir: 'ltr' })),
+          el('div', { class: 'g2', style: 'margin-top:8px' }, inp('password', 'First password (8+ characters)', 'text', { autocomplete: 'off' }), el('label', {}, 'Role', nf.role = el('select', {}, opt('agent', 'Agent', 'agent'), opt('admin', 'Admin', 'agent')))),
+          el('p', { class: 'small muted' }, 'Give them the link of this app, their email and this first password; they can change it from the account menu (top right).'),
+          el('button', { class: 'btn primary', type: 'button', onclick: () => { const b = { action: 'create', name: nf.name.value.trim(), email: nf.email.value.trim(), password: nf.password.value, role: nf.role.value }; if (!b.name || !b.email) return toast('Name and email are required'); act(b, 'Team member added'); } }, 'Add member')) : el('p', { class: 'small muted' }, 'Only an admin can add or change team members.')];
+    },
+    bridge() {
+      const box = el('div', {}, el('div', { class: 'empty' }, 'Loading…'));
+      (async () => {
+        const { data } = await SB.from('mail_inbox').select('status,received_at,created_at,subject,error').order('id', { ascending: false }).limit(200);
+        const rows = data || []; const c = k => rows.filter(r => r.status === k).length; const last = rows[0];
+        const { data: ob } = await SB.from('outbox').select('status,created_at,sent_at,ticket,error').order('created_at', { ascending: false }).limit(100);
+        const outs = ob || []; const queued = outs.filter(o => o.status === 'queued'); const oldest = queued.length ? queued[queued.length - 1].created_at : null;
+        const stale = oldest && Date.now() - Date.parse(oldest) > 10 * 60000;
+        box.replaceChildren(
+          el('div', { class: 'kpis' }, el('div', { class: 'kpi' }, el('b', {}, last ? rel(last.created_at) : '—'), el('span', {}, 'Last email received from Outlook')), el('div', { class: 'kpi' + (c('new') + c('claimed') ? ' warn' : '') }, el('b', {}, c('new') + c('claimed')), el('span', {}, 'Emails waiting to become tickets')), el('div', { class: 'kpi' + (c('error') ? ' bad' : '') }, el('b', {}, c('error')), el('span', {}, 'Emails that failed')), el('div', { class: 'kpi' + (stale ? ' bad' : '') }, el('b', {}, queued.length), el('span', {}, 'Replies waiting for Outlook'))),
+          stale ? el('div', { class: 'banner', style: 'border-radius:9px;margin-bottom:10px' }, 'Replies have been waiting more than 10 minutes – check that the Outlook PC is on, Outlook is open and the "Chronic Mail Bridge" task is running.') : null,
+          rows.some(r => r.status === 'error') ? el('div', { class: 'tw', style: 'margin-bottom:12px' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, el('th', {}, 'Received'), el('th', {}, 'Subject'), el('th', {}, 'Error'))), el('tbody', {}, rows.filter(r => r.status === 'error').slice(0, 20).map(r => el('tr', {}, el('td', { class: 'n' }, fmtDate(r.received_at || r.created_at)), el('td', { dir: 'auto' }, r.subject), el('td', { class: 'small' }, r.error)))))) : null);
+      })().catch(e => box.replaceChildren(el('p', { class: 'banner' }, e.message)));
+      const isAdmin = ME && ME.role === 'admin';
+      return [el('h2', {}, 'Outlook bridge'),
+        el('p', { class: 'small muted' }, 'The Chronic mailbox is on Sarwa’s own mail server, so one PC with Outlook passes emails to the helpdesk and sends the replies (task "Chronic Mail Bridge", every 2 minutes). Everything else runs in the cloud.'), box,
+        isAdmin ? el('details', { style: 'margin-top:12px' }, el('summary', {}, 'Set up another Outlook PC'), el('p', { class: 'small muted' }, 'Creates a new secret key for the bridge script on that PC. Shown once – copy it into %LOCALAPPDATA%\\ChronicIntake\\bridge.json on that PC.'),
+          el('button', { class: 'btn', type: 'button', onclick: async e => { try { const r = await teamCall({ action: 'bridge_token', label: 'Outlook PC' }); e.target.replaceWith(el('pre', { style: 'white-space:pre-wrap;user-select:all;background:var(--surface-2);padding:10px;border-radius:8px' }, JSON.stringify({ url: SUPA.url + '/functions/v1/bridge', token: r.token }, null, 1))); } catch (x) { toast(x.message); } } }, 'Create bridge key')) : null];
     },
     groups() {
       const g = el('textarea', { rows: 6, style: 'width:100%' }, lines(S.groups)), ty = el('textarea', { rows: 8, style: 'width:100%' }, lines(S.types));
@@ -1458,11 +1433,10 @@ function adminView(r) {
         el('div', { style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('signature', { AR: sanitize(s.AR), EN: sanitize(s.EN) }) }, 'Save'))];
     },
     data() {
-      return [el('h2', {}, 'Shared folder'), el('p', {}, 'Connected to: ', el('b', {}, FS.root ? FS.root.name : '—')),
+      return [el('h2', {}, 'Data'), el('p', { class: 'small muted' }, 'Stored in Sarwa Chronic’s private cloud database (EU, Frankfurt), visible only to signed-in team members.'),
         el('p', { class: 'small muted' }, `${STORE.events.size} change records · ${DB.tickets.size} tickets · ${DB.processed.size} emails processed.`),
         el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => exportCsv([...DB.tickets.values()]) }, 'Export all tickets (CSV)'),
-          el('button', { class: 'btn', type: 'button', onclick: async () => { await IDB.evClear(); location.reload(); } }, 'Clear this browser\'s cache & reload'),
-          el('button', { class: 'btn', type: 'button', onclick: chooseFolder }, 'Connect a different folder'))];
+          el('button', { class: 'btn', type: 'button', onclick: async () => { await IDB.evClear(); location.reload(); } }, 'Clear this browser\'s cache & reload'))];
     }
   };
   panel.append(...b[sec]());
@@ -1677,8 +1651,7 @@ function newTicketDialog() {
       const d = { subject: f.subject.value.trim(), requester: { name: f.rname.value.trim(), email: f.remail.value.trim() }, member: normDigits(f.member.value).trim(), memberName: f.memberName.value.trim(), type: f.type.value, priority: f.priority.value, group: f.group.value, agent: f.agent.value, desc: desc.value.trim() };
       if (!d.subject) { f.subject.focus(); return toast('Subject is required'); }
       closeDialog();
-      if (isImporter()) { const no = await createManual(d, '', me()); location.hash = '#/t/' + no; }
-      else { await emit('ticket.request', null, d); toast('Ticket requested – the importer PC gives it a number within a minute'); }
+      try { const no = await createManual(d, '', me()); location.hash = '#/t/' + no; } catch (e) { toast(e.message); }
     } }, 'Create')]);
   f.subject.focus();
 }
@@ -1691,18 +1664,7 @@ function mergeDialog(nos) {
       closeDialog(); LIST.sel.clear(); toast('Merged'); location.hash = '#/t/' + tn;
     } }, 'Merge')]);
 }
-function askName() {
-  const names = (DB && DB.settings.agents || []).filter(a => a.active !== false).map(a => a.name);
-  const inp = el('input', { type: 'text', value: me(), list: 'agentNames', placeholder: 'Your name as agent' });
-  const add = el('input', { type: 'checkbox', checked: true });
-  openDialog('Who is using this browser?', [el('datalist', { id: 'agentNames' }, names.map(n => el('option', { value: n }))), el('label', {}, 'Your name', inp), el('label', { class: 'row' }, add, 'Add me to the agents list')],
-    [el('button', { class: 'btn primary', type: 'button', onclick: async () => {
-      const n = inp.value.trim(); if (!n) return inp.focus(); lsSet('hd-me', n); closeDialog();
-      if (add.checked && DB && !names.includes(n)) await emit('settings', null, { section: 'agents', value: [...(DB.settings.agents || []), { name: n, email: '', group: '', active: true }] });
-      render(true);
-    } }, 'Save')]);
-  inp.focus();
-}
+function askName() { showSetup('Please sign in again.'); }
 function downloadCsv(name, rows) {
   const q = v => { v = v == null ? '' : String(v); return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const a = el('a', { href: URL.createObjectURL(new Blob(['﻿' + rows.map(r => r.map(q).join(',')).join('\r\n')], { type: 'text/csv;charset=utf-8' })), download: `${name}-${new Date().toISOString().slice(0, 10)}.csv` });
@@ -1715,66 +1677,75 @@ function exportCsv(tickets) {
 }
 
 /* =====================================================================
-   Setup / connect to the shared folder
+   Sign-in (team accounts) and start-up
    ===================================================================== */
-function showSetup() {
-  setSync('err', 'Not connected');
-  const card = el('div', { class: 'setup card' });
-  $('#view').replaceChildren(card);
-  if (!AUTH.tok) {
-    card.append(el('h2', {}, 'Sarwa Chronic – sign in'),
-      el('p', {}, 'Sign in with your Sarwa Microsoft 365 account (the same one you use for OneDrive / Teams). Microsoft handles your password, password reset and the code on your phone.'),
-      el('button', { class: 'btn primary', type: 'button', onclick: () => AUTH.login() }, 'Sign in with Microsoft 365'),
-      el('p', { class: 'small muted', style: 'margin-top:16px' }, 'Tickets and attachments stay in Sarwa’s SharePoint / OneDrive. This page only shows them.'));
-    return;
+function authCard(...kids) { const card = el('div', { class: 'setup card', style: 'max-width:440px' }, el('div', { class: 'row', style: 'margin-bottom:6px' }, el('div', { class: 'logo', style: 'width:40px;height:40px;border-radius:10px;display:grid;place-items:center;background:var(--accent);color:#fff;font-weight:700' }, 'CH'), el('div', {}, el('b', { style: 'font-size:17px' }, 'Sarwa Chronic'), el('div', { class: 'small muted' }, 'Chronic medication helpdesk'))), ...kids); $('#view').replaceChildren(card); return card; }
+async function showSetup(msg) {
+  setSync('err', 'Signed out'); STORE.connected = false;
+  $('#meName').textContent = 'Sign in'; $('#meAv').textContent = '?';
+  if (!SB) { authCard(el('p', { class: 'banner' }, 'Could not load the sign-in service. Check the internet connection and reload.')); return; }
+  let hasUsers = true; try { hasUsers = (await teamCall({ action: 'status' })).hasUsers; } catch { }
+  const email = el('input', { type: 'email', autocomplete: 'username', required: true, placeholder: 'name@sarwa.life', dir: 'ltr' });
+  const pass = el('input', { type: 'password', autocomplete: hasUsers ? 'current-password' : 'new-password', required: true, minlength: 8 });
+  const err = el('div', { class: 'small', style: 'color:var(--bad);min-height:1em', role: 'alert' }, msg || '');
+  const btn = el('button', { class: 'btn primary', type: 'submit', style: 'width:100%;justify-content:center' }, hasUsers ? 'Sign in' : 'Create admin account');
+  if (!hasUsers) {
+    const code = el('input', { type: 'text', required: true, autocomplete: 'off', placeholder: 'SARWA-…', dir: 'ltr', style: 'text-transform:uppercase' }); const name = el('input', { type: 'text', required: true, autocomplete: 'name', placeholder: 'e.g. Dr. Mohamed Medhat' }); const pass2 = el('input', { type: 'password', autocomplete: 'new-password', required: true, minlength: 8 });
+    authCard(el('h2', { style: 'margin:14px 0 4px' }, 'Set up the helpdesk'), el('p', { class: 'small muted' }, 'First start: create the administrator account with the one-time setup code. The admin then adds the team from Admin › Team.'),
+      el('form', { style: 'display:grid;gap:10px', onsubmit: async e => {
+        e.preventDefault(); err.textContent = '';
+        if (pass.value !== pass2.value) { err.textContent = 'The two passwords are different.'; return; }
+        btn.disabled = true;
+        try { await teamCall({ action: 'bootstrap', code: code.value.trim(), name: name.value.trim(), email: email.value.trim(), password: pass.value }); const { error } = await SB.auth.signInWithPassword({ email: email.value.trim(), password: pass.value }); if (error) throw error; start(); }
+        catch (x) { err.textContent = x.message; btn.disabled = false; }
+      } }, el('label', {}, 'Setup code', code), el('label', {}, 'Your name', name), el('label', {}, 'Work email', email), el('label', {}, 'Password (8+ characters)', pass), el('label', {}, 'Repeat password', pass2), err, btn));
+    code.focus(); return;
   }
-  card.append(el('h2', {}, 'Choose the shared Chronic folder'), el('p', { class: 'muted' }, 'Pick the folder where the Chronic emails are saved, e.g. “Outlook Chronic _ ContactChronic”. Everyone in the team must pick the same folder (it has to be shared with them).'), el('div', { class: 'empty' }, 'Loading your folders…'));
-  (async () => {
-    const pick = (root) => el('button', { class: 'btn' + (/chronic/i.test(root.name) ? ' primary' : ''), type: 'button', style: 'justify-content:flex-start;width:100%', onclick: () => { lsSet('hd-root', JSON.stringify(root)); FS.root = root; connect(); } }, '📁 ' + root.name, root.shared ? el('span', { class: 'small', style: 'opacity:.75' }, ' – shared by ' + root.shared) : null);
-    const lists = [];
-    try {
-      const mine = await (await graph('/me/drive/root/children?$top=200&$select=id,name,folder,parentReference')).json();
-      const f = (mine.value || []).filter(x => x.folder).map(x => ({ driveId: x.parentReference.driveId, id: x.id, name: x.name }));
-      lists.push(el('h3', {}, 'My files'), el('div', { style: 'display:grid;gap:6px' }, f.sort((a, b) => (/chronic/i.test(b.name) - /chronic/i.test(a.name)) || a.name.localeCompare(b.name)).map(pick)));
-    } catch (e) { lists.push(el('p', { class: 'banner' }, 'Could not read your OneDrive: ' + e.message)); }
-    try {
-      const sh = await (await graph('/me/drive/sharedWithMe')).json();
-      const f = (sh.value || []).map(x => x.remoteItem || x).filter(x => x.folder).map(x => ({ driveId: x.parentReference.driveId, id: x.id, name: x.name, shared: (x.shared && x.shared.owner && x.shared.owner.user && x.shared.owner.user.displayName) || 'a colleague' }));
-      if (f.length) lists.push(el('h3', {}, 'Shared with me'), el('div', { style: 'display:grid;gap:6px' }, f.map(pick)));
-    } catch { }
-    card.lastChild.replaceWith(el('div', {}, lists));
-  })().catch(e => { if (e.code === 'login') { AUTH.tok = null; showSetup(); } else toast(e.message); });
+  authCard(el('h2', { style: 'margin:14px 0 4px' }, 'Sign in'),
+    el('form', { style: 'display:grid;gap:10px', onsubmit: async e => {
+      e.preventDefault(); err.textContent = ''; btn.disabled = true;
+      const { error } = await SB.auth.signInWithPassword({ email: email.value.trim(), password: pass.value });
+      if (error) { err.textContent = /invalid/i.test(error.message) ? 'Wrong email or password.' : error.message; btn.disabled = false; return; }
+      start();
+    } }, el('label', {}, 'Work email', email), el('label', {}, 'Password', pass), err, btn),
+    el('p', { class: 'small muted', style: 'margin-top:14px' }, 'No account or forgot the password? Ask the helpdesk admin – they add team members and reset passwords from Admin › Team.'));
+  email.focus();
 }
-async function loadMe() {
-  const u = await (await graph('/me?$select=displayName,mail,userPrincipalName')).json();
-  AUTH.user = { name: u.displayName, email: u.mail || u.userPrincipalName, upn: u.userPrincipalName }; AUTH.save();
-  lsSet('hd-me', u.displayName || u.userPrincipalName);
-}
+async function signOut() { try { await SB.removeAllChannels(); } catch { } STORE.live = false; await SB.auth.signOut(); ME = null; DB = null; closeDialog(); location.hash = ''; showSetup(); }
 async function connect() {
   setSync('busy', 'Loading…');
   $('#view').replaceChildren(el('div', { class: 'empty' }, 'Loading tickets…'));
   try {
-    let meta; try { meta = JSON.parse(await FS.text(`${HD}/meta.json`)); } catch (e) { if (e.code === 'login') throw e; meta = { id: 'hd-' + rand(10), created: new Date().toISOString() }; await FS.write(`${HD}/meta.json`, JSON.stringify(meta)); }
-    STORE.rootId = meta.id; STORE.events.clear(); DAYCOUNT.clear();
-    try { for (const x of (await IDB.evAll(STORE.rootId)) || []) STORE.events.set(x.n, x.e); } catch { }
-    await loadEvents(true); STORE.lastFull = Date.now(); STORE.connected = true;
+    await loadTeam();
+    STORE.events.clear(); STORE.maxSeq = 0;
+    try { for (const x of (await IDB.evAll(STORE.rootId)) || []) { STORE.events.set(x.n, x.e); STORE.maxSeq = Math.max(STORE.maxSeq, x.e.seq || 0); } } catch { }
+    await loadEvents(); STORE.connected = true;
     DB = fold();
-    if (!DB.settings.importer.machine && !DB.tickets.size) await emit('settings', null, { section: 'importer', value: { machine: MACHINE, label: (me() || 'First') + ' device' } });
-    const n = me(); if (n && !(DB.settings.agents || []).some(a => a.name === n)) await emit('settings', null, { section: 'agents', value: [...(DB.settings.agents || []), { name: n, email: AUTH.user ? AUTH.user.email : '', group: '', active: true }] });
-    render(true); setSync('ok', 'Synced'); poll();
+    render(true); setSync('ok', 'Synced'); goLive(); poll();
   } catch (e) {
-    if (e.code === 'login') return showSetup();
-    $('#view').replaceChildren(el('div', { class: 'setup card' }, el('h2', {}, 'Could not open the folder'), el('p', {}, e.message), el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: connect }, 'Try again'), el('button', { class: 'btn', type: 'button', onclick: () => { lsSet('hd-root', 'null'); showSetup(); } }, 'Choose another folder'))));
+    $('#view').replaceChildren(el('div', { class: 'setup card' }, el('h2', {}, 'Could not load the helpdesk'), el('p', {}, e.message), el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: connect }, 'Try again'), el('button', { class: 'btn', type: 'button', onclick: signOut }, 'Sign out'))));
     setSync('err', 'Error');
   }
 }
-function chooseFolder() { lsSet('hd-root', 'null'); STORE.connected = false; showSetup(); }
+async function start() {
+  const { data: { session } } = await SB.auth.getSession();
+  if (!session) return showSetup();
+  const { data: prof, error } = await SB.from('profiles').select('*').eq('id', session.user.id).maybeSingle();
+  if (error) return showSetup('Could not load your profile: ' + error.message);
+  if (!prof || prof.active === false) { await SB.auth.signOut(); return showSetup('This account is not active in the helpdesk. Ask the admin.'); }
+  ME = prof;
+  $('#meName').textContent = ME.name || ME.email; $('#meAv').replaceWith(Object.assign(avatar(ME.name || ME.email, true), { id: 'meAv' }));
+  document.body.classList.toggle('is-admin', ME.role === 'admin');
+  connect();
+}
 function accountDialog() {
-  const u = AUTH.user || {};
-  openDialog('Account', [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(u.name || me()), el('div', {}, el('b', {}, u.name || me() || '—'), el('div', { class: 'small muted' }, u.email || ''))),
-    el('div', { class: 'small muted' }, 'Folder: ', el('b', {}, FS.root ? FS.root.name : '—')),
+  if (!ME) return showSetup();
+  const p1 = el('input', { type: 'password', autocomplete: 'new-password', minlength: 8, placeholder: 'New password (8+ characters)' });
+  openDialog('Account', [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(ME.name || ME.email), el('div', {}, el('b', {}, ME.name || '—'), el('div', { class: 'small muted' }, ME.email + ' · ' + (ME.role === 'admin' ? 'Admin' : 'Agent')))),
+    el('details', {}, el('summary', {}, 'Change my password'), el('div', { class: 'row', style: 'margin-top:8px' }, p1, el('button', { class: 'btn', type: 'button', onclick: async () => {
+      if (p1.value.length < 8) return toast('At least 8 characters'); const { error } = await SB.auth.updateUser({ password: p1.value }); if (error) return toast(error.message); p1.value = ''; toast('Password changed'); } }, 'Change'))),
     INSTALL.prompt ? el('button', { class: 'btn', type: 'button', onclick: installApp }, '⬇ Install the app on this device') : el('div', { class: 'small muted' }, INSTALL.hint())],
-    [el('button', { class: 'btn', type: 'button', onclick: () => { closeDialog(); chooseFolder(); } }, 'Change folder'), FS.kind === 'graph' ? el('button', { class: 'btn danger', type: 'button', onclick: () => AUTH.signOut() }, 'Sign out') : null, el('button', { class: 'btn primary', type: 'button', onclick: closeDialog }, 'Close')]);
+    [el('button', { class: 'btn danger', type: 'button', onclick: signOut }, 'Sign out'), el('button', { class: 'btn primary', type: 'button', onclick: closeDialog }, 'Close')]);
 }
 /* install as an app (PWA) */
 const INSTALL = { prompt: null, hint() { return /iphone|ipad/i.test(navigator.userAgent) ? 'To install on iPhone: Share button › “Add to Home Screen”.' : matchMedia('(display-mode: standalone)').matches ? 'Running as an installed app.' : 'To install: browser menu › “Install app” / “Add to Home screen”.'; } };
@@ -1786,7 +1757,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
    Start
    ===================================================================== */
 $('#searchForm').addEventListener('submit', e => { e.preventDefault(); const q = $('#q').value.trim(); location.hash = '#/tickets?view=all' + (q ? '&q=' + encodeURIComponent(q) : ''); });
-$('#newBtn').onclick = () => DB ? newTicketDialog() : toast('Connect the shared folder first');
+$('#newBtn').onclick = () => DB ? newTicketDialog() : toast('Sign in first');
 $('#meBtn').onclick = () => accountDialog();
 $('#meBtn').onkeydown = e => { if (e.key === 'Enter') accountDialog(); };
 $('#installBtn').onclick = installApp;
@@ -1797,21 +1768,14 @@ document.addEventListener('keydown', e => {
   if (CUR.view && CUR.view.keys && CUR.view.keys(e.key)) e.preventDefault();
 });
 window.addEventListener('focus', () => poll());
-setInterval(() => poll(), 20000);
+setInterval(() => poll(), 30000);
 (async () => {
   await IDB.open();
-  if (new URLSearchParams(location.search).has('demo') && navigator.storage && navigator.storage.getDirectory) { // offline test mode – browser storage, no sign-in
-    FS = LocalFS; LocalFS.root = await (await navigator.storage.getDirectory()).getDirectoryHandle('helpdesk-demo', { create: true });
-    if (!me()) lsSet('hd-me', 'Demo user'); return connect();
-  }
-  try { await AUTH.handleRedirect(); } catch (e) { toast(e.message); }
-  if (!AUTH.tok) return showSetup();
-  try { await loadMe(); } catch (e) { if (e.code === 'login') return showSetup(); toast(e.message); }
-  const root = JSON.parse(lsGet('hd-root', 'null') || 'null');
-  if (root && root.id) { FS.root = root; return connect(); }
-  showSetup();
+  if (!SB) return showSetup();
+  SB.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT' && ME) { ME = null; DB = null; showSetup(); } });
+  start();
 })();
-window.HD_TEST = { FS, emit, poll, importFile, get DB() { return DB; }, STORE, fold, runImporter };
+window.HD_TEST = { FS, SB, emit, poll, importFile, get DB() { return DB; }, STORE, fold, runImporter };
 </script>
 </body>
 </html>
