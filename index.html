@@ -156,6 +156,16 @@ textarea{resize:vertical}
 .msg .mh .who{font-weight:650}
 .msg .mb{padding:8px 14px 12px 54px;white-space:pre-wrap;overflow-wrap:anywhere}
 .msg .mb.html{white-space:normal}
+[hidden]{display:none!important}
+.msg.sms{margin:6px 0;border-radius:8px}
+.msg.sms .smh{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 10px 0;font-size:12px}
+.msg.sms .smh .pill{font-size:11px;padding:1px 7px}
+.msg.sms .smb{padding:3px 10px 7px 40px;font-size:12.5px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text)}
+.p-bad{background:color-mix(in srgb,var(--bad) 14%,transparent);color:var(--bad)}
+.act-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.act-tbl td,.act-tbl th{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:top;text-align:left}
+.act-tbl th{position:sticky;top:0;background:var(--surface);font-weight:600;color:var(--muted)}
+.act-tbl .det{color:var(--muted);white-space:pre-wrap;overflow-wrap:anywhere;max-width:420px}
 .msg .mb.html p{margin:0 0 .5em}
 .msg .quoted{color:var(--muted);border-left:3px solid var(--border);padding-left:10px;margin-top:6px}
 .msg .atts{display:flex;flex-wrap:wrap;gap:8px;padding:0 14px 12px 54px}
@@ -693,7 +703,9 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
-    case 'msg.sms': if (!t) return; t.msgs.push({ kind: 'sms', id: e.id, at: e.ts, by: e.by, ...d }); t.timeline.push({ ts: e.ts, by: e.by, text: (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to }); t.updated = e.ts; break;
+    case 'msg.sms': if (!t) return; t.msgs.push({ kind: 'sms', id: e.id, at: e.ts, by: e.by, ...d }); t.timeline.push({ ts: e.ts, by: e.by, text: (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' (sent directly' + (d.from ? ' from ' + d.from : '') + ')' : d.via === 'manual' ? ' (opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'the SMS app') + ')' : ''), detail: d.text }); t.updated = e.ts; break;
+    case 'msg.sms.state': { if (!t) return; const m = t.msgs.find(x => x.kind === 'sms' && x.id === d.ref); if (m) { m.state = d.state; m.error = d.error || ''; } if (/fail/i.test(d.state)) t.timeline.push({ ts: e.ts, by: 'SMS gateway', text: 'SMS to ' + (m ? m.to : '') + ' failed', detail: d.error || d.state }); break; }
+    case 'view': if (!t) return; (t.views = t.views || []).push({ ts: e.ts, by: e.by }); break;
     case 'icare.check': if (!t) return; t.icare = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'i-CARE checked: ' + ((d.admin && d.admin.name) || '') + (d.verdict ? ' – ' + d.verdict : '') }); t.updated = e.ts; break;
     case 'eob.add': if (!t) return; t.eobs = (t.eobs || []).filter(x => x.approval !== d.approval); t.eobs.push({ ...d, at: e.ts, by: e.by }); t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + d.approval + ' added' + (d.totalApproved != null ? ' (' + d.totalApproved.toLocaleString() + ' EGP)' : '') }); t.updated = e.ts; break;
     case 'eob.remove': if (!t) return; { const x = (t.eobs || []).find(z => z.id === d.id); t.eobs = (t.eobs || []).filter(z => z.id !== d.id); if (x) t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + x.approval + ' removed' }); } break;
@@ -1253,11 +1265,13 @@ function attChip(a) {
 function msgCard(m, t, fromNo) {
   if (m.kind === 'sms') {   // WhatsApp / SMS to the member
     const wa = m.channel === 'whatsapp';
-    return el('div', { class: 'msg out', style: 'border-left:4px solid ' + (wa ? '#25d366' : '#2f6fb0') },
-      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
-        el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill', style: 'background:' + (wa ? '#e6f9ee;color:#128c4a' : '#e7effa;color:#2f6fb0') }, wa ? '💬 WhatsApp' : '✉ SMS'), ' to ', el('b', {}, m.to), m.toName ? el('span', { class: 'muted' }, ' (' + m.toName + ')') : null, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
-        el('div', { class: 'small muted' }, fmtDate(m.at) + ' (' + rel(m.at) + ')' + (m.from ? ' · from ' + m.from : '')))),
-      el('div', { class: 'mb', dir: 'auto', style: 'white-space:pre-wrap' }, m.text));
+    const st = m.via === 'manual' ? ['Opened in ' + (wa ? 'WhatsApp' : 'SMS app'), 'p-muted'] : /fail|error/i.test(m.state || '') ? ['Failed', 'p-bad'] : /deliver|read/i.test(m.state || '') ? ['Delivered', 'p-ok'] : m.via === 'direct' ? ['Sent', 'p-ok'] : null;
+    return el('div', { class: 'msg sms', style: 'border-left:3px solid ' + (wa ? '#25d366' : '#2f6fb0'), title: m.error || '' },
+      el('div', { class: 'smh' }, avatar(m.by, true), el('b', {}, m.by), el('span', { class: 'pill', style: 'background:' + (wa ? '#e6f9ee;color:#128c4a' : '#e7effa;color:#2f6fb0') }, wa ? '💬 WhatsApp' : '✉ SMS'),
+        el('span', {}, 'to ', el('b', {}, m.to), m.toName ? el('span', { class: 'muted' }, ' (' + m.toName + ')') : null),
+        st ? el('span', { class: 'pill ' + st[1] }, st[0]) : null, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null,
+        el('span', { class: 'muted', style: 'margin-left:auto;white-space:nowrap', title: fmtDate(m.at) }, fmtDate(m.at) + ' (' + rel(m.at) + ')' + (m.from ? ' · from ' + m.from : ''))),
+      el('div', { class: 'smb', dir: 'auto' }, m.text));
   }
   if (m.kind === 'note') {
     return el('div', { class: 'msg note' },
@@ -1320,9 +1334,59 @@ async function queueReply(t, { to, cc, subject, html, files, reuseAtts, statusAf
   await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
 }
+/* ---- Activity: every action on a ticket with its details (also who opened it) ---- */
+const VIEWED = new Map();
+async function logView(no) {   // quietly, at most once per agent per ticket every 15 minutes – no redraw
+  if (!ME || !SB) return; const k = no, now = Date.now(); if (now - (VIEWED.get(k) || 0) < 15 * 60000) return; VIEWED.set(k, now);
+  const t = DB.tickets.get(no); const mine = (t && t.views || []).filter(v => v.by === me()).pop(); if (mine && now - new Date(mine.ts) < 15 * 60000) return;
+  const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6); const e = { id, ts, by: me(), pc: MACHINE, type: 'view', t: no, d: {} };
+  const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type: 'view', t: no, d: {} }); if (error) return;
+  STORE.events.set(id, e); applyEv(DB, e);
+}
+const stripHtml = h => { const d = document.createElement('div'); d.innerHTML = sanitize(String(h || '')); return (d.innerText || d.textContent || '').replace(/\n{3,}/g, '\n\n').trim(); };
+const clip = (s, n = 400) => { s = String(s || '').trim(); return s.length > n ? s.slice(0, n) + '…' : s; };
+function describeEv(e) {
+  const d = e.d || {}; const fmtV = v => Array.isArray(v) ? v.join(', ') || '—' : v && typeof v === 'object' ? JSON.stringify(v) : (v === '' || v == null ? '—' : String(v));
+  switch (e.type) {
+    case 'ticket.create': return ['change', 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : ''), [d.subject, d.fromEmail || d.requester && d.requester.email].filter(Boolean).join('\n')];
+    case 'msg.in': return ['message', d.internal ? 'Email from a Sarwa colleague' : 'Email received', `From: ${d.fromName || ''} <${d.fromEmail || ''}>\nSubject: ${d.subject || ''}${(d.atts || []).length ? `\nAttachments: ${d.atts.length}` : ''}\n${clip(d.text || stripHtml(d.html))}`];
+    case 'msg.out': return ['message', d.outlook ? 'Reply sent from Outlook' : d.auto ? 'Auto-acknowledgement sent' : 'Reply sent', `To: ${d.to || ''}${d.cc ? '  Cc: ' + d.cc : ''}\nSubject: ${d.subject || ''}\n${clip(d.text || stripHtml(d.html))}`];
+    case 'out.status': return ['message', 'Email ' + (d.status === 'error' ? 'could not be sent' : d.status || 'status'), d.error || (d.sentAt ? 'Sent ' + fmtDate(d.sentAt) : '')];
+    case 'note': return ['message', d.desc ? 'Description added' : 'Private note', clip(stripHtml(d.html))];
+    case 'msg.sms': return ['message', (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' – sent directly' : d.via === 'manual' ? ' – opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS app') : ''), (d.toName ? d.toName + '\n' : '') + (d.from ? 'From: ' + d.from + '\n' : '') + clip(d.text)];
+    case 'msg.sms.state': return ['message', 'SMS delivery: ' + d.state, d.error || ''];
+    case 'update': { const ks = Object.keys(d); return ['change', ks.some(k => k === 'status') ? 'Status → ' + d.status : 'Changed ' + ks.map(k => k.replace(/^_/, '')).join(', '), ks.map(k => k.replace(/^_/, '') + ': ' + clip(fmtV(d[k]), 160)).join('\n')]; }
+    case 'validation': return ['change', 'Validation saved', typeof valSummary === 'function' ? valSummary(d) : ''];
+    case 'ai.request': return ['ai', 'Asked the AI reader to read the attachments', ''];
+    case 'ai.read': return ['ai', d.error ? 'AI reader: could not read' : 'AI reader read the prescription', d.error || ((d.data && d.data.items || []).length + ' item(s)' + (d.notes ? '\n' + d.notes : ''))];
+    case 'ai.learn': return ['ai', 'Taught the AI reader', (d.items || []).length + ' item(s), ' + (d.items || []).filter(x => (x.changed || []).length).length + ' corrected'];
+    case 'merge': return ['change', 'Merged', d.into ? 'Into ' + d.into : (d.from || []).join(', ')];
+    case 'icare.check': return ['change', 'i-CARE check', [(d.admin && d.admin.name), d.verdict].filter(Boolean).join('\n')];
+    case 'eob.add': return ['change', 'EOB approval ' + (d.approval || '') + ' added', d.totalApproved != null ? d.totalApproved.toLocaleString() + ' EGP' : ''];
+    case 'eob.remove': return ['change', 'EOB approval ' + (d.approval || '') + ' removed', ''];
+    case 'view': return ['view', 'Opened the ticket', ''];
+    default: return ['change', e.type, clip(JSON.stringify(d), 200)];
+  }
+}
+function activityDialog(no) {
+  const evs = [...STORE.events.values()].filter(e => e.t === no).sort((a, b) => a.ts < b.ts ? 1 : -1).map(e => ({ e, k: describeEv(e) }));
+  const F = [['all', 'All'], ['message', 'Messages'], ['change', 'Changes'], ['ai', 'AI'], ['view', 'Views']]; let f = 'all';
+  const ICON = { message: '✉', change: '✎', ai: '✨', view: '👁' };
+  const body = el('div', { style: 'max-height:62vh;overflow:auto' }); const chips = el('div', { class: 'row', style: 'gap:6px;margin-bottom:8px' });
+  const viewers = [...new Set(evs.filter(x => x.e.type === 'view').map(x => x.e.by))];
+  const draw = () => {
+    chips.replaceChildren(...F.map(([v, l]) => el('button', { class: 'btn sm' + (f === v ? ' primary' : ''), type: 'button', onclick: () => { f = v; draw(); } }, l + ' ' + (v === 'all' ? evs.length : evs.filter(x => x.k[0] === v).length))));
+    const rows = evs.filter(x => f === 'all' || x.k[0] === f);
+    body.replaceChildren(rows.length ? el('table', { class: 'act-tbl' }, el('thead', {}, el('tr', {}, el('th', {}, 'When'), el('th', {}, 'Who'), el('th', {}, 'Action'), el('th', {}, 'Details'))),
+      el('tbody', {}, rows.map(({ e, k }) => el('tr', {}, el('td', { style: 'white-space:nowrap' }, fmtDate(e.ts), el('div', { class: 'small muted' }, rel(e.ts))), el('td', { style: 'white-space:nowrap' }, e.by || ''), el('td', {}, ICON[k[0]] + ' ' + k[1]), el('td', { class: 'det', dir: 'auto' }, k[2] || ''))))) : el('div', { class: 'empty' }, 'Nothing here.'));
+  };
+  draw();
+  openDialog('🕘 Activity – ' + no, [el('div', { class: 'small muted', style: 'margin-bottom:6px' }, evs.length + ' actions' + (viewers.length ? ' · opened by ' + viewers.join(', ') : '')), chips, body], [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Close')], 'min(1000px,96vw)');
+}
 function ticketView(r) {
   const no = r.arg; const t0 = DB.tickets.get(no);
   if (!t0) return { el: el('div', { class: 'empty' }, `Ticket ${no} not found (it may still be syncing).`, el('br'), el('a', { href: '#/tickets' }, 'Back to tickets')) };
+  logView(no);
   const root = el('div', { class: 'tv' }); const left = el('div', { class: 'left' }); const side = el('aside', { class: 'side' }); root.append(left, side);
   const top = el('div'); const thread = el('div'); const edHost = el('div');
   // like Outlook: newest email on top with the reply box above the conversation (switchable)
@@ -1388,6 +1452,7 @@ function ticketView(r) {
         el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'note'; drawEditor(); ce.focus(); } }, 'Note ', el('span', { class: 'kbd' }, 'n')),
         el('button', { class: 'btn sm primary', type: 'button', onclick: () => validationDialog(no) }, t.validation ? '✓ Validation' : 'Validate medicines'),
         el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog([no]) }, 'Merge'),
+        el('button', { class: 'btn sm', type: 'button', title: 'Every action on this ticket with its details – who did what and when, including who opened it', onclick: () => activityDialog(no) }, '🕘 Activity ', el('span', { class: 'pill p-muted', style: 'font-size:11px;padding:0 6px' }, String([...STORE.events.values()].filter(e => e.t === no).length))),
         t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Closed' }) }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
         el('div', { style: 'flex:1' }),
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
@@ -1932,9 +1997,9 @@ function adminView(r) {
       const sender = el('input', { type: 'tel', value: m.sender || '', placeholder: '01xxxxxxxxx', onchange: e => m.sender = phoneLocal(e.target.value) });
       const cc = el('input', { type: 'text', value: m.country || '20', style: 'width:70px', onchange: e => m.country = e.target.value.replace(/\D/g, '') || '20' });
       return [el('h2', {}, 'WhatsApp & SMS'),
-        el('p', { class: 'small muted' }, 'Agents send WhatsApp or SMS to the member’s mobile from the ticket (Patient info → 💬 / ✉). The app opens WhatsApp or the SMS app with the number and the message ready; the agent presses Send, and the message is saved in the ticket conversation.'),
+        el('p', { class: 'small muted' }, 'Agents send WhatsApp or SMS to the member’s mobile from the ticket (Patient info → 💬 / ✉). With a connected account below the message goes out directly with one click; every message is saved in the ticket conversation and in Activity.'),
         el('div', { class: 'g2' }, el('label', {}, 'Team sender number (WhatsApp / SMS)', sender), el('label', {}, 'Country code', cc)),
-        el('p', { class: 'small muted' }, 'WhatsApp sends from the account signed in on the agent’s device or WhatsApp Web – sign in WhatsApp Web with this number on the team PCs. SMS goes from the phone (on Windows: Phone Link with this phone). Fully automatic sending without pressing Send needs a WhatsApp Business API or SMS-gateway account for this number.'),
+        directSendBox(),
         el('h3', {}, 'Message templates'), el('p', { class: 'small muted' }, 'Placeholders: {{ticket.no}} {{member.name}} {{member.no}} {{agent.name}}'), box,
         el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => { m.templates.push({ title: 'New template', text: '' }); draw(); } }, '+ Add'),
           el('button', { class: 'btn primary', type: 'button', onclick: () => { if (m.sender && !validMobile(m.sender)) return toast('Sender must be an Egyptian mobile: 01xxxxxxxxx'); save('messaging', { sender: m.sender || '', country: m.country || '20', templates: m.templates.filter(x => x.text && x.text.trim()) }); } }, 'Save'))];
@@ -2299,24 +2364,84 @@ function patientInfo(t) {
   if (!t.icare && /^\d{6,10}$/.test(String(t.member || ''))) loadHistory(t.member).then(h => { if (h && h.length) fill(h.find(x => x.contract) || h[0]); }).catch(() => { });
   return box;
 }
+// direct sending (server function "notify": SMS gateway phone / WhatsApp Business Cloud API) – credentials never reach the browser
+let NOTIFY = null, NOTIFY_AT = 0;
+async function notifyCall(body) {
+  const { data, error } = await SB.functions.invoke('notify', { body });
+  if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { } throw new Error(msg); }
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+async function notifyStatus(force) { if (force || !NOTIFY || Date.now() - NOTIFY_AT > 120000) { try { NOTIFY = await notifyCall({ action: 'status' }); NOTIFY_AT = Date.now(); } catch { NOTIFY = NOTIFY || { sms: { on: false }, whatsapp: { on: false } }; } } return NOTIFY; }
+async function smsStateLater(no, evId, pid, delays = [20000, 90000]) {
+  for (const ms of delays) {
+    await new Promise(r => setTimeout(r, ms));
+    try { const r = await notifyCall({ action: 'state', id: pid }); if (r.state && !/^pending$/i.test(r.state)) { await emit('msg.sms.state', no, { ref: evId, state: r.state, error: r.error || '' }); if (!/^processed$/i.test(r.state)) return; } } catch { return; }
+  }
+}
+// Settings › WhatsApp & SMS › direct sending accounts (stored on the server, only an admin can change them)
+function directSendBox() {
+  const box = el('div', { class: 'slabox', style: 'margin:12px 0;display:grid;gap:10px' }, el('div', { class: 'small muted' }, 'Checking the sending accounts…'));
+  const isAdmin = ME && ME.role === 'admin';
+  const field = (label, attrs) => { const i = el('input', { type: 'text', style: 'width:100%', ...attrs }); return [el('label', { class: 'small' }, label, i), i]; };
+  const run = async (btn, body, okMsg) => { btn.disabled = true; try { const r = await notifyCall(body); toast(okMsg(r)); await notifyStatus(true); draw(); } catch (x) { toast(x.message); btn.disabled = false; } };
+  const draw = () => {
+    const S = NOTIFY || { sms: {}, whatsapp: {} }, s = S.sms || {}, w = S.whatsapp || {};
+    const [lu, iu] = field('Username', { value: s.user || '', autocomplete: 'off' }), [lp, ip] = field('Password', { type: 'password', autocomplete: 'new-password', placeholder: s.on ? '(saved – type to change)' : '' }), [lx, ix] = field('Server (leave empty for the SMS Gateway cloud)', { value: s.url || '', placeholder: 'https://api.sms-gate.app' });
+    const [lt, it] = field('Permanent access token', { type: 'password', autocomplete: 'new-password', placeholder: w.on ? 'saved ' + (w.token || '') + ' – type to change' : 'EAAG…' }), [lpid, ipid] = field('Phone number ID', { value: w.phoneId || '' }), [ltp, itp] = field('Approved template for first messages (optional)', { value: w.template || '', placeholder: 'e.g. chronic_update – body with one {{1}}' }), [ll, il] = field('Template language', { value: w.lang || 'ar', style: 'width:90px' });
+    const smsSave = el('button', { class: 'btn primary sm', type: 'button', disabled: !isAdmin, onclick: e => run(e.target, { action: 'set_sms', user: iu.value, pass: ip.value, url: ix.value }, r => 'SMS gateway connected' + (r.device ? ' – phone ' + r.device : '')) }, s.on ? 'Update' : 'Connect');
+    const waSave = el('button', { class: 'btn primary sm', type: 'button', disabled: !isAdmin, onclick: e => run(e.target, { action: 'set_whatsapp', token: it.value, phoneId: ipid.value, template: itp.value, lang: il.value }, r => 'WhatsApp connected – ' + (r.number || '') + ' ' + (r.name || '')) }, w.on ? 'Update' : 'Connect');
+    box.replaceChildren(
+      el('h3', { style: 'margin:0' }, 'Direct sending (one click, no app opens)'),
+      el('div', { class: 'small muted' }, 'When an account is connected, the Send button in the ticket sends the message straight away from the server and saves its delivery state in the conversation. Without it, the app opens WhatsApp / the SMS app with the message ready.' + (isAdmin ? '' : ' Only an admin can connect the accounts.')),
+      el('div', { class: 'rule' },
+        el('div', { class: 'row' }, el('b', {}, '✉ SMS – from the team phone’s SIM'), el('span', { class: 'pill ' + (s.on ? 'p-ok' : 'p-muted') }, s.on ? 'Connected' + (s.device ? ' · ' + s.device : '') : 'Not connected')),
+        el('div', { class: 'small muted' }, '1) On the Android phone with the SIM (e.g. ' + ((DB.settings.messaging || {}).sender || '01069146905') + ') install “SMS Gateway for Android” (sms-gate.app, free) from Google Play. 2) Open it, turn on “Cloud server” and tap Online. 3) Copy the Username and Password it shows here. Keep the phone charged and online.'),
+        el('div', { class: 'g2' }, lu, lp), lx, el('div', { class: 'row' }, smsSave, s.on && isAdmin ? el('button', { class: 'btn sm danger', type: 'button', onclick: e => run(e.target, { action: 'remove_sms' }, () => 'SMS gateway disconnected') }, 'Disconnect') : null)),
+      el('div', { class: 'rule' },
+        el('div', { class: 'row' }, el('b', {}, '💬 WhatsApp – official WhatsApp Business (Meta Cloud API)'), el('span', { class: 'pill ' + (w.on ? 'p-ok' : 'p-muted') }, w.on ? 'Connected · ' + (w.number || '') + (w.name ? ' ' + w.name : '') : 'Not connected')),
+        el('div', { class: 'small muted' }, '1) In Meta Business (business.facebook.com) create a WhatsApp Business account and add the team number (a number used here cannot stay on the normal WhatsApp app). 2) In developers.facebook.com › your app › WhatsApp › API setup copy the Phone number ID, and create a permanent System-user access token. 3) WhatsApp allows free text only within 24 h after the member last wrote to the number; for first messages create an approved template (Utility, body with one {{1}}) and enter its name – the message text goes into {{1}}.'),
+        el('div', { class: 'g2' }, lt, lpid), el('div', { class: 'g2' }, ltp, ll), el('div', { class: 'row' }, waSave, w.on && isAdmin ? el('button', { class: 'btn sm danger', type: 'button', onclick: e => run(e.target, { action: 'remove_whatsapp' }, () => 'WhatsApp disconnected') }, 'Disconnect') : null)));
+  };
+  notifyStatus(true).then(draw).catch(x => box.replaceChildren(el('div', { class: 'small', style: 'color:var(--bad)' }, 'Could not load the sending accounts: ' + x.message)));
+  return box;
+}
 function msgDialog(no, channel, number) {
   const t = DB.tickets.get(no); const M = DB.settings.messaging || DEFAULTS.messaging; const wa = channel === 'whatsapp';
   const to = el('input', { type: 'tel', value: phoneLocal(number || t.mobile || (t.icare && t.icare.admin && t.icare.admin.mobile) || ''), placeholder: '01xxxxxxxxx', style: 'width:100%' });
   const fillT = s => String(s || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (x, k) => ({ 'ticket.no': t.no, 'member.name': t.memberName || '', 'member.no': t.member || '', 'agent.name': me() })[k] ?? x);
   const txt = el('textarea', { rows: 6, dir: 'auto', style: 'width:100%' }, fillT((M.templates || [])[0] && M.templates[0].text));
   const tpl = el('select', { onchange: e => { const x = (M.templates || [])[+e.target.value]; if (x) txt.value = fillT(x.text); } }, (M.templates || []).map((x, i) => opt(String(i), x.title, '0')));
+  const how = el('div', { class: 'small muted' }, 'Checking the sending account…');
+  const sendBtn = el('button', { class: 'btn primary', type: 'button', disabled: true, style: wa ? 'background:#25d366;border-color:#25d366' : '' }, 'Send');
+  const manualBtn = el('button', { class: 'btn', type: 'button', hidden: true }, wa ? 'Open WhatsApp instead' : 'Open SMS app instead');
+  const check = () => { const n = phoneLocal(to.value); if (!validMobile(n)) { toast('Enter an Egyptian mobile number: 01xxxxxxxxx'); to.focus(); return null; } if (!txt.value.trim()) { txt.focus(); return null; } return n; };
+  const log = async (n, extra) => { await emit('msg.sms', no, { channel, to: n, toName: t.memberName || '', text: txt.value, ...extra }).then(async ev => { if (n !== phoneLocal(t.mobile) && !(t.icare && t.icare.admin && phoneLocal(t.icare.admin.mobile) === n)) await emit('update', no, { mobile: n }); if (extra.via === 'direct' && channel === 'sms' && extra.pid) smsStateLater(no, ev.id, extra.pid); }); };
+  manualBtn.onclick = async () => {
+    const n = check(); if (!n) return;
+    const url = wa ? `https://wa.me/${phoneIntl(n)}?text=${encodeURIComponent(txt.value)}` : `sms:+${phoneIntl(n)}?body=${encodeURIComponent(txt.value)}`;
+    if (wa) window.open(url, '_blank', 'noopener'); else location.href = url;
+    try { await log(n, { via: 'manual', state: 'Opened', from: M.sender || '' }); } catch (x) { toast(x.message); }
+    closeDialog();
+  };
+  sendBtn.onclick = async () => {
+    const n = check(); if (!n) return;
+    sendBtn.disabled = true; sendBtn.textContent = 'Sending…';
+    try {
+      const r = await notifyCall({ action: 'send', channel, to: n, text: txt.value });
+      await log(n, { via: 'direct', state: r.state || 'Sent', pid: r.id || '', from: r.from || M.sender || '', template: !!r.template });
+      toast((wa ? 'WhatsApp' : 'SMS') + ' sent to ' + n); closeDialog();
+    } catch (x) { sendBtn.disabled = false; sendBtn.textContent = 'Send'; how.replaceChildren(el('span', { style: 'color:var(--bad)' }, x.message)); }
+  };
   openDialog((wa ? '💬 WhatsApp' : '✉ SMS') + ' to the member – ' + no, [
     el('div', { class: 'g2' }, el('label', {}, 'To (member mobile)', to), el('label', {}, 'Template', tpl)),
-    el('label', {}, 'Message', txt),
-    el('div', { class: 'small muted' }, wa ? 'Opens WhatsApp (app or WhatsApp Web) with the member and the message ready – it is sent from the WhatsApp account signed in on this device' + (M.sender ? ' (team number ' + M.sender + ')' : '') + '. Press Send there. The message is saved in this ticket.'
-      : 'Opens the SMS app (phone, or Windows Phone Link with your phone' + (M.sender ? ' ' + M.sender : '') + ') with the message ready. Press Send there. The message is saved in this ticket.')],
-    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', style: wa ? 'background:#25d366;border-color:#25d366' : '', onclick: async () => {
-      const n = phoneLocal(to.value); if (!validMobile(n)) return toast('Enter an Egyptian mobile number: 01xxxxxxxxx'); if (!txt.value.trim()) return txt.focus();
-      const url = wa ? `https://wa.me/${phoneIntl(n)}?text=${encodeURIComponent(txt.value)}` : `sms:+${phoneIntl(n)}?body=${encodeURIComponent(txt.value)}`;
-      if (wa) window.open(url, '_blank', 'noopener'); else location.href = url;
-      try { await emit('msg.sms', no, { channel, to: n, toName: t.memberName || '', text: txt.value, from: M.sender || '' }); if (n !== phoneLocal(t.mobile) && !(t.icare && phoneLocal(t.icare.admin.mobile) === n)) await emit('update', no, { mobile: n }); } catch (x) { toast(x.message); }
-      closeDialog();
-    } }, wa ? 'Open WhatsApp' : 'Open SMS')]);
+    el('label', {}, 'Message', txt), how],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), manualBtn, sendBtn]);
+  notifyStatus().then(S => {
+    const c = S && S[channel];
+    if (c && c.on) { sendBtn.disabled = false; manualBtn.hidden = true; how.textContent = wa ? `Sent directly from the team WhatsApp Business number ${c.number || ''}${c.name ? ' (' + c.name + ')' : ''}.` : `Sent directly from the team SMS phone${c.device ? ' (' + c.device + ')' : ''}${M.sender ? ' – ' + M.sender : ''}.`; }
+    else { sendBtn.hidden = true; manualBtn.hidden = false; manualBtn.className = 'btn primary'; manualBtn.textContent = wa ? 'Open WhatsApp' : 'Open SMS app'; how.textContent = (wa ? 'Direct WhatsApp sending is not set up yet' : 'Direct SMS sending is not set up yet') + ' (admin: Settings › WhatsApp & SMS). For now this opens ' + (wa ? 'WhatsApp' : 'the SMS app') + ' with the message ready – press Send there.'; }
+  });
 }
 function pspPanel(t) {
   const eobs = t.eobs || []; const pdfs = []; const seen = new Set();
@@ -2884,7 +3009,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16d';
+const APP_VERSION = '2026-11-16e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
