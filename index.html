@@ -2440,7 +2440,8 @@ function msgDialog(no, channel, number) {
   notifyStatus().then(S => {
     const c = S && S[channel];
     if (c && c.on) { sendBtn.disabled = false; manualBtn.hidden = true; how.textContent = wa ? `Sent directly from the team WhatsApp Business number ${c.number || ''}${c.name ? ' (' + c.name + ')' : ''}.` : `Sent directly from the team SMS phone${c.device ? ' (' + c.device + ')' : ''}${M.sender ? ' – ' + M.sender : ''}.`; }
-    else { sendBtn.hidden = true; manualBtn.hidden = false; manualBtn.className = 'btn primary'; manualBtn.textContent = wa ? 'Open WhatsApp' : 'Open SMS app'; how.textContent = (wa ? 'Direct WhatsApp sending is not set up yet' : 'Direct SMS sending is not set up yet') + ' (admin: Settings › WhatsApp & SMS). For now this opens ' + (wa ? 'WhatsApp' : 'the SMS app') + ' with the message ready – press Send there.'; }
+    else { sendBtn.hidden = true; manualBtn.hidden = false; manualBtn.className = 'btn primary'; manualBtn.textContent = wa ? 'Open WhatsApp' : 'Open SMS app'; how.replaceChildren(el('div', { class: 'banner', style: 'border-radius:8px;display:block' }, el('b', {}, (wa ? 'WhatsApp' : 'SMS') + ' direct sending is not connected yet. '), 'Once an admin connects the ' + (wa ? 'WhatsApp Business' : 'SMS phone') + ' account, this button sends instantly from the server – nothing opens. For now it opens ' + (wa ? 'WhatsApp' : 'the SMS app') + ' with the message ready. ',
+        ME && ME.role === 'admin' ? el('a', { href: '#/admin/messaging', onclick: closeDialog, style: 'font-weight:600' }, 'Connect it now →') : null)); }
   });
 }
 function pspPanel(t) {
@@ -3009,7 +3010,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16e';
+const APP_VERSION = '2026-11-16f';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
