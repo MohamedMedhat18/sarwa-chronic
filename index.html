@@ -1921,7 +1921,7 @@ function validationDialog(no) {
     const cv = cropCanvas(it.src);
     if (cv) cv.onclick = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), b => { it.src = { ...it.src, box: b }; it.boxFixed = true; draw(); });
     const parts = [
-      cv ? el('div', {}, el('div', { class: 'small muted', style: 'margin-bottom:2px' }, '👁 Written on the form' + (it.boxFixed ? ' (box corrected)' : '')), cv) : (it.ai ? el('span', { class: 'small muted' }, '👁 No position for this line – open the attachment to check') : null),
+      cv ? el('div', {}, el('div', { class: 'small muted', style: 'margin-bottom:2px' }, '👁 Written on the form' + (it.boxFixed ? ' (box corrected)' : '')), cv) : (it.ai ? el('span', { class: 'small muted' }, RD && RD.at < '2026-11-15T11:25:00Z' ? '👁 Read before the drug eye existed – Claude re-reads this ticket automatically (or press “Read again” at the top)' : '👁 No position for this line (PDF or not found) – open the attachment to check') : null),
       m ? el('div', { class: 'hist' }, el('div', {}, '📋 On file: ', el('b', {}, m.med_desc)), el('div', {}, (m.daily != null ? m.daily + '/day' : '') + (m.monthly != null ? ' · ' + m.monthly + '/month' : '') + ' · ', el('span', { class: histActive(m) ? 'hist-act' : 'hist-exp' }, histActive(m) ? 'Active until ' + dmy2(m.cov_end) : 'Ended ' + dmy2(m.cov_end))),
         el('div', { class: 'small muted' }, 'Since ' + dmy2(m.first_dist) + ' · last dispensed ' + dmy2(m.last_dist) + ' · ' + (m.status || ''))) : (hist && hist.length && it.name ? el('div', { class: 'hist' }, '🆕 Not in this member’s chronic history – new medicine') : null),
       it.ai ? el('div', { style: 'display:grid;gap:4px' },
@@ -2145,7 +2145,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15c';
+const APP_VERSION = '2026-11-15d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
