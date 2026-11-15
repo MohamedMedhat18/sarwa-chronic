@@ -2145,11 +2145,13 @@ function eobUpload(no) {
 const ICARE_URL = 'https://i-care.globemedegypt.com:8034/Index.cfm';
 function parseICare(txt) {
   const s = '\n' + String(txt || '').replace(/\r/g, '').replace(/ /g, ' ');
-  const g = label => { const m = s.match(new RegExp('\\n[ \\t*•-]*' + label + '[ \\t]*:?[ \\t]*([^\\n]*)', 'i')); return m ? m[1].replace(/\s+/g, ' ').trim() : ''; };
+  // value on the same line ("Label:<tab>value") or on the next line ("Label:" newline "value")
+  const g = label => { const m = s.match(new RegExp('\\n[ \\t*•-]*' + label + '[ \\t]*:?[ \\t]*([^\\n]*)(?:\\n[ \\t]*([^\\n]*))?', 'i')); if (!m) return ''; const same = m[1].replace(/\s+/g, ' ').trim(); const next = (m[2] || '').replace(/\s+/g, ' ').trim(); return same || (next && !/:\s*$/.test(next) && !/^(Risk Carrier|Holder Name|Adherent|Individual Number|Insured Mobile|Contract|Date of Birth|Relation|Gender|Marital|GlobeMed Baby|Starting Date|U\/W|Questionnaire|GR\b|Blacklisting|Dependants|Exclusions)/i.test(next) ? next : ''); };
   const a = { riskCarrier: g('Risk Carrier'), holder: g('Holder Name'), name: g('Adherent Name'), individual: normDigits(g('Individual Number')).replace(/\D/g, ''), mobile: g('Insured Mobile Number'),
     cls: g('Adherent Class'), contract: g('Contract Number'), contractType: g('Contract Type'), dob: g('Date of Birth'), relation: g('Relation'), gender: g('Gender'), marital: g('Marital Status'),
     start: g('Starting Date'), expiry: g('Contract Expi\\w* Date'), uw: g('U/W Flag'), gr: g('GR'), grDate: g('GR Date'), blacklistDate: g('Blacklisting Date'), blacklistReason: g('Blacklisting Reason') };
   for (const k of Object.keys(a)) if (/^(Insured|Adherent|Contract|Date of|Relation|Gender|Marital|GlobeMed|Starting|U\/W|Questionnaire|GR|Blacklisting)\b/.test(a[k])) a[k] = '';   // empty field picked up the next label
+  if (/\($/.test(a.cls)) { const m = s.match(/Adherent Class\s*:?\s*([^\n]*\(\s*\n?\s*[^\n)]*\)?)/i); if (m) a.cls = m[1].replace(/\s+/g, ' ').trim(); }
   const limits = []; const n = v => v == null || v === '' ? null : +String(v).replace(/,/g, '');
   // table copied from the page / PDF:  <Level> <Description> EGP <limit> <used|Per Transaction> <balance>
   const re = /(AML|Disease Related Condition|Sub[ -]?Category)\b([\s\S]*?)\b(EGP|USD|EUR)\b\s*([\d,]+(?:\.\d+)?)\s*(Per Transaction|[\d,]+(?:\.\d+)?)?\s*([\d,]+(?:\.\d+)?)?/gi; let m;
@@ -2207,10 +2209,18 @@ function icareDialog(no) {
     } }, 'Save i-CARE check')], 'min(900px,calc(100vw - 24px))');
   ta.focus();
 }
+// With the contract no. known, open the member's Administrative Info page directly (i-CARE must be signed in in this browser);
+// otherwise open i-CARE with the card no. copied for Patient Information.
 async function openICare(t) {
   const id = normDigits(String(t.member || (t.aiRead && t.aiRead.data && t.aiRead.data.member) || '')).trim();
-  if (id) { try { await navigator.clipboard.writeText(id); toast('Card no. ' + id + ' copied – paste it in Individual Nbr.'); } catch { toast('Card no.: ' + id); } }
-  window.open(ICARE_URL, 'icare');
+  const w = window.open('about:blank', 'icare');   // open now (inside the click), fill the address after the lookup
+  let contract = (t.icare && t.icare.admin && t.icare.admin.contract) || ((t.eobs || []).find(e => e.policyNo) || {}).policyNo || '';
+  if (!contract && /^\d{6,10}$/.test(id)) { try { const { data } = await SB.from('member_meds').select('contract').eq('member', id).not('contract', 'is', null).limit(1); contract = (data && data[0] && data[0].contract) || ''; } catch { } }
+  contract = String(contract || '').replace(/\D/g, '');
+  if (id) { try { await navigator.clipboard.writeText(id); } catch { } }
+  const url = id && contract ? ICARE_URL.replace(/Index\.cfm$/, '') + `assistance/AdministrativeInfo.cfm?indnbr=${id}&contnbr=${contract}` : ICARE_URL;
+  if (w) w.location.href = url; else window.open(url, 'icare');
+  toast(id && contract ? 'Opening ' + id + ' in i-CARE: Ctrl+A, Ctrl+C there, then “Paste i-CARE info”. For limits press “Remaining Limitation and Excess amount”.' : id ? 'Card no. ' + id + ' copied – Patient Information › paste it in Individual Nbr.' : 'Open Patient Information in i-CARE');
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -2795,7 +2805,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16b';
+const APP_VERSION = '2026-11-16c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
