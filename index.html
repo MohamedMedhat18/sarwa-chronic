@@ -2318,18 +2318,11 @@ async function openICare(t) {
   contract = String(contract || '').replace(/\D/g, '');
   if (id) { try { await navigator.clipboard.writeText(id); } catch { } }
   if (!/^\d{6,10}$/.test(id)) { if (w) w.location.href = ICARE_URL; else window.open(ICARE_URL, 'icare'); return toast('Open Patient Information in i-CARE'); }
-  // i-CARE shows Administrative Info for the patient last searched in Patient Information (its session), whatever the link says –
-  // so first run its Patient Information search for this member (same form i-CARE posts), then open Administrative Info.
-  const base = ICARE_URL.replace(/Index\.cfm$/, '');
-  const f = el('form', { method: 'post', action: base + 'Assistance/Index.cfm', target: 'icare', style: 'display:none' },
-    [['Contnbr', contract], ['IndNbr', id], ['txtReference', ''], ['btnPatientInfo.x', '12'], ['btnPatientInfo.y', '9']].map(([n, v]) => el('input', { type: 'hidden', name: n, value: v })));
-  document.body.append(f); f.submit(); f.remove();
-  toast('Searching ' + id + ' in i-CARE…');
-  setTimeout(() => {
-    const url = base + `assistance/AdministrativeInfo.cfm?indnbr=${id}&contnbr=${contract}`;
-    try { if (w && !w.closed) w.location.href = url; } catch { }
-    toast('i-CARE: ' + id + ' – check the name, then Ctrl+A, Ctrl+C there and “Paste i-CARE info”. For limits press “Remaining Limitation and Excess amount”.');
-  }, 3500);
+  // i-CARE shows Administrative Info for the patient last searched in its Patient Information screen (its session), whatever the
+  // link says – so open i-CARE itself with the card no. copied; the agent searches it there (never post to i-CARE from this site:
+  // the browser does not send the i-CARE sign-in with it and i-CARE starts a new, signed-out session).
+  if (w) w.location.href = ICARE_URL; else window.open(ICARE_URL, 'icare');
+  toast('Card no. ' + id + ' copied. In i-CARE: Patient Information › paste in Individual Nbr. › Patient Information › Administrative Info.');
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -3022,7 +3015,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16g';
+const APP_VERSION = '2026-11-16h';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
