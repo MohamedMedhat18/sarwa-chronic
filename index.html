@@ -2295,6 +2295,8 @@ function icareDialog(no) {
     [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => {
       const c = parseICare(ta.value); if (!c.admin.name && !c.admin.individual && !c.limits.length) return toast('Nothing recognised – copy the i-CARE page text (Ctrl+A, Ctrl+C) and paste it');
       const v = icareVerdict(t, c); const bad = v.filter(x => x[0] === 'bad').length;
+      const tm = normDigits(String(t.member || '')).trim();
+      if (c.admin.individual && /^\d{6,10}$/.test(tm) && c.admin.individual !== tm) return toast(`Not saved: this i-CARE page is for another patient (${c.admin.individual}${c.admin.name ? ' ' + c.admin.name : ''}). Search ${tm} in Patient Information first.`);
       e.target.disabled = true;
       try {
         await emit('icare.check', no, { admin: c.admin, limits: c.limits, verdict: bad ? bad + ' problem(s)' : 'verified', issues: v.filter(x => x[0] !== 'ok').map(x => x[1]) });
@@ -2315,9 +2317,19 @@ async function openICare(t) {
   if (!contract && /^\d{6,10}$/.test(id)) { try { const { data } = await SB.from('member_meds').select('contract').eq('member', id).not('contract', 'is', null).limit(1); contract = (data && data[0] && data[0].contract) || ''; } catch { } }
   contract = String(contract || '').replace(/\D/g, '');
   if (id) { try { await navigator.clipboard.writeText(id); } catch { } }
-  const url = id && contract ? ICARE_URL.replace(/Index\.cfm$/, '') + `assistance/AdministrativeInfo.cfm?indnbr=${id}&contnbr=${contract}` : ICARE_URL;
-  if (w) w.location.href = url; else window.open(url, 'icare');
-  toast(id && contract ? 'Opening ' + id + ' in i-CARE: Ctrl+A, Ctrl+C there, then “Paste i-CARE info”. For limits press “Remaining Limitation and Excess amount”.' : id ? 'Card no. ' + id + ' copied – Patient Information › paste it in Individual Nbr.' : 'Open Patient Information in i-CARE');
+  if (!/^\d{6,10}$/.test(id)) { if (w) w.location.href = ICARE_URL; else window.open(ICARE_URL, 'icare'); return toast('Open Patient Information in i-CARE'); }
+  // i-CARE shows Administrative Info for the patient last searched in Patient Information (its session), whatever the link says –
+  // so first run its Patient Information search for this member (same form i-CARE posts), then open Administrative Info.
+  const base = ICARE_URL.replace(/Index\.cfm$/, '');
+  const f = el('form', { method: 'post', action: base + 'Assistance/Index.cfm', target: 'icare', style: 'display:none' },
+    [['Contnbr', contract], ['IndNbr', id], ['txtReference', ''], ['btnPatientInfo.x', '12'], ['btnPatientInfo.y', '9']].map(([n, v]) => el('input', { type: 'hidden', name: n, value: v })));
+  document.body.append(f); f.submit(); f.remove();
+  toast('Searching ' + id + ' in i-CARE…');
+  setTimeout(() => {
+    const url = base + `assistance/AdministrativeInfo.cfm?indnbr=${id}&contnbr=${contract}`;
+    try { if (w && !w.closed) w.location.href = url; } catch { }
+    toast('i-CARE: ' + id + ' – check the name, then Ctrl+A, Ctrl+C there and “Paste i-CARE info”. For limits press “Remaining Limitation and Excess amount”.');
+  }, 3500);
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -3010,7 +3022,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16f';
+const APP_VERSION = '2026-11-16g';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
