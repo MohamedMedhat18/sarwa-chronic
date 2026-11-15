@@ -679,6 +679,7 @@ function applyEv(S, e) {
       if (!t) return;
       for (const [k, v] of Object.entries(d)) {
         if (k === 'status') { setStatus(t, v, e.ts, e.by); continue; }
+        if (k.startsWith('_')) { t[k.slice(1)] = v; continue; }   // quiet fields (no timeline line)
         const from = t[k]; t[k] = v;
         const show = x => Array.isArray(x) ? (x.join(', ') || '—') : k === 'folder' && x ? '📁 ' + (((S.settings.folders || []).find(f => f.id === x) || {}).name || x) : (x || '—');
         t.timeline.push({ ts: e.ts, by: e.by, text: `${k[0].toUpperCase() + k.slice(1)}: ${show(from)} → ${show(v)}` });
@@ -686,6 +687,7 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'icare.check': if (!t) return; t.icare = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'i-CARE checked: ' + ((d.admin && d.admin.name) || '') + (d.verdict ? ' – ' + d.verdict : '') }); t.updated = e.ts; break;
     case 'eob.add': if (!t) return; t.eobs = (t.eobs || []).filter(x => x.approval !== d.approval); t.eobs.push({ ...d, at: e.ts, by: e.by }); t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + d.approval + ' added' + (d.totalApproved != null ? ' (' + d.totalApproved.toLocaleString() + ' EGP)' : '') }); t.updated = e.ts; break;
     case 'eob.remove': if (!t) return; { const x = (t.eobs || []).find(z => z.id === d.id); t.eobs = (t.eobs || []).filter(z => z.id !== d.id); if (x) t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + x.approval + ' removed' }); } break;
     case 'agent.avail': if (d.id) { S.avail[d.id] = { on: !!d.on, ts: e.ts, by: e.by }; const a = (S.settings.agents || []).find(x => x.id === d.id); if (a) a.avail = !!d.on; } break;
@@ -758,7 +760,7 @@ async function poll() {
   try {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
-    await runImporter();
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e));
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -838,6 +840,35 @@ async function runImporter() {
       scheduleRender();
     }
   } finally { importing = false; }
+}
+/* Member card no. + name filled in automatically: GlobeMed history (by card no.) first, else what Claude read on the form */
+let autoFillAt = 0;
+async function autoFillMembers() {
+  if (!DB || !STORE.connected || Date.now() - autoFillAt < 60000) return; autoFillAt = Date.now();
+  const formNo = t => normDigits(String((t.aiRead && t.aiRead.data && t.aiRead.data.member) || '')).trim();
+  const need = [...DB.tickets.values()].filter(t => !t.mergedInto && t.status !== 'Closed' && (!t.memberName || (!t.member && /^\d{6,10}$/.test(formNo(t)))));
+  if (!need.length) return;
+  const ids = [...new Set(need.map(t => normDigits(t.member || formNo(t)).trim()).filter(m => /^\d{6,10}$/.test(m)))].slice(0, 150);
+  const names = new Map();
+  if (ids.length) { const { data } = await SB.from('member_meds').select('member,member_name').in('member', ids).limit(2000); for (const r of data || []) if (r.member_name && !names.has(r.member)) names.set(r.member, r.member_name); }
+  if (await loadEvents()) DB = fold();   // another device may have filled them meanwhile
+  for (const t0 of need.slice(0, 30)) {
+    const t = DB.tickets.get(t0.no); if (!t) continue; const ch = {};
+    if (!t.member && /^\d{6,10}$/.test(formNo(t))) ch.member = formNo(t);
+    const m = ch.member || t.member;
+    if (!t.memberName) {
+      if (names.get(m)) { ch.memberName = names.get(m); ch._memberSrc = 'GlobeMed history'; }
+      else if (t.aiRead && t.aiRead.data && t.aiRead.data.memberName) { ch.memberName = String(t.aiRead.data.memberName).trim(); ch._memberSrc = 'form (AI)'; }
+    }
+    if (Object.keys(ch).length) { try { await emit('update', t.no, ch); } catch { } }
+  }
+}
+// same person? (Latin names: shared name parts; Arabic vs English cannot be compared)
+function sameName(a, b) {
+  const w = s => String(s || '').toUpperCase().replace(/[^A-Z ]+/g, ' ').split(/\s+/).filter(x => x.length >= 3 && !/^(ABD|EL|AL)$/.test(x));
+  const A = w(a), B = w(b); if (A.length < 2 || B.length < 2) return null;
+  const hit = A.filter(x => B.some(y => y === x || (x.length > 4 && y.length > 4 && (x.startsWith(y.slice(0, 5)) || y.startsWith(x.slice(0, 5)))))).length;
+  return hit >= Math.min(2, A.length, B.length);
 }
 function applyRules(base, email, hasAtt) {
   const S = DB.settings, out = { ...base }, used = [];
@@ -1391,6 +1422,7 @@ function ticketView(r) {
       } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null,
         isPSP(t) ? null : el('button', { class: 'btn ghost sm', type: 'button', title: 'Mark as PSP (needs an EOB approval before closing)', onclick: () => emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] }) }, '+ PSP')),
       isPSP(t) || (t.eobs || []).length ? pspPanel(t) : null,
+      icarePanel(t),
       t.validation ? [el('h3', {}, 'Validation'), el('div', { class: 'slabox' },
         (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to)) : null)),
         el('div', { class: 'small muted' }, 'by ' + t.validation.by + ' · ' + fmtDate(t.validation.at) + (t.exportedAt ? ' · exported to GlobeMed ' + fmtDate(t.exportedAt) : '')))] : null,
@@ -2109,6 +2141,94 @@ function eobUpload(no) {
   } });
   inp.click();
 }
+/* ---------------- GlobeMed i-CARE: verify the member (Administrative Info + Remaining Limitation) ---------------- */
+const ICARE_URL = 'https://i-care.globemedegypt.com:8034/Index.cfm';
+function parseICare(txt) {
+  const s = '\n' + String(txt || '').replace(/\r/g, '').replace(/ /g, ' ');
+  const g = label => { const m = s.match(new RegExp('\\n[ \\t*•-]*' + label + '[ \\t]*:?[ \\t]*([^\\n]*)', 'i')); return m ? m[1].replace(/\s+/g, ' ').trim() : ''; };
+  const a = { riskCarrier: g('Risk Carrier'), holder: g('Holder Name'), name: g('Adherent Name'), individual: normDigits(g('Individual Number')).replace(/\D/g, ''), mobile: g('Insured Mobile Number'),
+    cls: g('Adherent Class'), contract: g('Contract Number'), contractType: g('Contract Type'), dob: g('Date of Birth'), relation: g('Relation'), gender: g('Gender'), marital: g('Marital Status'),
+    start: g('Starting Date'), expiry: g('Contract Expi\\w* Date'), uw: g('U/W Flag'), gr: g('GR'), grDate: g('GR Date'), blacklistDate: g('Blacklisting Date'), blacklistReason: g('Blacklisting Reason') };
+  for (const k of Object.keys(a)) if (/^(Insured|Adherent|Contract|Date of|Relation|Gender|Marital|GlobeMed|Starting|U\/W|Questionnaire|GR|Blacklisting)\b/.test(a[k])) a[k] = '';   // empty field picked up the next label
+  const limits = []; const n = v => v == null || v === '' ? null : +String(v).replace(/,/g, '');
+  // table copied from the page / PDF:  <Level> <Description> EGP <limit> <used|Per Transaction> <balance>
+  const re = /(AML|Disease Related Condition|Sub[ -]?Category)\b([\s\S]*?)\b(EGP|USD|EUR)\b\s*([\d,]+(?:\.\d+)?)\s*(Per Transaction|[\d,]+(?:\.\d+)?)?\s*([\d,]+(?:\.\d+)?)?/gi; let m;
+  while ((m = re.exec(s))) {
+    const desc = m[2].replace(/[•|*]/g, ' ').replace(/Curr\s*:?/i, '').replace(/Financial Limit\s*:?/i, '').replace(/\s+/g, ' ').replace(/^[:\s]+|[:\s]+$/g, '').trim();
+    limits.push({ level: /^aml$/i.test(m[1]) ? 'AML' : /disease/i.test(m[1]) ? 'Disease Related Condition' : 'Sub Category', desc: desc.slice(0, 160), curr: m[3].toUpperCase(), limit: n(m[4]), used: /per/i.test(m[5] || '') ? null : n(m[5]), balance: n(m[6]), perTransaction: /per/i.test(m[5] || '') });
+  }
+  // or written as "Financial Limit: x | Used: y | Balance: z"
+  if (!limits.length) for (const blk of s.split(/\n(?=[ \t*•-]*(?:AML|Disease Related Condition|Sub Category))/i)) {
+    const lv = blk.match(/(AML|Disease Related Condition|Sub Category)/i); const fl = blk.match(/Financial Limit\s*:?\s*([\d,.]+)/i); if (!lv || !fl) continue;
+    const used = blk.match(/Used\s*:?\s*([\d,.]+)/i), bal = blk.match(/Balance\s*:?\s*([\d,.]+)/i), dsc = blk.match(/:\s*([^|\n]+)/);
+    limits.push({ level: /^aml$/i.test(lv[1]) ? 'AML' : /disease/i.test(lv[1]) ? 'Disease Related Condition' : 'Sub Category', desc: dsc ? dsc[1].trim().slice(0, 160) : '', curr: (blk.match(/EGP|USD|EUR/) || ['EGP'])[0], limit: n(fl[1]), used: used ? n(used[1]) : null, balance: bal ? n(bal[1]) : null, perTransaction: /per transaction/i.test(blk) });
+  }
+  return { admin: a, limits };
+}
+const dmyDate = s => { const m = String(s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null; };
+function icareVerdict(t, c) {
+  const a = c.admin || {}; const out = [];
+  const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
+  if (a.individual) out.push(a.individual === normDigits(String(t.member || '')).trim() ? ['ok', 'Card no. matches'] : t.member ? ['bad', 'Card no. differs from the ticket (' + t.member + ')'] : ['warn', 'Ticket had no card no.']);
+  if (a.name) { const s1 = sameName(a.name, formName), s2 = sameName(a.name, t.memberName); const s = s1 ?? s2; out.push(s === true ? ['ok', 'Name matches the request'] : s === false ? ['bad', 'Name differs: request says “' + (formName || t.memberName) + '”'] : ['warn', 'Name: compare with the form']); }
+  if (a.riskCarrier) out.push(/sarwa/i.test(a.riskCarrier) ? ['ok', 'Sarwa Life member'] : ['bad', 'Risk carrier: ' + a.riskCarrier]);
+  const exp = dmyDate(a.expiry); if (exp) out.push(exp >= new Date(new Date().toDateString()) ? ['ok', 'Contract active until ' + a.expiry] : ['bad', 'Contract EXPIRED ' + a.expiry]);
+  if (a.blacklistDate || a.blacklistReason) out.push(['bad', 'Blacklisted ' + a.blacklistDate + ' ' + a.blacklistReason]);
+  for (const l of c.limits || []) if (l.limit && l.balance != null) { const p = l.balance / l.limit; if (p <= 0.1 || l.balance < 2500) out.push([p <= 0.02 ? 'bad' : 'warn', (l.level === 'AML' ? 'Annual limit' : l.level === 'Disease Related Condition' ? 'Chronic (DRC) limit' : l.desc || l.level) + ' almost used: ' + l.balance.toLocaleString() + ' ' + l.curr + ' left of ' + l.limit.toLocaleString()]); }
+  return out;
+}
+function icareDialog(no) {
+  const t = DB.tickets.get(no); const ta = el('textarea', { rows: 12, style: 'width:100%;font-family:Consolas,monospace;font-size:12px', placeholder: 'In i-CARE: Patient Information › Administrative Info → Ctrl+A, Ctrl+C, then paste here.\nThen Remaining Limitation and Excess amount → Ctrl+A, Ctrl+C, paste under it.' });
+  const prev = el('div');
+  const show = () => {
+    const c = parseICare(ta.value); const a = c.admin; const v = icareVerdict(t, c);
+    const fields = [['Name', a.name], ['Individual no.', a.individual], ['Holder', a.holder], ['Class', a.cls], ['Contract', a.contract + (a.contractType ? ' (' + a.contractType + ')' : '')], ['Date of birth', a.dob], ['Relation', a.relation], ['Gender', a.gender], ['Mobile', a.mobile], ['Start → expiry', (a.start || '?') + ' → ' + (a.expiry || '?')]].filter(x => x[1] && x[1] !== ' ()' && x[1] !== '? → ?');
+    prev.replaceChildren(fields.length || c.limits.length ? el('div', { class: 'hpanel', style: 'display:grid;gap:8px' },
+      el('div', { class: 'row', style: 'gap:6px' }, v.map(([k, txt]) => el('span', { class: 'pill ' + (k === 'ok' ? 'p-ok' : k === 'bad' ? 'p-over' : 'p-due') }, (k === 'ok' ? '✓ ' : '⚠ ') + txt))),
+      el('div', { class: 'g2 small' }, fields.map(([k, val]) => el('div', {}, el('span', { class: 'muted' }, k + ': '), el('b', { dir: 'auto' }, val)))),
+      c.limits.length ? el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Level', 'Description', 'Limit', 'Used', 'Balance'].map(h => el('th', {}, h)))), el('tbody', {}, c.limits.map(l => el('tr', {}, el('td', {}, l.level), el('td', { class: 'small' }, l.desc), el('td', { class: 'n' }, l.limit?.toLocaleString() ?? '—'), el('td', { class: 'n' }, l.perTransaction ? 'Per transaction' : l.used?.toLocaleString() ?? '—'), el('td', { class: 'n' }, el('b', {}, l.balance?.toLocaleString() ?? '—')))))) : el('div', { class: 'small muted' }, 'No limits found yet – paste the “Remaining Limitation and Excess amount” page too.'))
+      : el('div', { class: 'small muted' }, 'Paste the i-CARE text above – the details appear here.'));
+  };
+  ta.addEventListener('input', show); show();
+  openDialog('i-CARE check – ' + no + (t.member ? ' · ' + t.member : ''), [
+    el('div', { class: 'row', style: 'gap:8px' }, el('button', { class: 'btn', type: 'button', onclick: () => openICare(t) }, '🔎 Open i-CARE (card no. copied)'), el('span', { class: 'small muted' }, 'Patient Information › Individual Nbr. › Administrative Info, then Remaining Limitation and Excess amount.')),
+    ta, prev],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => {
+      const c = parseICare(ta.value); if (!c.admin.name && !c.admin.individual && !c.limits.length) return toast('Nothing recognised – copy the i-CARE page text (Ctrl+A, Ctrl+C) and paste it');
+      const v = icareVerdict(t, c); const bad = v.filter(x => x[0] === 'bad').length;
+      e.target.disabled = true;
+      try {
+        await emit('icare.check', no, { admin: c.admin, limits: c.limits, verdict: bad ? bad + ' problem(s)' : 'verified', issues: v.filter(x => x[0] !== 'ok').map(x => x[1]) });
+        const ch = {}; if (!t.member && c.admin.individual) ch.member = c.admin.individual;
+        if (c.admin.name && (!t.memberName || t.memberSrc !== 'i-CARE')) { ch.memberName = c.admin.name; ch._memberSrc = 'i-CARE'; }
+        if (Object.keys(ch).length) await emit('update', no, ch);
+        closeDialog(); toast(bad ? 'Saved – ' + bad + ' problem(s) found, see the i-CARE panel' : 'Member verified in i-CARE ✓');
+      } catch (x) { toast(x.message); e.target.disabled = false; }
+    } }, 'Save i-CARE check')], 'min(900px,calc(100vw - 24px))');
+  ta.focus();
+}
+async function openICare(t) {
+  const id = normDigits(String(t.member || (t.aiRead && t.aiRead.data && t.aiRead.data.member) || '')).trim();
+  if (id) { try { await navigator.clipboard.writeText(id); toast('Card no. ' + id + ' copied – paste it in Individual Nbr.'); } catch { toast('Card no.: ' + id); } }
+  window.open(ICARE_URL, 'icare');
+}
+function icarePanel(t) {
+  const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
+  const nameWarn = formName && t.memberName && sameName(formName, t.memberName) === false;
+  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm', type: 'button', onclick: () => openICare(t) }, '🔎 Open i-CARE'), el('button', { class: 'btn sm primary', type: 'button', onclick: () => icareDialog(t.no) }, c ? '↻ Check again' : '📋 Paste i-CARE info'));
+  if (!c) return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid var(--border)' },
+    el('div', { class: 'small muted' }, 'Not verified yet. Check the member, contract and remaining limits in i-CARE.'),
+    t.memberName ? el('div', { class: 'small' }, 'Name: ', el('b', { dir: 'auto' }, t.memberName), t.memberSrc ? el('span', { class: 'muted' }, ' (from ' + t.memberSrc + ')') : null) : null,
+    nameWarn ? el('div', { class: 'small', style: 'color:var(--bad)' }, '⚠ Form says “' + formName + '”') : null, btns)];
+  const a = c.admin || {}; const v = icareVerdict(t, c); const bad = v.some(x => x[0] === 'bad'), warn = v.some(x => x[0] === 'warn');
+  return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid ' + (bad ? 'var(--bad)' : warn ? '#c98a00' : '#2f8a4f') },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', { dir: 'auto' }, a.name || '—'), el('span', { class: 'pill ' + (bad ? 'p-over' : warn ? 'p-due' : 'p-ok') }, bad ? '⚠ Check' : warn ? '⚠ Note' : '✓ Verified')),
+    el('div', { style: 'display:grid;gap:3px' }, v.map(([k, txt]) => el('div', { class: 'small', style: 'color:' + (k === 'ok' ? '#2f8a4f' : k === 'bad' ? 'var(--bad)' : '#9a6a00') }, (k === 'ok' ? '✓ ' : '⚠ ') + txt))),
+    el('div', { class: 'small', style: 'display:grid;gap:2px' }, [['Holder', a.holder], ['Class', a.cls], ['Contract', a.contract], ['Born', a.dob], ['Relation', a.relation], ['Mobile', a.mobile], ['Valid', (a.start || '') + ' → ' + (a.expiry || '')]].filter(x => x[1] && x[1].trim() !== '→').map(([k, val]) => el('div', {}, el('span', { class: 'muted' }, k + ': '), val))),
+    (c.limits || []).filter(l => l.limit).map(l => { const p = l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('span', {}, l.level === 'Disease Related Condition' ? 'Chronic (DRC)' : l.level === 'AML' ? 'Annual (AML)' : (l.desc || l.level)), el('b', {}, l.perTransaction ? l.limit.toLocaleString() + ' / visit' : (l.balance != null ? l.balance.toLocaleString() : '—') + ' left')),
+      p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
+    el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + ' · ' + fmtDate(c.at)), btns)];
+}
 function pspPanel(t) {
   const eobs = t.eobs || []; const pdfs = []; const seen = new Set();
   for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seen.has(a.path) && (a.mime === 'application/pdf' || /\.pdf$/i.test(a.name || ''))) { seen.add(a.path); pdfs.push(a); }
@@ -2675,7 +2795,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16a';
+const APP_VERSION = '2026-11-16b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
