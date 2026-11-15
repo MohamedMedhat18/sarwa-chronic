@@ -195,7 +195,7 @@ dialog::backdrop{background:rgba(10,15,20,.5)}
 .banner{background:var(--warn-bg);color:var(--warn);padding:8px 16px;font-size:13px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .kbd{font-family:Consolas,monospace;font-size:11.5px;border:1px solid var(--border);border-bottom-width:2px;border-radius:4px;padding:0 4px}
 iframe.orig{width:100%;height:60vh;border:1px solid var(--border);border-radius:8px;background:#fff}
-@media (max-width:640px){.top h1{display:none}.sync span.t{display:none}.app{grid-template-columns:52px minmax(0,1fr)}.rail a{width:40px;height:40px}}
+@media (max-width:640px){#availBtn .t{display:none}.top h1{display:none}.sync span.t{display:none}.app{grid-template-columns:52px minmax(0,1fr)}.rail a{width:40px;height:40px}}
 </style>
 </head>
 <body>
@@ -215,6 +215,7 @@ iframe.orig{width:100%;height:60vh;border:1px solid var(--border);border-radius:
       <form class="search" id="searchForm" role="search"><input type="search" id="q" placeholder="Search tickets, member no., email…  ( / )" aria-label="Search tickets"></form>
       <div class="grow"></div>
       <button class="btn" id="installBtn" type="button" hidden>⬇ Install app</button>
+      <button class="btn" id="availBtn" type="button" hidden title="Auto-assign: when On, new tickets of your groups come straight to you">⚪ Auto-assign: Off</button>
       <button class="btn primary" id="newBtn" type="button">+ New ticket</button>
       <div class="sync" id="sync" title="Sync status"><span class="dot"></span><span class="t" id="syncT">Not connected</span></div>
       <div class="me" id="meBtn" role="button" tabindex="0"><span class="av sm" id="meAv">?</span><span id="meName">Set your name</span></div>
@@ -561,14 +562,15 @@ async function emit(type, t, d) {
   const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type, t: e.t, d: e.d });
   if (error) { toast('Could not save: ' + error.message); throw new Error(error.message); }
   STORE.events.set(id, e);
-  applyEv(DB, e); scheduleRender();
+  if (type === 'settings' || type === 'agent.avail') DB = fold(); else applyEv(DB, e);   // team-wide settings: rebuild so agents/groups update at once
+  scheduleRender();
   return e;
 }
 const rowToEv = r => ({ id: r.id, ts: new Date(r.ts).toISOString(), by: r.actor, pc: r.pc, type: r.type, t: r.t, d: r.d || {}, seq: r.seq });
 let refoldT = null;
 function refoldSoon() { clearTimeout(refoldT); refoldT = setTimeout(() => { DB = fold(); scheduleRender(); updateBadges(); }, 120); }
 async function nextNo() { const { data, error } = await SB.rpc('next_ticket'); if (error) throw new Error('Could not get a ticket number: ' + error.message); return data; }
-function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0 }; }
+function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {} }; }
 function setStatus(t, s, ts, by) {
   if (!s || t.status === s) return; const from = t.status; t.status = s; t.history.push({ ts, status: s });
   if (s === 'Resolved') t.resolvedAt = ts;
@@ -618,6 +620,7 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'agent.avail': if (d.id) { S.avail[d.id] = { on: !!d.on, ts: e.ts, by: e.by }; const a = (S.settings.agents || []).find(x => x.id === d.id); if (a) a.avail = !!d.on; } break;
     case 'ai.request': if (!t) return; t.aiRequested = e.ts; t.timeline.push({ ts: e.ts, by: e.by, text: 'Asked Claude to read the attachments' }); break;
     case 'ai.read': if (!t) return; t.aiRead = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: d.error ? 'AI reader: ' + d.error : 'AI read the prescription: ' + ((d.data && d.data.items) || []).length + ' item(s), ' + ((d.data && d.data.labs) || []).length + ' lab(s)' }); break;
     case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
@@ -629,10 +632,31 @@ function fold() {
   const S = newState();
   const evs = [...STORE.events.values()].sort((a, b) => a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : (a.id < b.id ? -1 : 1));
   for (const e of evs) { try { applyEv(S, e); } catch (err) { console.warn('event', e, err); } }
-  // agents = the team's sign-in accounts (group per agent is a team setting)
-  const groups = S.settings.agentGroups || {};
-  S.settings.agents = TEAM.map(p => ({ name: p.name || p.email, email: p.email, group: groups[p.id] || '', active: p.active !== false }));
+  // agents = the team's sign-in accounts (groups per agent are a team setting; auto-assign is each agent's own switch)
+  S.settings.agents = TEAM.map(p => { const g = agentGroupsOf(S.settings, p.id); return { id: p.id, name: p.name || p.email, email: p.email, groups: g, group: g[0] || '', active: p.active !== false, avail: !!(S.avail[p.id] && S.avail[p.id].on) }; });
   return S;
+}
+/* ---- sender groups (e.g. all emails from @goodlife.com.eg -> group "Glow And Fast Track") and auto-assign ---- */
+const FREE_MAIL = /^(gmail|googlemail|yahoo|ymail|hotmail|outlook|live|msn|icloud|me|aol|proton|protonmail)\.[a-z.]+$/i;
+const domainOf = e => (String(e || '').toLowerCase().split('@')[1] || '').trim();
+const isFreeMail = d => FREE_MAIL.test(d);
+function agentGroupsOf(S, pid) { const v = (S.agentGroups || {})[pid]; return Array.isArray(v) ? v.filter(Boolean) : v ? [v] : []; }
+function senderGroupOf(email, S = DB.settings) {
+  const e = String(email || '').toLowerCase().trim(), d = domainOf(e); if (!e) return '';
+  const G = S.senderGroups || {};
+  for (const [g, v] of Object.entries(G)) if ((v.emails || []).includes(e)) return g;
+  for (const [g, v] of Object.entries(G)) if (d && (v.domains || []).includes(d)) return g;
+  return '';
+}
+// who gets a new ticket of this group: agents who switched Auto-assign ON and belong to the group
+// (agents with no group take any group when nobody from the group is on); least open tickets first
+function pickAgent(group, D = DB) {
+  const on = (D.settings.agents || []).filter(a => a.active && a.avail);
+  let c = group ? on.filter(a => a.groups.includes(group)) : [];
+  if (!c.length) c = on.filter(a => !a.groups.length);
+  if (!c.length) return '';
+  const load = n => { let k = 0; for (const t of D.tickets.values()) if (t.agent === n && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto) k++; return k; };
+  return c.map(a => [a.name, load(a.name)]).sort((x, y) => x[1] - y[1])[0][0];
 }
 const DAY = 86400000;
 // new rows since the last one we have (cached in this browser, so start-up is instant)
@@ -760,10 +784,7 @@ function applyRules(base, email, hasAtt) {
     if (r.set && r.set.tags) out.tags = [...new Set([...(out.tags || []), ...String(r.set.tags).split(',').map(s => s.trim()).filter(Boolean)])];
     used.push(r.name || 'Rule');
   }
-  if (S.general.roundRobin && out.group && !out.agent) {
-    const agents = (S.agents || []).filter(a => a.active !== false && (!a.group || a.group === out.group)).map(a => a.name);
-    if (agents.length) { const load = n => [...DB.tickets.values()].filter(t => t.agent === n && t.status !== 'Resolved' && t.status !== 'Closed').length; out.agent = agents.sort((a, b) => load(a) - load(b))[0]; used.push('Round-robin'); }
-  }
+  if (!out.agent) { const a = pickAgent(out.group); if (a) { out.agent = a; used.push('Auto-assign'); } }
   out.ruleNames = used; return out;
 }
 async function saveAtts(no, list) {
@@ -799,7 +820,7 @@ async function importFile(name, opts) {
     await emit('email.ignored', null, { key: name, file: name, mid, why: atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
   }
   const G = DB.settings.general;
-  const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: G.defaultGroup, agent: '', tags: [] };
+  const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: senderGroupOf(email.fromEmail) || G.defaultGroup, agent: '', tags: [] };
   const fields = applyRules(base, email, counted.length > 0);
   const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
@@ -855,6 +876,7 @@ function updateBadges() {
   const c = $('#cntNew'); c.hidden = !unassigned; c.textContent = unassigned > 99 ? '99+' : unassigned;
   document.title = (unassigned ? `(${unassigned}) ` : '') + 'Sarwa Chronic';
   const n = me(); $('#meName').textContent = n || 'Set your name'; $('#meAv').replaceWith(Object.assign(avatar(n || '?', true), { id: 'meAv' }));
+  drawAvail();
 }
 const stCls = s => 'st st-' + String(s).split(' ')[0];
 const agentsList = () => [...new Set([...(DB.settings.agents || []).filter(a => a.active !== false).map(a => a.name), ...[...DB.tickets.values()].map(t => t.agent).filter(Boolean)])].sort();
@@ -873,8 +895,14 @@ const VIEW_DEFS = {
   all: { label: 'All tickets', f: () => true }
 };
 const LIST = { sel: new Set(), shown: 50, last: [], filters: JSON.parse(lsGet('hd-filters', '{}') || '{}') };
+const openT = t => t.status !== 'Resolved' && t.status !== 'Closed';
+function viewDef(view) {
+  if (view && view.startsWith('g:')) { const g = view.slice(2); return { label: 'Group: ' + g, f: t => t.group === g && openT(t) }; }
+  if (view === 'mygroups') { const mine = ME ? agentGroupsOf(DB.settings, ME.id) : []; return { label: 'My groups', f: t => mine.includes(t.group) && openT(t) }; }
+  return VIEW_DEFS[view] || VIEW_DEFS.unresolved;
+}
 function ticketList(r) {
-  const view = r.params.get('view') || 'unresolved', q = r.params.get('q') || '';
+  const view = r.params.get('view') || 'unresolved', q = r.params.get('q') || ''; const VD = viewDef(view);
   const F = LIST.filters; F.sort = F.sort || 'created'; F.dir = F.dir || 'desc';
   const root = el('div', { class: 'lt' }); const left = el('div'); const filters = el('aside', { class: 'filters', 'aria-label': 'Filters' });
   root.append(left, filters);
@@ -887,7 +915,7 @@ function ticketList(r) {
     const ql = normDigits(q.trim().toLowerCase());
     for (const t of DB.tickets.values()) {
       const s = slaOf(t);
-      if (!VIEW_DEFS[view].f(t, s)) continue;
+      if (!VD.f(t, s)) continue;
       if (view !== 'all' && view !== 'closed' && t.mergedInto) continue;
       if (F.agent && (F.agent === '__none' ? t.agent : t.agent !== F.agent)) continue;
       if (F.group && t.group !== F.group) continue;
@@ -913,6 +941,7 @@ function ticketList(r) {
     if (!t.agent && t.status === 'Open' && !t.lastOut) badges.push(el('span', { class: 'pill p-new' }, 'New'));
     if (VIEW_DEFS.responded.f(t)) badges.push(el('span', { class: 'pill p-resp' }, 'Provider responded'));
     if (t.aiRead && t.aiRead.data && !t.validation) badges.push(el('span', { class: 'pill', style: 'background:var(--accent-soft);color:var(--accent)', title: 'Claude read the prescription – open Validate to review' }, '✨ AI read'));
+    if (t.group && t.group !== DB.settings.general.defaultGroup) badges.push(el('span', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0', title: 'Group' }, '👥 ' + t.group));
     if (s.overdue) badges.push(el('span', { class: 'pill p-over' }, 'Overdue'));
     else if (s.frPending && Date.now() > s.frDue) badges.push(el('span', { class: 'pill p-over' }, 'First response overdue'));
     else if (s.dueToday) badges.push(el('span', { class: 'pill p-due' }, 'Due today'));
@@ -939,7 +968,11 @@ function ticketList(r) {
     return rowEl;
   }
   function drawHead() {
-    const vs = el('select', { class: 'viewsel', 'aria-label': 'Ticket view', onchange: e => setParam('view', e.target.value) }, Object.entries(VIEW_DEFS).map(([k, v]) => opt(k, v.label, view)));
+    const myG = ME ? agentGroupsOf(DB.settings, ME.id) : [];
+    const gCount = g => { let k = 0; for (const t of DB.tickets.values()) if (t.group === g && openT(t) && !t.mergedInto) k++; return k; };
+    const vs = el('select', { class: 'viewsel', 'aria-label': 'Ticket view', onchange: e => setParam('view', e.target.value) },
+      Object.entries(VIEW_DEFS).map(([k, v]) => opt(k, v.label, view)),
+      el('optgroup', { label: 'Groups' }, myG.length ? opt('mygroups', 'My groups (' + myG.join(', ') + ')', view) : null, DB.settings.groups.map(g => opt('g:' + g, 'Group: ' + g + ' (' + gCount(g) + ')', view))));
     const sortSel = el('select', { 'aria-label': 'Sort by', onchange: e => { F.sort = e.target.value; saveF(); draw(); } }, [['created', 'Date created'], ['updated', 'Last modified'], ['due', 'Due by time'], ['priority', 'Priority'], ['status', 'Status']].map(([v, l]) => opt(v, 'Sort: ' + l, F.sort)));
     const dirB = el('button', { class: 'btn sm', type: 'button', title: 'Sort order', onclick: () => { F.dir = F.dir === 'asc' ? 'desc' : 'asc'; saveF(); draw(); } }, F.dir === 'asc' ? '↑ Oldest first' : '↓ Newest first');
     const parts = [vs, el('span', { class: 'muted small' }, `${LIST.last.length} ticket${LIST.last.length === 1 ? '' : 's'}`), q ? el('span', { class: 'pill p-muted' }, 'Search: ' + q, el('button', { class: 'btn ghost sm', type: 'button', onclick: () => { $('#q').value = ''; setParam('q', ''); } }, '×')) : null, el('div', { style: 'flex:1' }), sortSel, dirB,
@@ -1240,26 +1273,88 @@ function ignoredView() {
 /* ---------------- Contacts & members ---------------- */
 function contactsView(r) {
   const root = el('div', { class: 'pad' }); const tab = r.params.get('tab') || 'req'; let q = '';
-  const box = el('div');
-  function draw() {
-    const T = [...DB.tickets.values()]; const map = new Map();
-    for (const t of T) {
-      const k = tab === 'req' ? (t.requester.email || t.requester.name || '—').toLowerCase() : (t.member || ''); if (!k) continue;
-      const c = map.get(k) || { key: k, name: '', email: '', member: '', count: 0, open: 0, last: '' };
-      c.count++; if (t.status !== 'Resolved' && t.status !== 'Closed') c.open++; if (!c.last || t.created > c.last) c.last = t.created;
-      if (tab === 'req') { c.name = t.requester.name || c.name; c.email = t.requester.email || c.email; } else { c.member = t.member; c.name = t.memberName || c.name; }
+  const box = el('div'); const bar = el('div'); const sel = new Set();   // selected keys: email (senders) or domain (domains)
+  const isAdmin = ME && ME.role === 'admin';
+  const groupOfKey = k => tab === 'dom' ? (Object.entries(DB.settings.senderGroups || {}).find(([g, v]) => (v.domains || []).includes(k)) || [''])[0] : senderGroupOf(k);
+  function rowsNow() {
+    const map = new Map();
+    for (const t of DB.tickets.values()) {
+      if (t.mergedInto) continue;
+      const em = (t.requester.email || '').toLowerCase(), dom = domainOf(em);
+      const k = tab === 'req' ? (em || (t.requester.name || '').toLowerCase()) : tab === 'dom' ? dom : (t.member || '');
+      if (!k) continue;
+      const c = map.get(k) || { key: k, name: '', email: '', member: '', count: 0, open: 0, last: '', senders: new Set() };
+      c.count++; if (openT(t)) c.open++; if (!c.last || t.created > c.last) c.last = t.created;
+      if (tab === 'req') { c.name = t.requester.name || c.name; c.email = t.requester.email || c.email; }
+      else if (tab === 'dom') { c.name = dom; c.senders.add(em); }
+      else { c.member = t.member; c.name = t.memberName || c.name; }
       map.set(k, c);
     }
-    const ql = normDigits(q.toLowerCase()); const rows = [...map.values()].filter(c => !ql || normDigits([c.name, c.email, c.member].join(' ').toLowerCase()).includes(ql)).sort((a, b) => b.count - a.count);
+    const ql = normDigits(q.toLowerCase());
+    return [...map.values()].filter(c => !ql || normDigits([c.name, c.email, c.member, c.key, groupOfKey(c.key)].join(' ').toLowerCase()).includes(ql)).sort((a, b) => b.count - a.count);
+  }
+  function drawBar() {
+    if (tab === 'mem' || !sel.size) { bar.replaceChildren(tab === 'mem' ? null : el('p', { class: 'small muted', style: 'margin:0 0 10px' }, 'Tick senders or company domains to put them in a group (e.g. Glow And Fast Track). Their new emails go straight to that group and to its agents who switched Auto-assign on.')); return; }
+    if (!isAdmin) { bar.replaceChildren(el('div', { class: 'banner', style: 'border-radius:9px;margin-bottom:10px' }, 'Only an admin can change sender groups.')); return; }
+    const gSel = el('select', { 'aria-label': 'Group' }, DB.settings.groups.map(g => opt(g, g, '')), opt('__new', '+ New group…', ''));
+    const byDom = el('input', { type: 'checkbox', checked: true });
+    const moveOpen = el('input', { type: 'checkbox', checked: true });
+    bar.replaceChildren(el('div', { class: 'row', style: 'background:var(--accent-soft);border-radius:9px;padding:8px 10px;margin-bottom:10px;gap:10px' },
+      el('b', {}, sel.size + ' selected'), el('span', {}, 'Add to group'), gSel,
+      tab === 'req' ? el('label', { class: 'row small', title: 'Company emails: add the whole domain (e.g. @goodlife.com.eg) so every sender from that company is included. Gmail/Yahoo/Hotmail are always added one by one.' }, byDom, 'Whole company domain') : null,
+      el('label', { class: 'row small' }, moveOpen, 'Move their open tickets too'),
+      el('button', { class: 'btn primary sm', type: 'button', onclick: async e => {
+        let g = gSel.value;
+        if (g === '__new') { g = (prompt('Name of the new group (e.g. Glow And Fast Track):') || '').trim(); if (!g) return; }
+        e.target.disabled = true; await assignSenders(g, byDom.checked, moveOpen.checked); e.target.disabled = false;
+      } }, 'Apply'),
+      el('button', { class: 'btn sm', type: 'button', onclick: async e => { e.target.disabled = true; await assignSenders('', false, false); e.target.disabled = false; } }, 'Remove from group'),
+      el('button', { class: 'btn ghost sm', type: 'button', onclick: () => { sel.clear(); draw(); } }, 'Clear')));
+  }
+  async function assignSenders(group, byDom, moveOpen) {
+    const S = DB.settings; const SG = clone(S.senderGroups || {});
+    const keys = [...sel].filter(k => !(tab === 'dom' && isFreeMail(k))).map(k => tab === 'dom' ? { domain: k } : (byDom && domainOf(k) && !isFreeMail(domainOf(k)) ? { domain: domainOf(k) } : { email: k }));
+    for (const v of Object.values(SG)) { v.domains = (v.domains || []).filter(d => !keys.some(x => x.domain === d)); v.emails = (v.emails || []).filter(m => !keys.some(x => x.email === m || (x.domain && domainOf(m) === x.domain))); }
+    if (group) {
+      const v = SG[group] = SG[group] || { domains: [], emails: [] };
+      for (const x of keys) { if (x.domain && !v.domains.includes(x.domain)) v.domains.push(x.domain); if (x.email && !v.emails.includes(x.email)) v.emails.push(x.email); }
+      if (!S.groups.includes(group)) await emit('settings', null, { section: 'groups', value: [...S.groups, group] });
+    }
+    for (const g of Object.keys(SG)) if (!SG[g].domains.length && !SG[g].emails.length) delete SG[g];
+    await emit('settings', null, { section: 'senderGroups', value: SG });
+    let moved = 0;
+    if (group && moveOpen) {
+      const hit = t => { const em = (t.requester.email || '').toLowerCase(); return keys.some(x => x.email === em || (x.domain && domainOf(em) === x.domain)); };
+      for (const t of [...DB.tickets.values()]) if (openT(t) && !t.mergedInto && t.group !== group && hit(t)) {
+        const ch = { group }; if (!t.agent) { const a = pickAgent(group); if (a) ch.agent = a; }
+        await emit('update', t.no, ch); moved++;
+      }
+    }
+    sel.clear(); toast(group ? `Added to “${group}”` + (moved ? ` · ${moved} open ticket(s) moved` : '') : 'Removed from group'); draw();
+  }
+  function draw() {
+    const rows = rowsNow();
+    drawBar();
+    const pickable = c => !(tab === 'dom' && isFreeMail(c.key));
+    const allOn = rows.some(pickable) && rows.slice(0, 500).filter(pickable).every(c => sel.has(c.key));
+    const head = tab === 'mem' ? [el('th', {}, 'Member no.'), el('th', {}, 'Member name')]
+      : [el('th', { style: 'width:28px' }, el('input', { type: 'checkbox', 'aria-label': 'Select all', checked: allOn, onchange: e => { rows.slice(0, 500).filter(pickable).forEach(c => e.target.checked ? sel.add(c.key) : sel.delete(c.key)); draw(); } })),
+        ...(tab === 'req' ? [el('th', {}, 'Name'), el('th', {}, 'Email')] : [el('th', {}, 'Domain'), el('th', {}, 'Senders')]), el('th', {}, 'Group')];
     box.replaceChildren(rows.length ? el('div', { class: 'tw' }, el('table', { class: 't' },
-      el('thead', {}, el('tr', {}, tab === 'req' ? [el('th', {}, 'Name'), el('th', {}, 'Email')] : [el('th', {}, 'Member no.'), el('th', {}, 'Member name')], el('th', {}, 'Tickets'), el('th', {}, 'Open'), el('th', {}, 'Last ticket'))),
-      el('tbody', {}, rows.slice(0, 500).map(c => el('tr', {},
-        tab === 'req' ? [el('td', { dir: 'auto' }, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.email || c.name) }, c.name || '—')), el('td', {}, c.email)] : [el('td', {}, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.member) }, c.member)), el('td', { dir: 'auto' }, c.name || '—')],
-        el('td', { class: 'n' }, c.count), el('td', { class: 'n' }, c.open), el('td', { class: 'n' }, fmtDate(c.last))))))) : el('div', { class: 'empty' }, 'No contacts yet.'));
+      el('thead', {}, el('tr', {}, head, el('th', {}, 'Tickets'), el('th', {}, 'Open'), el('th', {}, 'Last ticket'))),
+      el('tbody', {}, rows.slice(0, 500).map(c => {
+        const g = tab === 'mem' ? '' : groupOfKey(c.key);
+        const cells = tab === 'mem' ? [el('td', {}, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.member) }, c.member)), el('td', { dir: 'auto' }, c.name || '—')]
+          : [el('td', {}, el('input', { type: 'checkbox', 'aria-label': 'Select ' + c.key, disabled: tab === 'dom' && isFreeMail(c.key), title: tab === 'dom' && isFreeMail(c.key) ? 'Personal email domain – add these senders one by one from Providers / senders' : '', checked: sel.has(c.key), onchange: e => { e.target.checked ? sel.add(c.key) : sel.delete(c.key); drawBar(); } })),
+            ...(tab === 'req' ? [el('td', { dir: 'auto' }, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent(c.email || c.name) }, c.name || '—')), el('td', {}, c.email, isFreeMail(domainOf(c.email)) ? null : el('span', { class: 'small muted' }, ''))]
+              : [el('td', {}, el('a', { href: '#/tickets?view=all&q=' + encodeURIComponent('@' + c.key) }, '@' + c.key), isFreeMail(c.key) ? el('span', { class: 'small muted' }, ' · personal email (add senders one by one)') : null), el('td', { class: 'small' }, [...c.senders].slice(0, 3).join(', ') + (c.senders.size > 3 ? ' +' + (c.senders.size - 3) : ''))]),
+            el('td', {}, g ? el('a', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0;text-decoration:none', href: '#/tickets?view=' + encodeURIComponent('g:' + g) }, '👥 ' + g) : el('span', { class: 'small muted' }, '—'))];
+        return el('tr', { class: sel.has(c.key) ? 'sel' : '' }, cells, el('td', { class: 'n' }, c.count), el('td', { class: 'n' }, c.open), el('td', { class: 'n' }, fmtDate(c.last)));
+      })))) : el('div', { class: 'empty' }, 'No contacts yet.'));
   }
   root.append(el('div', { class: 'row', style: 'margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Contacts'),
-    el('a', { class: 'btn sm' + (tab === 'req' ? ' primary' : ''), href: '#/contacts?tab=req' }, 'Providers / senders'), el('a', { class: 'btn sm' + (tab === 'mem' ? ' primary' : ''), href: '#/contacts?tab=mem' }, 'Members'),
-    el('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search contacts', oninput: e => { q = e.target.value; draw(); } })), box);
+    el('a', { class: 'btn sm' + (tab === 'req' ? ' primary' : ''), href: '#/contacts?tab=req' }, 'Providers / senders'), el('a', { class: 'btn sm' + (tab === 'dom' ? ' primary' : ''), href: '#/contacts?tab=dom' }, 'Domains'), el('a', { class: 'btn sm' + (tab === 'mem' ? ' primary' : ''), href: '#/contacts?tab=mem' }, 'Members'),
+    el('input', { type: 'search', placeholder: 'Search…', 'aria-label': 'Search contacts', oninput: e => { q = e.target.value; draw(); } })), bar, box);
   draw(); return { el: root, update: draw };
 }
 
@@ -1313,7 +1408,7 @@ function adminView(r) {
       const sel = (k, vals) => el('select', { onchange: e => g[k] = e.target.value }, vals.map(v => opt(v, v, g[k])));
       return [el('h2', {}, 'Tickets'),
         ck('noAttachTickets', 'Create tickets also for emails without attachments'),
-        ck('roundRobin', 'Auto-assign new tickets to the agent in the group with the fewest open tickets'),
+        el('p', { class: 'small muted', style: 'margin:0 0 10px' }, 'Auto-assign is switched by each agent (button at the top) – see Admin › Team.'),
         el('label', { class: 'blk' }, 'Default priority', sel('defaultPriority', S.priorities)),
         el('label', { class: 'blk' }, 'Default type', sel('defaultType', S.types)),
         el('label', { class: 'blk' }, 'Default group', sel('defaultGroup', S.groups)),
@@ -1363,12 +1458,21 @@ function adminView(r) {
         } }, 'Save')];
     },
     agents() {
-      const isAdmin = ME && ME.role === 'admin'; const groups = clone(S.agentGroups || {}); const body = el('tbody');
+      const isAdmin = ME && ME.role === 'admin'; const groups = Object.fromEntries(TEAM.map(p => [p.id, agentGroupsOf(S, p.id)])); const body = el('tbody');
+      const groupPicker = p => {
+        const sum = el('span', {}, groups[p.id].length ? groups[p.id].join(', ') : 'Any group');
+        return el('details', { class: 'gpick' }, el('summary', { class: 'btn sm', style: 'max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, sum),
+          el('div', { class: 'card', style: 'position:absolute;z-index:5;padding:8px;display:grid;gap:4px;min-width:220px' },
+            S.groups.map(g => el('label', { class: 'row small' }, el('input', { type: 'checkbox', disabled: !isAdmin, checked: groups[p.id].includes(g), onchange: e => { groups[p.id] = e.target.checked ? [...new Set([...groups[p.id], g])] : groups[p.id].filter(x => x !== g); sum.textContent = groups[p.id].length ? groups[p.id].join(', ') : 'Any group'; } }), g)),
+            el('div', { class: 'small muted' }, 'No group ticked = takes any group.')));
+      };
+      const availOf = p => { const a = (S.agents || []).find(x => x.id === p.id); return !!(a && a.avail); };
       const act = async (body2, okMsg) => { try { await teamCall(body2); await loadTeam(); DB = fold(); toast(okMsg); render(true); } catch (e) { toast(e.message); } };
       body.replaceChildren(...TEAM.map(p => el('tr', {},
         el('td', {}, el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(p.name || p.email, true), el('div', {}, el('b', {}, p.name || '—'), el('div', { class: 'small muted' }, p.email)))),
         el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('admin', 'Admin', p.role)) : (p.role === 'admin' ? 'Admin' : 'Agent')),
-        el('td', {}, el('select', { 'aria-label': 'Group', disabled: !isAdmin, onchange: e => { groups[p.id] = e.target.value; } }, opt('', 'Any group', groups[p.id] || ''), S.groups.map(g => opt(g, g, groups[p.id])))),
+        el('td', { style: 'position:relative' }, groupPicker(p)),
+        el('td', {}, isAdmin || p.id === ME.id ? el('button', { class: 'btn sm', type: 'button', title: 'Switch auto-assign for this agent', onclick: async () => { await setAvail(p.id, !availOf(p)); render(true); } }, availOf(p) ? '🟢 On' : '⚪ Off') : (availOf(p) ? '🟢 On' : '⚪ Off')),
         el('td', {}, p.active ? el('span', { class: 'pill p-ok' }, 'Active') : el('span', { class: 'pill p-muted' }, 'Disabled')),
         el('td', { class: 'n' }, isAdmin ? el('div', { class: 'row' },
           el('button', { class: 'btn sm', type: 'button', onclick: () => { const pw = prompt('New password for ' + (p.name || p.email) + ' (8+ characters). Tell it to them privately; they can change it from their account menu.'); if (pw == null) return; if (pw.length < 8) return toast('At least 8 characters'); act({ action: 'set_password', user_id: p.id, password: pw }, 'Password reset'); } }, 'Reset password'),
@@ -1376,7 +1480,8 @@ function adminView(r) {
       const nf = {}; const inp = (k, label, type = 'text', extra = {}) => el('label', {}, label, nf[k] = el('input', { type, ...extra }));
       return [el('h2', {}, 'Team'),
         el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; agents work tickets.'),
-        el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Member', 'Role', 'Group', 'Status', ''].map(h => el('th', {}, h)))), body)),
+        el('div', { class: 'tw', style: 'overflow:visible' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Member', 'Role', 'Groups', 'Auto-assign', 'Status', ''].map(h => el('th', {}, h)))), body)),
+        el('p', { class: 'small muted' }, 'Auto-assign: new tickets of an agent’s groups go straight to the agents of that group who switched it on (fewest open tickets first). If nobody from the group is on, agents with no group ticked take it; otherwise it waits unassigned in the group. Each agent switches it from the button next to their name at the top.'),
         isAdmin ? el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('agentGroups', groups) }, 'Save groups')) : null,
         isAdmin ? el('div', { class: 'panel', style: 'margin-top:16px;background:var(--surface-2)' }, el('h2', {}, 'Add a team member'),
           el('div', { class: 'g2' }, inp('name', 'Name'), inp('email', 'Work email', 'email', { placeholder: 'name@sarwa.life', dir: 'ltr' })),
@@ -1405,8 +1510,16 @@ function adminView(r) {
     },
     groups() {
       const g = el('textarea', { rows: 6, style: 'width:100%' }, lines(S.groups)), ty = el('textarea', { rows: 8, style: 'width:100%' }, lines(S.types));
+      const SG = S.senderGroups || {}; const sgBox = {};
+      const senders = S.groups.map(name => { const v = SG[name] || {}; sgBox[name] = el('textarea', { rows: 3, style: 'width:100%', dir: 'ltr', placeholder: '@company.com  or  person@gmail.com – one per line' }, lines([...(v.domains || []).map(d => '@' + d), ...(v.emails || [])]));
+        return el('label', { class: 'blk' }, el('span', {}, el('b', {}, name), ' – emails from these senders go to this group'), sgBox[name]); });
       return [el('h2', {}, 'Groups'), el('p', { class: 'small muted' }, 'One per line.'), g, el('h2', { style: 'margin-top:14px' }, 'Ticket types'), ty,
-        el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { await save('groups', unlines(g.value)); await save('types', unlines(ty.value)); } }, 'Save'))];
+        el('h2', { style: 'margin-top:14px' }, 'Senders of each group'), el('p', { class: 'small muted' }, 'Easier from Contacts: tick senders or domains › Add to group. Here you can edit the lists directly.'), senders,
+        el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          const out = {};
+          for (const [name, ta] of Object.entries(sgBox)) { const L = unlines(ta.value.toLowerCase()); const v = { domains: L.filter(x => x.startsWith('@')).map(x => x.slice(1)).filter(d => d && !isFreeMail(d)), emails: L.filter(x => !x.startsWith('@') && x.includes('@')) }; if (v.domains.length || v.emails.length) out[name] = v; }
+          await save('groups', unlines(g.value)); await save('types', unlines(ty.value)); await save('senderGroups', out);
+        } }, 'Save'))];
     },
     sla() {
       const h = clone(S.hours), sla = clone(S.sla); const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -1793,6 +1906,28 @@ async function start() {
   document.body.classList.toggle('is-admin', ME.role === 'admin');
   connect();
 }
+/* Auto-assign switch (per agent, like Freshdesk's availability) */
+const myAvail = () => { const a = ME && DB && (DB.settings.agents || []).find(x => x.id === ME.id); return !!(a && a.avail); };
+function drawAvail() {
+  const b = $('#availBtn'); if (!b) return; b.hidden = !(ME && DB);
+  if (b.hidden) return; const on = myAvail();
+  b.replaceChildren(on ? '🟢' : '⚪', el('span', { class: 't' }, ' Auto-assign: ' + (on ? 'On' : 'Off')));
+  b.style.borderColor = on ? 'var(--ok, #2f8a4f)' : ''; b.style.color = on ? 'var(--ok, #2f8a4f)' : '';
+}
+async function setAvail(id, on) {
+  await emit('agent.avail', null, { id, on });
+  const who = (DB.settings.agents || []).find(a => a.id === id); if (!who) return;
+  if (!on) { toast(who.name + ': auto-assign off'); return; }
+  // waiting (unassigned) tickets of this agent's groups
+  const waiting = [...DB.tickets.values()].filter(t => !t.agent && openT(t) && !t.mergedInto && (who.groups.length ? who.groups.includes(t.group) : true)).sort((a, b) => a.created < b.created ? -1 : 1);
+  toast(who.name + ': auto-assign on – new tickets of ' + (who.groups.length ? who.groups.join(', ') : 'all groups') + ' come straight in');
+  if (!waiting.length) return;
+  const n = who.groups.length ? waiting.length : Math.min(waiting.length, 20);
+  if (!confirm(`${waiting.length} unassigned ticket(s) are waiting in ${who.groups.length ? who.groups.join(', ') : 'the queue'}.\n\nAssign ${n === waiting.length ? 'them' : 'the oldest ' + n} to ${who.name} now?`)) return;
+  for (const t of waiting.slice(0, n)) await emit('update', t.no, { agent: who.name });
+  toast(n + ' ticket(s) assigned to ' + who.name);
+}
+$('#availBtn').onclick = async () => { if (!ME || !DB) return; const b = $('#availBtn'); b.disabled = true; try { await setAvail(ME.id, !myAvail()); } catch (e) { toast(e.message); } b.disabled = false; drawAvail(); };
 function accountDialog() {
   if (!ME) return showSetup();
   const p1 = el('input', { type: 'password', autocomplete: 'new-password', minlength: 8, placeholder: 'New password (8+ characters)' });
@@ -1810,7 +1945,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15a';
+const APP_VERSION = '2026-11-15b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
