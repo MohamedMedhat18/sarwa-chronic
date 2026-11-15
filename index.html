@@ -195,7 +195,7 @@ textarea{resize:vertical}
 .kpi:hover{border-color:var(--accent)}
 .kpi b{display:block;font-size:28px;line-height:1.1;font-variant-numeric:tabular-nums}
 .kpi span{color:var(--muted);font-size:12.5px}
-.kpi.bad b{color:var(--bad)} .kpi.warn b{color:var(--warn)}
+.kpi.bad b{color:var(--bad)} .kpi.warn b{color:var(--warn)} .kpi.ok b{color:#2f8a4f}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
 .panel h2{font-size:14px;margin:0 0 12px}
@@ -691,8 +691,8 @@ function applyEv(S, e) {
     case 'agent.avail': if (d.id) { S.avail[d.id] = { on: !!d.on, ts: e.ts, by: e.by }; const a = (S.settings.agents || []).find(x => x.id === d.id); if (a) a.avail = !!d.on; } break;
     case 'ai.request': if (!t) return; t.aiRequested = e.ts; t.timeline.push({ ts: e.ts, by: e.by, text: 'Asked Claude to read the attachments' }); break;
     case 'ai.learn': { S.learnCount = (S.learnCount || 0) + (d.items || []).length; if (!t) return; const c = (d.items || []).filter(x => (x.changed || []).length).length; t.timeline.push({ ts: e.ts, by: e.by, text: `Taught the AI reader: ${(d.items || []).length - c} confirmed, ${c} corrected` }); break; }
-    case 'ai.read': if (!t) return; t.aiRead = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: d.error ? 'AI reader: ' + d.error : 'AI read the prescription: ' + ((d.data && d.data.items) || []).length + ' item(s), ' + ((d.data && d.data.labs) || []).length + ' lab(s)' }); break;
-    case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
+    case 'ai.read': if (!t) return; t.aiRead = { ...d, at: e.ts, by: e.by }; if (!t.aiFirstAt && d.data) { t.aiFirstAt = e.ts; t.aiFirstCount = (d.data.items || []).length; } t.timeline.push({ ts: e.ts, by: e.by, text: d.error ? 'AI reader: ' + d.error : 'AI read the prescription: ' + ((d.data && d.data.items) || []).length + ' item(s), ' + ((d.data && d.data.labs) || []).length + ' lab(s)' }); break;
+    case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; if (!t.valFirstAt) t.valFirstAt = e.ts; t.valCount = (t.valCount || 0) + 1; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
     case 'export': for (const no of d.tickets || []) { const x = S.tickets.get(no); if (x) x.exportedAt = e.ts; } break;
     case 'email.ignored': S.processed.add(d.key); if (!d.silent) S.ignored.set(d.key, { ...d, ts: e.ts }); if (d.mid) S.mids.add(String(d.mid).toLowerCase()); break;
   }
@@ -1016,6 +1016,7 @@ const VIEW_DEFS = {
 };
 const LIST = { sel: new Set(), shown: 50, last: [], filters: JSON.parse(lsGet('hd-filters', '{}') || '{}') };
 const openT = t => t.status !== 'Resolved' && t.status !== 'Closed';
+const newestFirst = () => lsGet('hd-newest', '1') === '1';
 /* ---- Folders (like Outlook): a ticket is in a folder when moved there, or automatically by group / sender domain / tag ---- */
 const FOLDER_COLORS = ['#0d6b6b', '#2f6fb0', '#8a4fb5', '#b0532f', '#2f8a4f', '#a0742a', '#b03a6b', '#55606b'];
 const folders = () => (DB && DB.settings.folders) || [];
@@ -1277,7 +1278,10 @@ function ticketView(r) {
   const no = r.arg; const t0 = DB.tickets.get(no);
   if (!t0) return { el: el('div', { class: 'empty' }, `Ticket ${no} not found (it may still be syncing).`, el('br'), el('a', { href: '#/tickets' }, 'Back to tickets')) };
   const root = el('div', { class: 'tv' }); const left = el('div', { class: 'left' }); const side = el('aside', { class: 'side' }); root.append(left, side);
-  const top = el('div'); const thread = el('div'); const edHost = el('div'); left.append(top, thread, edHost);
+  const top = el('div'); const thread = el('div'); const edHost = el('div');
+  // like Outlook: newest email on top with the reply box above the conversation (switchable)
+  const layout = () => newestFirst() ? left.replaceChildren(top, edHost, thread) : left.replaceChildren(top, thread, edHost);
+  layout();
   let mode = 'reply'; const files = [];
   const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
   const toIn = el('input', { type: 'email', multiple: true, 'aria-label': 'To' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'optional' });
@@ -1348,9 +1352,14 @@ function ticketView(r) {
   function drawThread() {
     const t = DB.tickets.get(no); const all = t.msgs.map(m => ({ m, from: '' }));
     for (const s of t.mergedFrom) { const st = DB.tickets.get(s); if (st) all.push(...st.msgs.map(m => ({ m, from: s }))); }
-    all.sort((a, b) => a.m.at < b.m.at ? -1 : a.m.at > b.m.at ? 1 : 0);
-    thread.replaceChildren(...(all.length ? all.map(x => msgCard(x.m, t, x.from)) : [el('div', { class: 'sys' }, 'No messages yet.')]),
-      el('div', { class: 'sys' }, `Created ${fmtDate(t.created)}${t.ruleNames && t.ruleNames.length ? ' · rules applied: ' + t.ruleNames.join(', ') : ''}`));
+    const newest = newestFirst(); const dir = newest ? -1 : 1;
+    all.sort((a, b) => (a.m.at < b.m.at ? -1 : a.m.at > b.m.at ? 1 : 0) * dir);
+    const created = el('div', { class: 'sys' }, `Created ${fmtDate(t.created)}${t.ruleNames && t.ruleNames.length ? ' · rules applied: ' + t.ruleNames.join(', ') : ''}`);
+    const head = el('div', { class: 'row', style: 'justify-content:space-between;margin:2px 2px 8px' },
+      el('span', { class: 'small muted' }, `Conversation · ${all.filter(x => x.m.kind !== 'note').length} email(s)` + (all.some(x => x.m.kind === 'note') ? ` · ${all.filter(x => x.m.kind === 'note').length} note(s)` : '')),
+      el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the order of the conversation', onclick: () => { lsSet('hd-newest', newest ? '0' : '1'); layout(); threadSig = ''; drawThreadIfChanged(); } }, newest ? '⇅ Newest first' : '⇅ Oldest first'));
+    const cards = all.length ? all.map(x => msgCard(x.m, t, x.from)) : [el('div', { class: 'sys' }, 'No messages yet.')];
+    thread.replaceChildren(head, ...(newest ? [...cards, created] : [created, ...cards]));
   }
   function drawSide() {
     const t = DB.tickets.get(no), s = slaOf(t), S = DB.settings;
@@ -1578,12 +1587,108 @@ function reportsView() {
     el('button', { class: 'btn sm', type: 'button', onclick: () => downloadCsv('report', [['Agent', 'Created', 'Resolved', 'Avg first response h', 'Avg resolution h', 'First response SLA met', 'Resolution SLA met'], ...lastRows]) }, 'Export CSV'),
     el('button', { class: 'btn sm', type: 'button', onclick: () => exportCsv([...DB.tickets.values()].filter(t => { const x = Date.parse(t.created); return x >= new Date(from.value).getTime() && x <= new Date(to.value + 'T23:59:59').getTime(); })) }, 'Export tickets (CSV)')),
     el('p', { class: 'small muted', style: 'margin:0 0 10px' }, 'Times count business hours only (Admin › Business hours & SLA).'), box,
+    accuracyReport(from, to),
     el('div', { class: 'panel', style: 'margin-top:16px' }, el('h2', {}, 'GlobeMed upload (approved medicines)'),
       el('p', { class: 'small muted' }, 'Approved items of resolved/closed tickets that were validated. Columns: Individual number · Item · Units per day · Quantity per month · Start date · Expiry date.'),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { const nos = globemedExport(true); if (nos && nos.length && confirm(`Mark ${nos.length} ticket(s) as exported so the next file doesn't repeat them?`)) { await emit('export', null, { tickets: nos }); toast('Marked as exported'); } } }, 'Download new (not yet exported)'),
         el('button', { class: 'btn', type: 'button', onclick: () => globemedExport(false) }, 'Download all validated'))),
     pspReport(from, to));
   draw(); return { el: root, update: null };
+}
+/* ---------------- AI reading accuracy: Claude's reading vs. the agent's final validation ---------------- */
+const nm = s => String(s || '').toUpperCase().replace(/[^A-Z0-9؀-ۿ]+/g, ' ').trim();
+const firstWord = s => (nm(s).split(' ').find(w => w.length >= 3 && !/^\d+$/.test(w)) || '');
+function aiAccuracy(fromIso, toIso) {
+  const H = DB.settings.hours; const tickets = [], items = [];
+  for (const t of DB.tickets.values()) {
+    const V = t.validation; if (!V || t.mergedInto) continue;
+    const vday = String(V.at || '').slice(0, 10); if (fromIso && vday < fromIso) continue; if (toIso && vday > toIso) continue;
+    const R = V.result || []; const its = V.items || [];
+    const aiIts = its.map((it, i) => ({ it, i })).filter(x => x.it.ai && x.it.aiOrig);
+    if (!aiIts.length) continue;
+    let ok = 0, nameOk = 0, nameStd = 0, doseOk = 0, clsOk = 0, decOk = 0, decN = 0, conf = 0;
+    for (const { it, i } of aiIts) {
+      const o = it.aiOrig; const fin = (R[i] || {}).final || '';
+      const exact = nm(it.name) === nm(o.name), same = exact || (firstWord(it.name) && firstWord(it.name) === firstWord(o.name));
+      const dose = +it.dose === +o.dose && it.unit === o.unit && +it.times === +o.times && it.per === o.per;
+      const cls = it.cls === o.cls; const decJ = !!o.final && !!fin; const dec = !decJ || o.final === fin;
+      const correct = same && dose && cls && dec;
+      if (same) nameOk++; if (same && !exact) nameStd++; if (dose) doseOk++; if (cls) clsOk++; if (decJ) { decN++; if (o.final === fin) decOk++; } if (it.confirmed) conf++; if (correct) ok++;
+      const errs = [!same && 'name', !dose && 'dose', !cls && 'class', !dec && 'decision'].filter(Boolean);
+      items.push({ t, no: t.no, read: o.name, final: it.name, nameOk: same, standardized: same && !exact, doseOk: dose, readDose: `${o.dose} ${o.unit} × ${o.times}/${o.per}`, finalDose: `${it.dose} ${it.unit} × ${it.times}/${it.per}`,
+        clsOk: cls, readCls: o.cls, finalCls: it.cls, aiDecision: o.final || '', finalDecision: fin, decOk: dec, confirmed: !!it.confirmed, correct, errs, by: V.by, at: V.at, sender: domainOf(t.requester.email) });
+    }
+    const added = its.filter(x => !x.ai && (x.name || x.cls)).length;
+    const removed = Math.max(0, (t.aiFirstCount ?? aiIts.length) - aiIts.length);
+    const created = Date.parse(t.created), aiAt = Date.parse(t.aiFirstAt || ''), valAt = Date.parse(t.valFirstAt || V.at), resAt = Date.parse(t.resolvedAt || '');
+    const hrs = ms => isFinite(ms) && ms >= 0 ? ms / 3600000 : null;
+    tickets.push({ t, no: t.no, member: t.member, by: V.by, at: V.at, aiItems: aiIts.length, ok, nameOk, nameStd, doseOk, clsOk, decOk, decN, conf, added, removed,
+      perfect: ok === aiIts.length && !added && !removed, acc: (ok / (aiIts.length + added + removed)) * 100, confirmedAll: conf === aiIts.length,
+      aiMin: isFinite(aiAt) ? (aiAt - created) / 60000 : null, reviewH: isFinite(aiAt) ? hrs(valAt - aiAt) : null, reviewBizH: isFinite(aiAt) ? hrs(bizBetween(aiAt, valAt, H)) : null,
+      totalH: hrs(valAt - created), totalBizH: hrs(bizBetween(created, valAt, H)), resolveBizH: isFinite(resAt) ? hrs(bizBetween(created, resAt, H)) : null, valCount: t.valCount || 1 });
+  }
+  return { tickets: tickets.sort((a, b) => String(b.at).localeCompare(String(a.at))), items };
+}
+const avg = a => { const v = a.filter(x => x != null && isFinite(x)); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; };
+const med = a => { const v = a.filter(x => x != null && isFinite(x)).sort((x, y) => x - y); return v.length ? v[Math.floor((v.length - 1) / 2)] : null; };
+const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : null;
+const fmtH = h => h == null ? '—' : h < 1 ? Math.round(h * 60) + ' min' : h < 48 ? (Math.round(h * 10) / 10) + ' h' : (Math.round(h / 24 * 10) / 10) + ' d';
+const fmtM = m => m == null ? '—' : m < 90 ? Math.round(m) + ' min' : fmtH(m / 60);
+function accuracyReport(from, to) {
+  const box = el('div');
+  function draw() {
+    const { tickets: T, items: I } = aiAccuracy(from.value, to.value);
+    const n = T.length, perfect = T.filter(x => x.perfect).length, itN = I.length;
+    const k = (v, label, cls, title) => el('div', { class: 'kpi' + (cls ? ' ' + cls : ''), title: title || '' }, el('b', {}, v), el('span', {}, label));
+    const pv = (a, b) => { const p = pct(a, b); return p == null ? '—' : p + '%'; };
+    const accCls = p => p == null ? '' : p >= 95 ? 'ok' : p >= 80 ? 'warn' : 'bad';
+    const itemAcc = pct(I.filter(x => x.correct).length, itN);
+    // assessors
+    const byA = new Map(); for (const x of T) { const a = byA.get(x.by) || { by: x.by, n: 0, items: 0, conf: 0, corr: 0, perfect: 0, review: [], total: [] }; a.n++; a.items += x.aiItems; a.conf += x.conf; a.corr += x.aiItems - x.ok; a.perfect += x.perfect ? 1 : 0; a.review.push(x.reviewBizH); a.total.push(x.totalBizH); byA.set(x.by, a); }
+    // mistakes (what Claude got wrong most often)
+    const mm = new Map(); for (const x of I) if (!x.correct) for (const e of x.errs) { const key = e === 'name' ? `${e}|${nm(x.read)}→${nm(x.final)}` : e === 'dose' ? `${e}|${nm(x.final)}|${x.readDose}→${x.finalDose}` : e === 'class' ? `${e}|${x.readCls}→${x.finalCls}` : `${e}|${x.aiDecision}→${x.finalDecision}|${x.finalCls}`; const m = mm.get(key) || { kind: e, n: 0, ex: x }; m.n++; mm.set(key, m); }
+    const mistakes = [...mm.values()].sort((a, b) => b.n - a.n).slice(0, 15);
+    // trend by day
+    const days = new Map(); for (const x of I) { const d = String(x.at).slice(0, 10); const v = days.get(d) || { d, n: 0, ok: 0 }; v.n++; if (x.correct) v.ok++; days.set(d, v); }
+    const trend = [...days.values()].sort((a, b) => a.d.localeCompare(b.d)).slice(-21);
+    box.replaceChildren(
+      n ? null : el('div', { class: 'empty' }, 'No validated tickets with an AI reading in this period yet. Every “Save” in Validate after Claude’s reading adds to this report.'),
+      n ? el('div', { class: 'kpis' },
+        k(perfect + ' / ' + n, '100% correct requests (' + pv(perfect, n) + ')', accCls(pct(perfect, n)), 'All items read and decided exactly as the agent confirmed, nothing added or removed'),
+        k(itemAcc == null ? '—' : itemAcc + '%', 'Item accuracy (' + itN + ' items)', accCls(itemAcc), 'Name, dose, class and decision all correct'),
+        k(pv(I.filter(x => x.nameOk).length, itN), 'Medicine name read correctly', accCls(pct(I.filter(x => x.nameOk).length, itN))),
+        k(pv(I.filter(x => x.doseOk).length, itN), 'Dose / frequency correct', accCls(pct(I.filter(x => x.doseOk).length, itN))),
+        k(pv(I.filter(x => x.decOk && x.aiDecision && x.finalDecision).length, I.filter(x => x.aiDecision && x.finalDecision).length), 'Decision = agent’s decision', accCls(pct(I.filter(x => x.decOk && x.aiDecision && x.finalDecision).length, I.filter(x => x.aiDecision && x.finalDecision).length))),
+        k(pv(I.filter(x => x.confirmed).length, itN), 'Items confirmed by agents'),
+        k(fmtM(med(T.map(x => x.aiMin))), 'Median: email → AI reading'),
+        k(fmtH(med(T.map(x => x.reviewBizH))), 'Median: AI reading → validated (business)'),
+        k(fmtH(med(T.map(x => x.totalBizH))), 'Median: email → validated (business)')) : null,
+      n ? el('div', { class: 'grid2', style: 'margin-bottom:12px' },
+        el('div', { class: 'panel' }, el('h2', {}, 'Accuracy by day'), trend.length ? bars(trend.map(v => [v.d.slice(8, 10) + '/' + v.d.slice(5, 7) + ' (' + v.ok + '/' + v.n + ')', Math.round(v.ok / v.n * 100)]), 100) : el('div', { class: 'small muted' }, '—')),
+        el('div', { class: 'panel' }, el('h2', {}, 'What Claude gets wrong most (it learns these)'),
+          mistakes.length ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Type', 'Claude read', 'Agent corrected to', 'Times'].map(h => el('th', {}, h)))),
+            el('tbody', {}, mistakes.map(m => { const x = m.ex; const [a, b] = m.kind === 'name' ? [x.read, x.final] : m.kind === 'dose' ? [x.final + ': ' + x.readDose, x.finalDose] : m.kind === 'class' ? [x.readCls, x.finalCls] : [(x.aiDecision || '—') + (x.finalCls ? ' (' + x.finalCls + ')' : ''), x.finalDecision];
+              return el('tr', {}, el('td', {}, el('span', { class: 'pill ' + (m.kind === 'decision' ? 'p-due' : 'p-over') }, m.kind)), el('td', { dir: 'auto', class: 'small' }, a), el('td', { dir: 'auto', class: 'small' }, el('b', {}, b)), el('td', { class: 'n' }, m.n)); })))) : el('div', { class: 'small muted' }, 'No mistakes in this period 🎉'))) : null,
+      n ? el('div', { class: 'panel', style: 'margin-bottom:12px' }, el('h2', {}, 'By agent'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Agent', 'Requests validated', '100% correct', 'AI items', 'Confirmed', 'Corrections', 'Median review (business)', 'Median total (business)'].map(h => el('th', {}, h)))),
+        el('tbody', {}, [...byA.values()].sort((a, b) => b.n - a.n).map(a => el('tr', {}, el('td', {}, a.by || '—'), el('td', { class: 'n' }, a.n), el('td', { class: 'n' }, a.perfect + ' (' + pv(a.perfect, a.n) + ')'), el('td', { class: 'n' }, a.items), el('td', { class: 'n' }, pv(a.conf, a.items)), el('td', { class: 'n' }, a.corr), el('td', { class: 'n' }, fmtH(med(a.review))), el('td', { class: 'n' }, fmtH(med(a.total))))))))) : null,
+      n ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Ticket', 'Validated', 'By', 'Result', 'Accuracy', 'Items (AI / +added / −removed)', 'Name', 'Dose', 'Decision', 'Confirmed', 'Email → AI', 'AI → validated', 'Total (business)'].map(h => el('th', {}, h)))),
+        el('tbody', {}, T.slice(0, 300).map(x => el('tr', {},
+          el('td', {}, el('a', { href: '#/t/' + x.no }, x.no)), el('td', { class: 'n' }, fmtDate(x.at)), el('td', {}, x.by || '—'),
+          el('td', {}, x.perfect ? el('span', { class: 'pill p-ok' }, '✓ 100% correct') : el('span', { class: 'pill p-due' }, (x.aiItems - x.ok + x.added + x.removed) + ' to fix')),
+          el('td', { class: 'n' }, el('b', { style: 'color:' + (x.acc >= 95 ? '#2f8a4f' : x.acc >= 80 ? '#9a6a00' : 'var(--bad)') }, Math.round(x.acc) + '%')),
+          el('td', { class: 'n' }, x.aiItems + (x.added ? ' / +' + x.added : '') + (x.removed ? ' / −' + x.removed : '')),
+          el('td', { class: 'n' }, x.nameOk + '/' + x.aiItems + (x.nameStd ? ' (' + x.nameStd + ' std.)' : '')), el('td', { class: 'n' }, x.doseOk + '/' + x.aiItems), el('td', { class: 'n' }, x.decN ? x.decOk + '/' + x.decN : '—'),
+          el('td', { class: 'n' }, x.confirmedAll ? '✓ all' : x.conf + '/' + x.aiItems), el('td', { class: 'n' }, fmtM(x.aiMin)), el('td', { class: 'n' }, fmtH(x.reviewBizH)), el('td', { class: 'n' }, fmtH(x.totalBizH))))))) : null);
+  }
+  from.addEventListener('change', draw); to.addEventListener('change', draw); draw();
+  const exportX = () => { const { tickets: T, items: I } = aiAccuracy(from.value, to.value);
+    return xlsxDownload('AI-reading-accuracy', [
+      { name: 'Requests', rows: T.map(x => ({ Ticket: x.no, Member: x.member, 'Validated at': fmtDate(x.at), 'Validated by': x.by, '100% correct': x.perfect ? 'Yes' : 'No', 'Accuracy %': Math.round(x.acc), 'AI items': x.aiItems, 'Correct items': x.ok, 'Added by agent': x.added, 'Removed by agent': x.removed, 'Name correct': x.nameOk, 'Name standardized': x.nameStd, 'Dose correct': x.doseOk, 'Decision agreed': x.decOk, 'Decisions compared': x.decN, 'Items confirmed': x.conf, 'Email → AI (min)': x.aiMin != null ? Math.round(x.aiMin) : '', 'AI → validated (business h)': x.reviewBizH != null ? Math.round(x.reviewBizH * 100) / 100 : '', 'Email → validated (business h)': x.totalBizH != null ? Math.round(x.totalBizH * 100) / 100 : '', 'Email → validated (h)': x.totalH != null ? Math.round(x.totalH * 100) / 100 : '', 'Email → resolved (business h)': x.resolveBizH != null ? Math.round(x.resolveBizH * 100) / 100 : '' })) },
+      { name: 'Items', rows: I.map(x => ({ Ticket: x.no, 'Claude read': x.read, 'Final name': x.final, 'Name OK': x.nameOk ? 'Yes' : 'No', 'Claude dose': x.readDose, 'Final dose': x.finalDose, 'Dose OK': x.doseOk ? 'Yes' : 'No', 'Claude class': x.readCls, 'Final class': x.finalCls, 'Claude decision': x.aiDecision, 'Final decision': x.finalDecision, 'Decision OK': x.decOk ? 'Yes' : 'No', 'Confirmed': x.confirmed ? 'Yes' : 'No', 'Item correct': x.correct ? 'Yes' : 'No', 'Errors': x.errs.join(', '), 'Sender': x.sender, 'Agent': x.by, 'Validated at': fmtDate(x.at) })) }]).catch(e => toast(e.message)); };
+  return el('div', { class: 'panel', style: 'margin-top:16px' },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('h2', { style: 'margin:0' }, '🤖 AI reading accuracy'), el('button', { class: 'btn primary', type: 'button', onclick: exportX }, '⬇ Excel')),
+    el('p', { class: 'small muted' }, 'Claude’s reading of each prescription compared with the agent’s final validation. An item is correct when the name, dose/frequency, class and decision are what the agent kept. A request is 100% correct when every item is correct and the agent added or removed nothing. Times: email received → Claude’s reading → validation saved (business hours).'),
+    box);
 }
 function pspReport(from, to) {
   const box = el('div');
@@ -2570,7 +2675,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15i';
+const APP_VERSION = '2026-11-16a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
