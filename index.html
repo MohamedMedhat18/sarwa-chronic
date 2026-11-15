@@ -601,8 +601,10 @@ let DB = null; // folded state
 async function emit(type, t, d) {
   const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
   const sys = type === 'msg.in' || type === 'email.ignored' || (type === 'ticket.create' && d && d.source === 'email') || (type === 'msg.out' && d && d.auto);
+  // EOB approvals are given by the assessor (or admin); an EOB arriving by email is attached automatically
+  if ((type === 'eob.add' || type === 'eob.remove') && !(d && d.auto) && !canEOB()) { toast('Only the assessor can upload or remove the EOB approval'); throw new Error('Assessor only'); }
   // PSP tickets: no Resolve / Close before the EOB approval is uploaded
-  if (type === 'update' && d && (d.status === 'Resolved' || d.status === 'Closed') && DB) { const tk = DB.tickets.get(t); if (tk && isPSP(tk) && !(tk.eobs || []).length) { toast('PSP ticket ' + t + ': upload the EOB approval first (PSP panel on the right) – then it can be resolved / closed.'); throw new Error('EOB approval required'); } }
+  if (type === 'update' && d && (d.status === 'Resolved' || d.status === 'Closed') && DB) { const tk = DB.tickets.get(t); if (tk && isPSP(tk) && !(tk.eobs || []).length) { toast('PSP ticket ' + t + ': ' + (canEOB() ? 'upload the EOB approval first (PSP panel on the right)' : 'waiting for the assessor to upload the EOB approval') + ' – then it can be resolved / closed.'); throw new Error('EOB approval required'); } }
   const e = { id, ts, by: sys ? 'System' : (me() || 'Unknown'), pc: MACHINE, type, t: t || null, d: d || {} };
   const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type, t: e.t, d: e.d });
   if (error) { toast('Could not save: ' + error.message); throw new Error(error.message); }
@@ -1680,7 +1682,7 @@ function adminView(r) {
       const act = async (body2, okMsg) => { try { await teamCall(body2); await loadTeam(); DB = fold(); toast(okMsg); render(true); } catch (e) { toast(e.message); } };
       body.replaceChildren(...TEAM.map(p => el('tr', {},
         el('td', {}, el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(p.name || p.email, true), el('div', {}, el('b', {}, p.name || '—'), el('div', { class: 'small muted' }, p.email)))),
-        el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('admin', 'Admin', p.role)) : (p.role === 'admin' ? 'Admin' : 'Agent')),
+        el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('assessor', 'Assessor', p.role), opt('admin', 'Admin', p.role)) : (ROLE_LABEL[p.role] || 'Agent')),
         el('td', { style: 'position:relative' }, groupPicker(p)),
         el('td', {}, isAdmin || p.id === ME.id ? el('button', { class: 'btn sm', type: 'button', title: 'Switch auto-assign for this agent', onclick: async () => { await setAvail(p.id, !availOf(p)); render(true); } }, availOf(p) ? '🟢 On' : '⚪ Off') : (availOf(p) ? '🟢 On' : '⚪ Off')),
         el('td', {}, p.active ? el('span', { class: 'pill p-ok' }, 'Active') : el('span', { class: 'pill p-muted' }, 'Disabled')),
@@ -1689,13 +1691,13 @@ function adminView(r) {
           p.id === ME.id ? null : el('button', { class: 'btn sm' + (p.active ? ' danger' : ''), type: 'button', onclick: () => act({ action: 'update', user_id: p.id, active: !p.active }, p.active ? 'Access removed' : 'Access restored') }, p.active ? 'Disable' : 'Enable')) : null))));
       const nf = {}; const inp = (k, label, type = 'text', extra = {}) => el('label', {}, label, nf[k] = el('input', { type, ...extra }));
       return [el('h2', {}, 'Team'),
-        el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; agents work tickets.'),
+        el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; assessors do the medical review and upload PSP EOB approvals; agents work tickets.'),
         el('div', { class: 'tw', style: 'overflow:visible' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Member', 'Role', 'Groups', 'Auto-assign', 'Status', ''].map(h => el('th', {}, h)))), body)),
         el('p', { class: 'small muted' }, 'Auto-assign: new tickets of an agent’s groups go straight to the agents of that group who switched it on (fewest open tickets first). If nobody from the group is on, agents with no group ticked take it; otherwise it waits unassigned in the group. Each agent switches it from the button next to their name at the top.'),
         isAdmin ? el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('agentGroups', groups) }, 'Save groups')) : null,
         isAdmin ? el('div', { class: 'panel', style: 'margin-top:16px;background:var(--surface-2)' }, el('h2', {}, 'Add a team member'),
           el('div', { class: 'g2' }, inp('name', 'Name'), inp('email', 'Work email', 'email', { placeholder: 'name@sarwa.life', dir: 'ltr' })),
-          el('div', { class: 'g2', style: 'margin-top:8px' }, inp('password', 'First password (8+ characters)', 'text', { autocomplete: 'off' }), el('label', {}, 'Role', nf.role = el('select', {}, opt('agent', 'Agent', 'agent'), opt('admin', 'Admin', 'agent')))),
+          el('div', { class: 'g2', style: 'margin-top:8px' }, inp('password', 'First password (8+ characters)', 'text', { autocomplete: 'off' }), el('label', {}, 'Role', nf.role = el('select', {}, opt('agent', 'Agent', 'agent'), opt('assessor', 'Assessor', 'agent'), opt('admin', 'Admin', 'agent')))),
           el('p', { class: 'small muted' }, 'Give them the link of this app, their email and this first password; they can change it from the account menu (top right).'),
           el('button', { class: 'btn primary', type: 'button', onclick: () => { const b = { action: 'create', name: nf.name.value.trim(), email: nf.email.value.trim(), password: nf.password.value, role: nf.role.value }; if (!b.name || !b.email) return toast('Name and email are required'); act(b, 'Team member added'); } }, 'Add member')) : el('p', { class: 'small muted' }, 'Only an admin can add or change team members.')];
     },
@@ -1924,6 +1926,8 @@ async function xlsxDownload(name, sheets) {   // sheets: [{ name, rows: [ {col: 
   XLSX.writeFile(wb, `${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 /* ---------------- PSP: EOB (Explanation of Benefits) approvals ---------------- */
+const ROLE_LABEL = { admin: 'Admin', assessor: 'Assessor', agent: 'Agent' };
+const canEOB = () => !!ME && (ME.role === 'admin' || ME.role === 'assessor');   // only the assessor (or admin) gives the EOB
 const isPSP = t => (t.tags || []).some(x => /^\s*psp\s*$/i.test(x));
 const cannedList = () => { const L = DB.settings.canned || []; return [...L, ...DEFAULTS.canned.filter(d => /^PSP/.test(d.title) && !L.some(x => x.title === d.title))]; };
 const PSP_REPLY_AR = '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">الرجاء التكرم بالعلم بأنه تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل مع سيادتكم من قبل مقدم الخدمة.</p>';
@@ -2006,15 +2010,15 @@ function pspPanel(t) {
   const used = new Set(eobs.map(e => e.path));
   return [el('h3', {}, 'PSP approval (EOB)'),
     el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid ' + (eobs.length ? '#2f8a4f' : '#c98a00') },
-      eobs.length ? null : el('div', { class: 'small', style: 'color:#9a6a00;font-weight:600' }, '⏳ Waiting for the EOB approval – the ticket cannot be resolved or closed before it is uploaded.'),
+      eobs.length ? null : el('div', { class: 'small', style: 'color:#9a6a00;font-weight:600' }, canEOB() ? '⏳ Waiting for the EOB approval – upload it here. The ticket cannot be resolved or closed before that.' : '⏳ Waiting for the assessor to upload the EOB approval. Until then the ticket cannot be resolved or closed.'),
       eobs.map(e => el('div', { style: 'border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--surface)' },
         el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '✓ Approval ' + e.approval), el('span', { class: 'small muted' }, e.date)),
         el('div', { class: 'small', dir: 'auto' }, (e.items || []).map(i => i.item + ' × ' + (i.qtyApproved ?? '?') + (i.dosage ? ' — ' + i.dosage : '')).join('; ') || '—'),
         el('div', { class: 'small muted' }, 'Approved ' + (e.totalApproved != null ? e.totalApproved.toLocaleString() + ' EGP' : '—') + ' · ' + (e.provider || '') + ' · by ' + (e.approvedBy || '—')),
         el('div', { class: 'row', style: 'gap:6px;margin-top:4px' }, e.path ? el('button', { class: 'btn sm', type: 'button', onclick: async () => window.open(await fileUrl(e.path), '_blank') }, 'Open PDF') : null,
-          el('button', { class: 'btn sm ghost', type: 'button', onclick: async () => { if (confirm('Remove approval ' + e.approval + ' from this ticket?')) await emit('eob.remove', t.no, { id: e.id }); } }, 'Remove')))),
-      el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => eobUpload(t.no) }, '⬆ Upload EOB PDF'),
-        pdfs.filter(a => !used.has(a.path)).slice(0, 4).map(a => el('button', { class: 'btn sm', type: 'button', title: 'Read this attachment as the EOB', onclick: () => eobFromAttachment(t.no, a) }, '📄 ' + String(a.name).slice(0, 18))),
+          canEOB() ? el('button', { class: 'btn sm ghost', type: 'button', onclick: async () => { if (confirm('Remove approval ' + e.approval + ' from this ticket?')) await emit('eob.remove', t.no, { id: e.id }); } }, 'Remove') : null))),
+      el('div', { class: 'row', style: 'gap:6px' }, canEOB() ? el('button', { class: 'btn sm primary', type: 'button', onclick: () => eobUpload(t.no) }, '⬆ Upload EOB PDF') : null,
+        canEOB() ? pdfs.filter(a => !used.has(a.path)).slice(0, 4).map(a => el('button', { class: 'btn sm', type: 'button', title: 'Read this attachment as the EOB', onclick: () => eobFromAttachment(t.no, a) }, '📄 ' + String(a.name).slice(0, 18))) : null,
         el('button', { class: 'btn sm', type: 'button', title: 'Insert the PSP reply in the editor', onclick: () => CUR.view && CUR.view.insertReply && CUR.view.insertReply(PSP_REPLY_AR) }, '✉ PSP reply'),
         eobs.length ? el('button', { class: 'btn sm', type: 'button', onclick: () => xlsxDownload('EOB-' + t.no, [{ name: 'EOB approvals', rows: eobRows(eobs.map(e => ({ t, e }))) }]) }, '⬇ Excel') : null))];
 }
@@ -2084,17 +2088,89 @@ function loadImg(path) {
   const p = fileUrl(path).then(u => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image')); im.src = u; }));
   IMG_CACHE.set(path, p); p.catch(() => IMG_CACHE.delete(path)); return p;
 }
-// box = [x0,y0,x1,y1] as fractions of the image; a little margin is added so the whole word is visible
-function cropCanvas(src, maxW = 560) {
+// Snap a rough box to the table row it sits in. Phone photos of forms have faint, slightly tilted ruled
+// lines, so: (1) mark "line pixels" = thin horizontal strokes darker than the paper just above and below,
+// (2) try tilts of -4..+4 degrees and keep the one where those pixels line up best, (3) take the ruled
+// lines just above and below the written line, (4) follow the lower line to find the row's left/right ends.
+// Returns { left, right, top, bot, k, xmid, box } in image pixels (k = tilt slope), or null.
+const SNAP_CACHE = new Map();
+function snapRow(im, box, key) {
+  if (key && SNAP_CACHE.has(key)) return SNAP_CACHE.get(key);
+  const W = im.naturalWidth, H = im.naturalHeight; const [a, b, c, d] = box.map(Number);
+  const h = Math.max(0.008, d - b), cy = (b + d) / 2;
+  const wy0 = Math.max(0, b - 2.6 * h), wy1 = Math.min(1, d + 2.6 * h);
+  const sc = Math.min(1, 900 / W); const cw = Math.max(60, Math.round(W * sc)), ch = Math.max(24, Math.round((wy1 - wy0) * H * sc));
+  const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const ctx = cv.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(im, 0, wy0 * H, W, (wy1 - wy0) * H, 0, 0, cw, ch);
+  const px = ctx.getImageData(0, 0, cw, ch).data; const lum = new Float32Array(cw * ch);
+  for (let i = 0, j = 0; i < px.length; i += 4, j++) lum[j] = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+  // (1) thin horizontal dark strokes
+  const ln = new Uint8Array(cw * ch);
+  for (let y = 2; y < ch - 2; y++) for (let x = 0; x < cw; x++) { const v = lum[y * cw + x], up = Math.max(lum[(y - 2) * cw + x], lum[(y - 1) * cw + x] - 2), dn = Math.max(lum[(y + 2) * cw + x], lum[(y + 1) * cw + x] - 2); if ((up + dn) / 2 - v > 7) ln[y * cw + x] = 1; }
+  const bx0 = Math.max(0, Math.floor(Math.max(0, a - 0.02) * cw)), bx1 = Math.min(cw, Math.ceil(Math.min(1, c + 0.02) * cw)), bw = Math.max(10, bx1 - bx0), xm = (bx0 + bx1) / 2;
+  // (2) best tilt
+  let best = null;
+  for (let deg = -4; deg <= 4.001; deg += 0.5) {
+    const k = Math.tan(deg * Math.PI / 180); const P = new Float32Array(ch + 80);
+    for (let y = 0; y < ch; y++) for (let x = bx0; x < bx1; x += 1) if (ln[y * cw + x]) { const r = Math.round(y - k * (x - xm)) + 40; if (r >= 0 && r < P.length) P[r]++; }
+    let peak = 0; for (let r = 1; r < P.length - 1; r++) peak = Math.max(peak, P[r - 1] * 0.5 + P[r] + P[r + 1] * 0.5);
+    if (!best || peak > best.peak) best = { k, P, peak };
+  }
+  // (3) ruled lines = projection peaks covering a good part of the row width
+  const P = best.P, k = best.k, thr = bw * 0.28, peaks = [];
+  for (let r = 1; r < P.length - 1; r++) { const v = P[r - 1] * 0.5 + P[r] + P[r + 1] * 0.5; if (v > thr && v >= P[r - 1] * 0.5 + P[r - 1] && v >= P[r + 1] * 0.5 + P[r + 1]) { const last = peaks[peaks.length - 1]; if (last && r - last.r < 4) { if (v > last.v) { last.r = r; last.v = v; } } else peaks.push({ r, v }); } }
+  // snap the top and bottom of the marked area to the nearest ruled lines (a written line may span 1-2 thin rows)
+  const toR = f => (f - wy0) / (wy1 - wy0) * ch + 40; const hp = h * H * sc; const tol = Math.max(6, hp * 0.6);
+  // prefer lines just inside the marked area (never let the next written line bleed in)
+  const near = (r0, inward) => peaks.reduce((bst, p) => { const dlt = (p.r - r0) * inward; if (dlt < -tol * 0.35 || dlt > tol) return bst; const sc2 = Math.abs(p.r - r0) * (dlt < 0 ? 1.8 : 1); return !bst || sc2 < bst.s ? { ...p, s: sc2 } : bst; }, null);
+  let above = near(toR(b), 1), below = near(toR(d), -1);
+  if (above && below && below.r - above.r < hp * 0.4) { if (Math.abs(above.r - toR(b)) < Math.abs(below.r - toR(d))) below = null; else above = null; }
+  if (!above && peaks.length) above = { r: toR(b) - 2 }; if (!below && peaks.length) below = { r: toR(d) + 2 };
+  let res = null;
+  if (peaks.length && above && below && below.r > above.r + hp * 0.3) {
+    // (4) follow the lower line across the whole picture to find where the table row starts and ends
+    let L0 = -1, R0 = -1, gap = 0;
+    const ref = below && below.v ? below : above && above.v ? above : peaks.reduce((q, p) => !q || Math.abs(p.r - toR(cy)) < Math.abs(q.r - toR(cy)) ? p : q, null);
+    const onLine = x => { const y = Math.round(ref.r - 40 + k * (x - xm)); for (let dy = -2; dy <= 2; dy++) { const yy = y + dy; if (yy >= 0 && yy < ch && ln[yy * cw + x]) return true; } return false; };
+    for (let x = Math.round(xm); x < cw; x++) { if (onLine(x)) { R0 = x; gap = 0; } else if (++gap > cw * 0.04) break; }
+    gap = 0; for (let x = Math.round(xm); x >= 0; x--) { if (onLine(x)) { L0 = x; gap = 0; } else if (++gap > cw * 0.04) break; }
+    const toImgX = x => x / sc, toImgR = r => (r - 40) / sc + wy0 * H;
+    const xmid = toImgX(xm);
+    const left = Math.max(0, Math.min(a * W, L0 >= 0 ? toImgX(L0) : a * W) - 4), right = Math.min(W, Math.max(c * W, R0 >= 0 ? toImgX(R0) : c * W) + 4);
+    const top = toImgR(above.r) - 3, bot = toImgR(below.r) + 3;
+    const ys = [top + k * (left - xmid), top + k * (right - xmid), bot + k * (left - xmid), bot + k * (right - xmid)];
+    res = { left, right, top, bot, k, xmid, box: [left / W, Math.max(0, Math.min(...ys)) / H, right / W, Math.min(H, Math.max(...ys)) / H] };
+  }
+  if (key) SNAP_CACHE.set(key, res);
+  return res;
+}
+// the written line, cut from the original form (snapped to its table row, straightened) with a yellow frame
+function cropCanvas(src, maxW = 680) {
   const cv = el('canvas', { width: 10, height: 10, title: 'Original handwriting – click to see the whole form and fix the box' });
   if (!src || !src.path || !Array.isArray(src.box)) return null;
   loadImg(src.path).then(im => {
-    const [a, b, c, d] = src.box.map(Number); const W = im.naturalWidth, H = im.naturalHeight;
-    const padY = Math.max((d - b) * 0.45, 0.006), padX = Math.max((c - a) * 0.04, 0.01);
-    const x0 = Math.max(0, a - padX) * W, y0 = Math.max(0, b - padY) * H, x1 = Math.min(1, c + padX) * W, y1 = Math.min(1, d + padY) * H;
-    const sw = Math.max(8, x1 - x0), sh = Math.max(8, y1 - y0); const sc = Math.min(1.6, maxW / sw);
-    cv.width = Math.round(sw * sc); cv.height = Math.round(sh * sc);
-    cv.getContext('2d').drawImage(im, x0, y0, sw, sh, 0, 0, cv.width, cv.height);
+    const W = im.naturalWidth, H = im.naturalHeight; const m = 4;
+    const s = src.manual ? null : snapRow(im, src.box, src.path + '|' + src.box.join(','));
+    const ctx = cv.getContext('2d');
+    if (s) {
+      const sw = s.right - s.left, sh = s.bot - s.top; const S = Math.min(2.2, maxW / sw);
+      cv.width = Math.round(sw * S) + 2 * m; cv.height = Math.round(sh * S) + 2 * m;
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.save(); ctx.beginPath(); ctx.rect(m, m, cv.width - 2 * m, cv.height - 2 * m); ctx.clip();
+      // straighten: output (u,v) <- image (left+u, top+v + k*(left+u-xmid))
+      ctx.setTransform(S, -s.k * S, 0, S, m - s.left * S, m + (s.k * s.xmid - s.top) * S);
+      ctx.drawImage(im, 0, 0); ctx.restore();
+    } else {
+      const [a, b, c, d] = src.box.map(Number);
+      const padY = Math.max((d - b) * 0.12, 0.003), padX = Math.max((c - a) * 0.02, 0.006);
+      const x0 = Math.max(0, a - padX) * W, y0 = Math.max(0, b - padY) * H, x1 = Math.min(1, c + padX) * W, y1 = Math.min(1, d + padY) * H;
+      const sw = Math.max(8, x1 - x0), sh = Math.max(8, y1 - y0); const S = Math.min(2.2, maxW / sw);
+      cv.width = Math.round(sw * S) + 2 * m; cv.height = Math.round(sh * S) + 2 * m;
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+      ctx.drawImage(im, x0, y0, sw, sh, m, m, cv.width - 2 * m, cv.height - 2 * m);
+    }
+    ctx.strokeStyle = '#f5b800'; ctx.lineWidth = 3; ctx.strokeRect(1.5, 1.5, cv.width - 3, cv.height - 3);
+    cv.dataset.snapped = s ? '1' : '0';
   }).catch(() => cv.replaceWith(el('span', { class: 'small muted' }, 'Original image not available')));
   return cv;
 }
@@ -2125,7 +2201,7 @@ function eyeDialog(src, title, onBox, files) {
     hint.textContent = onThis ? 'Yellow = where this medicine is written. Wrong place? Drag a new box around the right line.' : 'Find the medicine and drag a box around its line – it then shows under the item (drug eye) and teaches the AI.';
     loadImg(cur).then(im => {
     const W = im.naturalWidth, H = im.naturalHeight; const sc = Math.min(1, 1050 / W) * zoom; cv.width = W * sc; cv.height = H * sc; cv.style.maxWidth = zoom > 1 ? 'none' : '100%';
-    const ctx = cv.getContext('2d'); let box = onThis ? src.box.slice() : null, drag = null;
+    const ctx = cv.getContext('2d'); let box = onThis ? (src.manual ? src.box : ((snapRow(im, src.box, src.path + '|' + src.box.join(',')) || {}).box || src.box)).slice() : null, drag = null;
     const paint = () => { ctx.drawImage(im, 0, 0, cv.width, cv.height); const b = drag || box; if (b) { const [a, bb, c, dd] = b; ctx.fillStyle = 'rgba(255,214,0,.25)'; ctx.strokeStyle = '#f5b800'; ctx.lineWidth = 3; ctx.fillRect(a * cv.width, bb * cv.height, (c - a) * cv.width, (dd - bb) * cv.height); ctx.strokeRect(a * cv.width, bb * cv.height, (c - a) * cv.width, (dd - bb) * cv.height); } };
     paint();
     if (box) setTimeout(() => { stage.scrollTop = Math.max(0, box[1] * cv.getBoundingClientRect().height - 120); }, 50);
@@ -2249,7 +2325,7 @@ function validationDialog(no) {
     const m = hist ? histMatch(it.name, hist) : null;
     const changed = it.aiOrig && (it.name !== it.aiOrig.name || it.cls !== it.aiOrig.cls || +it.dose !== +it.aiOrig.dose || it.unit !== it.aiOrig.unit || +it.times !== +it.aiOrig.times || it.per !== it.aiOrig.per);
     const cv = cropCanvas(it.src);
-    const openEye = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), (b, path) => { it.src = { path, box: b }; it.boxFixed = true; draw(); }, ticketFiles);
+    const openEye = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), (b, path) => { it.src = { path, box: b, manual: true }; it.boxFixed = true; draw(); }, ticketFiles);
     if (cv) cv.onclick = openEye;
     const showBtn = ticketFiles.length ? el('button', { class: 'btn sm', type: 'button', title: 'Open the prescription / attachments to check this line', onclick: openEye }, '🔍 Show item') : null;
     if (!it.name && !it.ai && !cv) return null;
@@ -2480,7 +2556,7 @@ $('#availBtn').onclick = async () => { if (!ME || !DB) return; const b = $('#ava
 function accountDialog() {
   if (!ME) return showSetup();
   const p1 = el('input', { type: 'password', autocomplete: 'new-password', minlength: 8, placeholder: 'New password (8+ characters)' });
-  openDialog('Account', [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(ME.name || ME.email), el('div', {}, el('b', {}, ME.name || '—'), el('div', { class: 'small muted' }, ME.email + ' · ' + (ME.role === 'admin' ? 'Admin' : 'Agent')))),
+  openDialog('Account', [el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(ME.name || ME.email), el('div', {}, el('b', {}, ME.name || '—'), el('div', { class: 'small muted' }, ME.email + ' · ' + (ROLE_LABEL[ME.role] || 'Agent')))),
     el('details', {}, el('summary', {}, 'Change my password'), el('div', { class: 'row', style: 'margin-top:8px' }, p1, el('button', { class: 'btn', type: 'button', onclick: async () => {
       if (p1.value.length < 8) return toast('At least 8 characters'); const { error } = await SB.auth.updateUser({ password: p1.value }); if (error) return toast(error.message); p1.value = ''; toast('Password changed'); } }, 'Change'))),
     INSTALL.prompt ? el('button', { class: 'btn', type: 'button', onclick: installApp }, '⬇ Install the app on this device') : el('div', { class: 'small muted' }, INSTALL.hint())],
@@ -2494,7 +2570,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15g';
+const APP_VERSION = '2026-11-15h';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
