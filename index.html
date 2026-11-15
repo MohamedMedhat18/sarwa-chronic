@@ -1790,16 +1790,33 @@ function cropCanvas(src, maxW = 560) {
   return cv;
 }
 // whole form with the current box; drag a new box to correct it
-function eyeDialog(src, title, onBox) {
-  const d = $('#dlg2'); const stage = el('div', { class: 'stage' }); const cv = el('canvas');
-  stage.append(cv);
-  d.replaceChildren(el('div', { class: 'dh' }, el('span', { dir: 'auto' }, title), el('button', { class: 'btn ghost sm', type: 'button', onclick: () => d.close() }, '×')),
-    el('div', { class: 'db' }, el('div', { class: 'small muted' }, 'Yellow = where the AI found this medicine. Drag a new box around the right line to correct it.'), stage),
+// files = all attachments of the ticket [{ path, name, mime }]: tabs to switch; PDFs open in a new tab
+function eyeDialog(src, title, onBox, files) {
+  const d = $('#dlg2'); const stage = el('div', { class: 'stage' });
+  const imgs = (files || []).filter(f => /^image\//.test(f.mime || '')); const pdfs = (files || []).filter(f => f.mime === 'application/pdf');
+  if (src && src.path && !imgs.some(f => f.path === src.path)) imgs.unshift({ path: src.path, name: 'Form' });
+  let cur = src && src.path ? src.path : (imgs[0] || {}).path; let zoom = 1;
+  const tabs = el('div', { class: 'row', style: 'gap:6px' });
+  const hint = el('div', { class: 'small muted' });
+  const drawTabs = () => tabs.replaceChildren(
+    ...imgs.map((f, i) => el('button', { class: 'btn sm' + (f.path === cur ? ' primary' : ''), type: 'button', title: f.name, onclick: () => { cur = f.path; drawTabs(); show(); } }, '🖼 ' + (i + 1) + (f.name ? ' · ' + String(f.name).slice(0, 22) : ''))),
+    ...pdfs.map(f => el('button', { class: 'btn sm', type: 'button', title: 'Opens in a new tab', onclick: async () => { try { window.open(await fileUrl(f.path), '_blank'); } catch (e) { toast(e.message); } } }, '📄 ' + String(f.name || 'PDF').slice(0, 24) + ' ↗')),
+    el('span', { style: 'flex:1' }),
+    el('button', { class: 'btn sm', type: 'button', title: 'Zoom out', onclick: () => { zoom = Math.max(0.5, zoom / 1.25); show(); } }, '−'),
+    el('button', { class: 'btn sm', type: 'button', title: 'Zoom in', onclick: () => { zoom = Math.min(4, zoom * 1.25); show(); } }, '+'));
+  d.replaceChildren(el('div', { class: 'dh' }, el('span', { dir: 'auto' }, '🔍 ' + title), el('button', { class: 'btn ghost sm', type: 'button', onclick: () => d.close() }, '×')),
+    el('div', { class: 'db' }, tabs, hint, stage),
     el('div', { class: 'df' }, el('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Close')));
-  d.showModal();
-  loadImg(src.path).then(im => {
-    const W = im.naturalWidth, H = im.naturalHeight; const sc = Math.min(1, 1050 / W); cv.width = W * sc; cv.height = H * sc;
-    const ctx = cv.getContext('2d'); let box = src.box ? src.box.slice() : null, drag = null;
+  if (!d.open) d.showModal();
+  drawTabs();
+  if (!cur) { stage.replaceChildren(el('div', { class: 'empty', style: 'color:#ddd' }, pdfs.length ? 'This ticket only has PDF files – open them with the buttons above.' : 'No pictures on this ticket.')); return; }
+  function show() {
+    const cv = el('canvas'); stage.replaceChildren(cv);
+    const onThis = src && src.path === cur && src.box;
+    hint.textContent = onThis ? 'Yellow = where this medicine is written. Wrong place? Drag a new box around the right line.' : 'Find the medicine and drag a box around its line – it then shows under the item (drug eye) and teaches the AI.';
+    loadImg(cur).then(im => {
+    const W = im.naturalWidth, H = im.naturalHeight; const sc = Math.min(1, 1050 / W) * zoom; cv.width = W * sc; cv.height = H * sc; cv.style.maxWidth = zoom > 1 ? 'none' : '100%';
+    const ctx = cv.getContext('2d'); let box = onThis ? src.box.slice() : null, drag = null;
     const paint = () => { ctx.drawImage(im, 0, 0, cv.width, cv.height); const b = drag || box; if (b) { const [a, bb, c, dd] = b; ctx.fillStyle = 'rgba(255,214,0,.25)'; ctx.strokeStyle = '#f5b800'; ctx.lineWidth = 3; ctx.fillRect(a * cv.width, bb * cv.height, (c - a) * cv.width, (dd - bb) * cv.height); ctx.strokeRect(a * cv.width, bb * cv.height, (c - a) * cv.width, (dd - bb) * cv.height); } };
     paint();
     if (box) setTimeout(() => { stage.scrollTop = Math.max(0, box[1] * cv.getBoundingClientRect().height - 120); }, 50);
@@ -1807,10 +1824,12 @@ function eyeDialog(src, title, onBox) {
     let start = null;
     const down = e => { e.preventDefault(); start = pos(e); drag = [start[0], start[1], start[0], start[1]]; };
     const move = e => { if (!start) return; e.preventDefault(); const p = pos(e); drag = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]; paint(); };
-    const up = () => { if (!start) return; start = null; if (drag && (drag[2] - drag[0]) > 0.02 && (drag[3] - drag[1]) > 0.005) { box = drag.map(x => Math.round(x * 1000) / 1000); onBox && onBox(box); toast('Box corrected – saved with the validation'); } drag = null; paint(); };
+    const up = () => { if (!start) return; start = null; if (drag && (drag[2] - drag[0]) > 0.02 && (drag[3] - drag[1]) > 0.005) { box = drag.map(x => Math.round(x * 1000) / 1000); src = { path: cur, box }; onBox && onBox(box, cur); hint.textContent = 'Saved – this line now shows under the item. Drag again to change it.'; toast('Line marked – saved with the validation'); } drag = null; paint(); };
     cv.addEventListener('mousedown', down); cv.addEventListener('mousemove', move); d.onmouseup = up;
     cv.addEventListener('touchstart', down, { passive: false }); cv.addEventListener('touchmove', move, { passive: false }); cv.addEventListener('touchend', up);
-  }).catch(() => stage.replaceChildren(el('div', { class: 'empty' }, 'Original image not available')));
+    }).catch(() => stage.replaceChildren(el('div', { class: 'empty', style: 'color:#ddd' }, 'Original image not available')));
+  }
+  show();
 }
 /* ---------------- Member history (GlobeMed chronic files) ---------------- */
 const HIST = new Map();
@@ -1915,13 +1934,18 @@ function validationDialog(no) {
     if ($('#dlg').open && box.isConnected) draw();
   }
   if (histMember) getHist(histMember);
+  const ticketFiles = []; const seenF = new Set();
+  for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seenF.has(a.path) && a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) { seenF.add(a.path); ticketFiles.push({ path: a.path, name: a.name, mime: a.mime }); }
   function eyeRow(it, i) {
     const m = hist ? histMatch(it.name, hist) : null;
     const changed = it.aiOrig && (it.name !== it.aiOrig.name || it.cls !== it.aiOrig.cls || +it.dose !== +it.aiOrig.dose || it.unit !== it.aiOrig.unit || +it.times !== +it.aiOrig.times || it.per !== it.aiOrig.per);
     const cv = cropCanvas(it.src);
-    if (cv) cv.onclick = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), b => { it.src = { ...it.src, box: b }; it.boxFixed = true; draw(); });
+    const openEye = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), (b, path) => { it.src = { path, box: b }; it.boxFixed = true; draw(); }, ticketFiles);
+    if (cv) cv.onclick = openEye;
+    const showBtn = ticketFiles.length ? el('button', { class: 'btn sm', type: 'button', title: 'Open the prescription / attachments to check this line', onclick: openEye }, '🔍 Show item') : null;
     const parts = [
-      cv ? el('div', {}, el('div', { class: 'small muted', style: 'margin-bottom:2px' }, '👁 Written on the form' + (it.boxFixed ? ' (box corrected)' : '')), cv) : (it.ai ? el('span', { class: 'small muted' }, RD && RD.at < '2026-11-15T11:25:00Z' ? '👁 Read before the drug eye existed – Claude re-reads this ticket automatically (or press “Read again” at the top)' : '👁 No position for this line (PDF or not found) – open the attachment to check') : null),
+      cv ? el('div', {}, el('div', { class: 'row small muted', style: 'margin-bottom:2px;gap:8px' }, '👁 Written on the form' + (it.boxFixed ? ' (marked by you)' : ''), showBtn), cv)
+        : !(showBtn || it.ai) ? null : el('div', { style: 'display:grid;gap:4px;justify-items:start' }, showBtn, it.ai ? el('span', { class: 'small muted' }, RD && RD.at < '2026-11-15T11:25:00Z' ? '👁 Read before the drug eye existed – press “Show item” to check it on the form (Claude also re-reads it automatically).' : '👁 No position for this line (PDF or not found) – press “Show item” to check it on the form.') : null),
       m ? el('div', { class: 'hist' }, el('div', {}, '📋 On file: ', el('b', {}, m.med_desc)), el('div', {}, (m.daily != null ? m.daily + '/day' : '') + (m.monthly != null ? ' · ' + m.monthly + '/month' : '') + ' · ', el('span', { class: histActive(m) ? 'hist-act' : 'hist-exp' }, histActive(m) ? 'Active until ' + dmy2(m.cov_end) : 'Ended ' + dmy2(m.cov_end))),
         el('div', { class: 'small muted' }, 'Since ' + dmy2(m.first_dist) + ' · last dispensed ' + dmy2(m.last_dist) + ' · ' + (m.status || ''))) : (hist && hist.length && it.name ? el('div', { class: 'hist' }, '🆕 Not in this member’s chronic history – new medicine') : null),
       it.ai ? el('div', { style: 'display:grid;gap:4px' },
@@ -2145,7 +2169,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15d';
+const APP_VERSION = '2026-11-15e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
