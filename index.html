@@ -736,7 +736,10 @@ async function runImporter() {
           await SB.from('mail_inbox').update({ status: 'done', error: null }).eq('id', row.id);
         } catch (e) {
           console.error(e);
-          await SB.from('mail_inbox').update({ status: 'error', error: String(e.message || e).slice(0, 500) }).eq('id', row.id);
+          // network / download problems: put the email back in the queue (up to 5 tries), real failures stay as errors
+          const msg = String(e.message || e).slice(0, 400); const tries = (+((String(row.error || '').match(/\(try (\d+)\)/) || [])[1]) || 0) + 1;
+          const transient = /fetch|network|timeout|download failed|load failed|503|502|504/i.test(msg) && tries < 5;
+          await SB.from('mail_inbox').update(transient ? { status: 'new', error: msg + ' (try ' + tries + ')', claimed_by: null, claimed_at: null } : { status: 'error', error: msg }).eq('id', row.id);
         }
       }
       scheduleRender();
@@ -1807,7 +1810,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-14d';
+const APP_VERSION = '2026-11-15a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
