@@ -98,6 +98,27 @@ textarea{resize:vertical}
 .hpanel{border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-2)}
 .hpanel .chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}
 .hpanel .chips span{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:2px 9px;font-size:12px}
+.medf{display:flex;align-items:center;gap:2px}
+.medf input{width:200px}
+.medpop{position:fixed;z-index:1000;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);max-height:320px;overflow:auto;padding:4px}
+.medopt{display:grid;gap:1px;padding:7px 10px;border-radius:7px;cursor:pointer;font-size:13px}
+.medopt:hover,.medopt.on{background:var(--accent-soft)}
+.medopt.de{border-top:1px solid var(--border);margin-top:4px;color:var(--accent);font-weight:600}
+.rev{position:sticky;left:0;box-sizing:border-box;width:calc(min(1180px,100vw - 16px) - 90px);display:grid;grid-template-columns:minmax(0,auto) minmax(220px,1fr) auto;gap:14px;align-items:start;margin:0 0 6px 26px;padding:10px 12px;border:1px solid var(--border);border-left:4px solid #c98a00;border-radius:10px;background:var(--surface)}
+.rev.ok{border-left-color:#2f8a4f;background:linear-gradient(90deg,rgba(47,138,79,.06),transparent 40%)}
+@media (max-width:900px){.rev{grid-template-columns:minmax(0,1fr)}}
+.rev .crop{display:grid;gap:4px}
+.rev .crop canvas{border:1px solid var(--border);border-radius:6px;background:#fff;cursor:zoom-in;max-width:min(520px,100%)}
+.rev .nopic{width:260px;height:64px;border:1px dashed var(--border);border-radius:6px;display:grid;place-items:center;color:var(--muted);font-size:12px;text-align:center;padding:4px}
+.rev .side{display:grid;gap:6px;font-size:12.5px}
+.rev .act{display:grid;gap:6px;justify-items:end;min-width:150px}
+.btn.confirm{border:1.5px solid #2f8a4f;color:#2f8a4f;background:transparent;font-weight:650}
+.btn.confirm:hover{background:#2f8a4f;color:#fff}
+.okpill{background:#2f8a4f;color:#fff;border-radius:20px;padding:4px 10px;font-size:12px;font-weight:650;white-space:nowrap}
+.sugg{background:#fff7e0;border:1px solid #f0d58a;border-radius:7px;padding:5px 8px}
+.progress{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:600}
+.progress .bar2{width:120px;height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden}
+.progress .bar2 i{display:block;height:100%;background:#2f8a4f}
 #dlg2{width:min(1100px,calc(100vw - 24px))}
 #dlg2 .stage{position:relative;overflow:auto;max-height:75vh;background:#222;border-radius:8px}
 #dlg2 canvas{display:block;cursor:crosshair;max-width:100%}
@@ -571,6 +592,7 @@ const DEFAULTS = {
     { title: 'Unreadable item (AR)', html: '<p dir="rtl">الصنف رقم (…) بالنموذج (صورة السطر مرفقة): الصنف غير واضح، برجاء توضيح الصنف المطلوب للمتابعة وعمل اللازم.</p>' },
     { title: 'No claim form (AR)', html: '<p dir="rtl">برجاء إعادة إرسال النموذج الطبي الموضح فيه الأدوية بالجرعات اليومية، وذلك للمراجعة وعمل اللازم.</p>' },
     { title: 'Member data mismatch (AR)', html: '<p dir="rtl">برجاء التأكد من بيانات العضو، حيث إن الاسم / رقم الكارت المدون على النموذج لا يطابق كارت التأمين المرفق.</p>' },
+    { title: 'PSP – approval issued (AR)', html: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">الرجاء التكرم بالعلم بأنه تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل مع سيادتكم من قبل مقدم الخدمة.</p>' },
     { title: 'Acute medicine (AR)', html: '<p dir="rtl">الصنف (…): يصرف كعلاج حاد (Acute) بموافقة منفصلة من الصيدلية / الفرع.</p>' }
   ]
 };
@@ -579,6 +601,8 @@ let DB = null; // folded state
 async function emit(type, t, d) {
   const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
   const sys = type === 'msg.in' || type === 'email.ignored' || (type === 'ticket.create' && d && d.source === 'email') || (type === 'msg.out' && d && d.auto);
+  // PSP tickets: no Resolve / Close before the EOB approval is uploaded
+  if (type === 'update' && d && (d.status === 'Resolved' || d.status === 'Closed') && DB) { const tk = DB.tickets.get(t); if (tk && isPSP(tk) && !(tk.eobs || []).length) { toast('PSP ticket ' + t + ': upload the EOB approval first (PSP panel on the right) – then it can be resolved / closed.'); throw new Error('EOB approval required'); } }
   const e = { id, ts, by: sys ? 'System' : (me() || 'Unknown'), pc: MACHINE, type, t: t || null, d: d || {} };
   const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type, t: e.t, d: e.d });
   if (error) { toast('Could not save: ' + error.message); throw new Error(error.message); }
@@ -660,6 +684,8 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'eob.add': if (!t) return; t.eobs = (t.eobs || []).filter(x => x.approval !== d.approval); t.eobs.push({ ...d, at: e.ts, by: e.by }); t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + d.approval + ' added' + (d.totalApproved != null ? ' (' + d.totalApproved.toLocaleString() + ' EGP)' : '') }); t.updated = e.ts; break;
+    case 'eob.remove': if (!t) return; { const x = (t.eobs || []).find(z => z.id === d.id); t.eobs = (t.eobs || []).filter(z => z.id !== d.id); if (x) t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + x.approval + ' removed' }); } break;
     case 'agent.avail': if (d.id) { S.avail[d.id] = { on: !!d.on, ts: e.ts, by: e.by }; const a = (S.settings.agents || []).find(x => x.id === d.id); if (a) a.avail = !!d.on; } break;
     case 'ai.request': if (!t) return; t.aiRequested = e.ts; t.timeline.push({ ts: e.ts, by: e.by, text: 'Asked Claude to read the attachments' }); break;
     case 'ai.learn': { S.learnCount = (S.learnCount || 0) + (d.items || []).length; if (!t) return; const c = (d.items || []).filter(x => (x.changed || []).length).length; t.timeline.push({ ts: e.ts, by: e.by, text: `Taught the AI reader: ${(d.items || []).length - c} confirmed, ${c} corrected` }); break; }
@@ -870,6 +896,19 @@ function findThread(email, meta, text, dir) {
   }
   return null;
 }
+// a GlobeMed EOB PDF arriving by email is read and attached to the ticket automatically (PSP approvals)
+async function autoEOB(no, counted, saved) {
+  for (let i = 0; i < counted.length; i++) {
+    const a = counted[i]; if (!(a.mime === 'application/pdf' || /\.pdf$/i.test(a.name || '')) || !a.bytes || a.bytes.length > 2 * 1048576) continue;
+    try {
+      const e = parseEOB(await pdfLines(a.bytes.slice().buffer)); if (!e || !e.approval) continue;
+      const t = DB.tickets.get(no); if (!t || (t.eobs || []).some(x => x.approval === e.approval)) continue;
+      const sv = (saved || [])[i] || {};
+      await emit('eob.add', no, { ...e, id: 'eob_' + rand(8), path: sv.path || '', fileName: a.name, auto: true });
+      if (!isPSP(t) && /\bPSP\b/i.test(e.items.map(x => x.item).join(' '))) await emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] });
+    } catch (x) { console.warn('EOB check', a.name, x); }
+  }
+}
 async function importFile(name, opts) {
   let email;
   const f = await FS.file(name); const buf = await f.arrayBuffer();   // download problems: retried later
@@ -892,7 +931,7 @@ async function importFile(name, opts) {
   }
   if (th) {
     const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
-    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || '') });
+    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || '') }); await autoEOB(th.t.no, counted, d.atts);
     return;
   }
   if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force) {
@@ -904,7 +943,7 @@ async function importFile(name, opts) {
   const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
   const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || '';
-  await emit('msg.in', no, d);
+  await emit('msg.in', no, d); await autoEOB(no, counted, d.atts);
   await maybeAutoAck(no, email);
 }
 /* Automatic acknowledgement: tells the sender the ticket number right away (sent by Outlook like any reply) */
@@ -1248,7 +1287,7 @@ function ticketView(r) {
     el('button', { type: 'button', title: 'Bold', onclick: () => cmd('bold') }, 'B'), el('button', { type: 'button', title: 'Italic', onclick: () => cmd('italic'), style: 'font-style:italic' }, 'I'), el('button', { type: 'button', title: 'Underline', onclick: () => cmd('underline'), style: 'text-decoration:underline' }, 'U'),
     el('button', { type: 'button', title: 'Bulleted list', onclick: () => cmd('insertUnorderedList') }, '• List'), el('button', { type: 'button', title: 'Numbered list', onclick: () => cmd('insertOrderedList') }, '1. List'),
     el('button', { type: 'button', title: 'Right-to-left', onclick: () => { ce.dir = ce.dir === 'rtl' ? 'ltr' : 'rtl'; } }, '⇄ RTL'),
-    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const c = (DB.settings.canned || [])[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', 'Insert canned response…'), (DB.settings.canned || []).map((c, i) => opt(String(i), c.title))),
+    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const c = cannedList()[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', 'Insert canned response…'), cannedList().map((c, i) => opt(String(i), c.title))),
     el('button', { type: 'button', onclick: () => fileIn.click() }, '📎 Attach'));
   const afterSel = el('select', { 'aria-label': 'Status after sending' }, opt('', 'Keep status'), DB.settings.statuses.map(s => opt(s, 'Then set ' + s, '')));
   const sendBtn = el('button', { class: 'btn primary', type: 'button', onclick: send }, 'Send');
@@ -1338,7 +1377,9 @@ function ticketView(r) {
         if (langSel.value !== t.lang) ch.lang = langSel.value;
         if (!Object.keys(ch).length) { toast('Nothing changed'); return; }
         await emit('update', no, ch); toast('Ticket updated');
-      } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null),
+      } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null,
+        isPSP(t) ? null : el('button', { class: 'btn ghost sm', type: 'button', title: 'Mark as PSP (needs an EOB approval before closing)', onclick: () => emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] }) }, '+ PSP')),
+      isPSP(t) || (t.eobs || []).length ? pspPanel(t) : null,
       t.validation ? [el('h3', {}, 'Validation'), el('div', { class: 'slabox' },
         (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to)) : null)),
         el('div', { class: 'small muted' }, 'by ' + t.validation.by + ' · ' + fmtDate(t.validation.at) + (t.exportedAt ? ' · exported to GlobeMed ' + fmtDate(t.exportedAt) : '')))] : null,
@@ -1538,8 +1579,29 @@ function reportsView() {
     el('div', { class: 'panel', style: 'margin-top:16px' }, el('h2', {}, 'GlobeMed upload (approved medicines)'),
       el('p', { class: 'small muted' }, 'Approved items of resolved/closed tickets that were validated. Columns: Individual number · Item · Units per day · Quantity per month · Start date · Expiry date.'),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => { const nos = globemedExport(true); if (nos && nos.length && confirm(`Mark ${nos.length} ticket(s) as exported so the next file doesn't repeat them?`)) { await emit('export', null, { tickets: nos }); toast('Marked as exported'); } } }, 'Download new (not yet exported)'),
-        el('button', { class: 'btn', type: 'button', onclick: () => globemedExport(false) }, 'Download all validated'))));
+        el('button', { class: 'btn', type: 'button', onclick: () => globemedExport(false) }, 'Download all validated'))),
+    pspReport(from, to));
   draw(); return { el: root, update: null };
+}
+function pspReport(from, to) {
+  const box = el('div');
+  const inRange = (t, e) => { const p = String(e.date || '').split('/'); const iso = p.length === 3 ? `${p[2]}-${p[1].padStart(2, '0')}-${p[0].padStart(2, '0')}` : String(e.at || '').slice(0, 10); return iso >= from.value && iso <= to.value; };
+  const waiting = () => [...DB.tickets.values()].filter(t => isPSP(t) && !(t.eobs || []).length && !t.mergedInto && t.status !== 'Closed');
+  function draw() {
+    const list = allEOBs(inRange); const rows = eobRows(list); const w = waiting();
+    const tot = list.reduce((s, x) => s + (x.e.totalApproved || 0), 0), net = list.reduce((s, x) => s + (x.e.netAmount || 0), 0);
+    box.replaceChildren(
+      el('div', { class: 'kpis' }, el('div', { class: 'kpi' }, el('b', {}, list.length), el('span', {}, 'EOB approvals in the period')), el('div', { class: 'kpi' }, el('b', {}, tot.toLocaleString()), el('span', {}, 'Total approved (EGP)')), el('div', { class: 'kpi' }, el('b', {}, net.toLocaleString()), el('span', {}, 'Net amount (EGP)')),
+        el('a', { class: 'kpi' + (w.length ? ' warn' : ''), href: '#/tickets?view=all&q=PSP' }, el('b', {}, w.length), el('span', {}, 'PSP tickets waiting for EOB'))),
+      rows.length ? el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Ticket', 'Approval', 'Date', 'Member', 'Name', 'Provider', 'Item', 'Qty appr.', 'Total appr.', 'Net'].map(h => el('th', {}, h)))),
+        el('tbody', {}, rows.slice(0, 200).map(r => el('tr', {}, el('td', {}, el('a', { href: '#/t/' + r.Ticket }, r.Ticket)), el('td', { class: 'n' }, r['Approval no.']), el('td', { class: 'n' }, r['Transaction date']), el('td', { class: 'n' }, r['Member card']), el('td', { dir: 'auto' }, r.Name),
+          el('td', { class: 'small' }, r.Provider), el('td', { dir: 'auto' }, r.Item), el('td', { class: 'n' }, r['Qty approved']), el('td', { class: 'n' }, r['Total approved']?.toLocaleString()), el('td', { class: 'n' }, r['Net amount']?.toLocaleString())))))) : el('div', { class: 'empty' }, 'No EOB approvals in this period.'));
+  }
+  from.addEventListener('change', draw); to.addEventListener('change', draw); draw();
+  return el('div', { class: 'panel', style: 'margin-top:16px' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('h2', { style: 'margin:0' }, 'PSP – EOB approvals'),
+    el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: () => xlsxDownload('PSP-EOB-approvals', [{ name: 'EOB approvals', rows: eobRows(allEOBs(inRange)) }, { name: 'Waiting for EOB', rows: waiting().map(t => ({ Ticket: t.no, Subject: t.subject, Member: t.member, Requester: t.requester.email, Status: t.status, Agent: t.agent, Created: fmtDate(t.created) })) }]).catch(e => toast(e.message)) }, '⬇ Excel (period)'),
+      el('button', { class: 'btn', type: 'button', onclick: () => xlsxDownload('PSP-EOB-approvals-all', [{ name: 'EOB approvals', rows: eobRows(allEOBs()) }]).catch(e => toast(e.message)) }, '⬇ Excel (all)'))),
+    el('p', { class: 'small muted' }, 'Every EOB approval uploaded to a ticket (read automatically from the GlobeMed PDF): one row per approved item, with totals, co-insurance and patient share. PSP tickets cannot be resolved or closed before their EOB is uploaded.'), box);
 }
 
 /* ---------------- Admin ---------------- */
@@ -1837,6 +1899,184 @@ Decision guidance (Sarwa rules, they override guidelines): blood-pressure medici
 
 Diagnosis already typed by the assessor (may be empty): "${(diagnosis || '').slice(0, 300).replace(/"/g, "'")}".`;
 }
+/* ---------------- libraries loaded only when needed (PDF reading, Excel) ---------------- */
+const LIBS = {};
+function loadScript(src) { return LIBS[src] || (LIBS[src] = new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => { delete LIBS[src]; rej(new Error('Could not load ' + src.split('/').pop())); }; document.head.append(s); })); }
+async function pdfLines(buf) {
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+  const pdfjs = window.pdfjsLib; pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const doc = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise; const lines = [];
+  for (let p = 1; p <= Math.min(doc.numPages, 5); p++) {
+    const tc = await (await doc.getPage(p)).getTextContent(); const rows = [];
+    for (const it of tc.items) { const s = String(it.str || '').trim(); if (!s) continue; const y = it.transform[5], x = it.transform[4]; let r = rows.find(r => Math.abs(r.y - y) < 3); if (!r) rows.push(r = { y, parts: [] }); r.parts.push({ x, s }); }
+    rows.sort((a, b) => b.y - a.y).forEach(r => lines.push(r.parts.sort((a, b) => a.x - b.x).map(p => p.s).join(' ').normalize('NFKC').replace(/\s+/g, ' ')));
+  }
+  return lines;
+}
+async function xlsxDownload(name, sheets) {   // sheets: [{ name, rows: [ {col: value} ] }]
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+  const wb = XLSX.utils.book_new();
+  for (const sh of sheets) {
+    const ws = XLSX.utils.json_to_sheet(sh.rows.length ? sh.rows : [{ '': 'No data' }]);
+    const keys = Object.keys(sh.rows[0] || { '': '' }); ws['!cols'] = keys.map(k => ({ wch: Math.min(48, Math.max(10, k.length + 2, ...sh.rows.slice(0, 300).map(r => String(r[k] ?? '').length + 1))) }));
+    ws['!autofilter'] = { ref: ws['!ref'] }; XLSX.utils.book_append_sheet(wb, ws, sh.name.slice(0, 31));
+  }
+  XLSX.writeFile(wb, `${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+/* ---------------- PSP: EOB (Explanation of Benefits) approvals ---------------- */
+const isPSP = t => (t.tags || []).some(x => /^\s*psp\s*$/i.test(x));
+const cannedList = () => { const L = DB.settings.canned || []; return [...L, ...DEFAULTS.canned.filter(d => /^PSP/.test(d.title) && !L.some(x => x.title === d.title))]; };
+const PSP_REPLY_AR = '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">الرجاء التكرم بالعلم بأنه تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل مع سيادتكم من قبل مقدم الخدمة.</p>';
+const num = s => { const v = parseFloat(String(s || '').replace(/,/g, '')); return isNaN(v) ? null : v; };
+function parseEOB(lines) {
+  const all = lines.join('\n'); const g = (re, i = 1) => { const m = all.match(re); return m ? m[i].trim() : ''; };
+  if (!/Explanation of Benefits/i.test(all)) return null;
+  const e = {
+    approval: g(/SSNBR\s*:\s*(\d{5,14})/i) || g(/\*\s*(\d{6,14})\s*\*/),
+    date: g(/Transaction Date\s*:\s*(\d{1,2}\/\d{1,2}\/\d{4})/i),
+    policyNo: g(/Member\s*:\s*(\d{4,12})\s+(\d{4,12})/i, 1), member: g(/Member\s*:\s*(\d{4,12})\s+(\d{4,12})/i, 2) || g(/Member\s*:\s*(\d{4,12})/i),
+    mcn: g(/MCN\s*:\s*(\d+)/i), staff: g(/Staff\s*#\s*:\s*(\S+)/i), dob: g(/Date Of Birth\s*:\s*(\S+)/i),
+    name: g(/(?:^|\n)\s*Name\s*:\s*([^\n]+?)\s*(?=\n|$)/i), riskCarrier: g(/Risk Carrier\s*:\s*(.+?)(?=\s+Policy Holder Name|\n|$)/i),
+    policyHolder: g(/Policy Holder Name\s*:\s*([^\n]+)/i), provider: g(/Provider\s*:\s*([^\n]+)/i), principal: g(/Principal Name\s*:\s*([^\n]+)/i),
+    physician: g(/Physician\s*:\s*([^\n]+)/i), diagnosis: g(/Diagnosis\s*:\s*[•▪·\-]?\s*(.+?)(?=\s+Approved by|\n|$)/i), approvedBy: g(/Approved by\s*:?\s*([^\n]+)/i),
+    items: [],
+    totalClaimed: num(g(/Total Claimed\s+([\d,]+\.\d+)/i)), totalApproved: num(g(/Total Approved\s+([\d,]+\.\d+)/i)), discount: num(g(/Discount\s+([\d,]+\.\d+)/i)),
+    netAmount: num(g(/Net Amount\s+([\d,]+\.\d+)/i)), coInsurance: num(g(/Co-Insurance\s+([\d,]+\.\d+)/i)), patientShare: num(g(/Total Patient Share\s+([\d,]+\.\d+)/i)),
+    note: (lines.find(l => /[؀-ۿ]/.test(l)) || '').replace(/[()]/g, ' ').replace(/\s+/g, ' ').trim()
+  };
+  const itemRe = /^(?:([A-Za-z][A-Za-z &]+?)\s+)?(\d+)-\s+(.+?)\s+([\d,]+\.\d+)\s+(\S+)\s+([\d.]+)\s+([A-Z]{3})\s+([\d,]+\.\d+)\s+([\d.]+)\s+([\d,]+\.\d+)\s+([\d,]+\.\d+)\s*$/;
+  for (const l of lines) {
+    const m = l.match(itemRe);
+    if (m) { e.items.push({ service: m[1] || '', item: m[3], unitPrice: num(m[4]), unit: m[5], qtyClaimed: num(m[6]), currency: m[7], totalClaimed: num(m[8]), qtyApproved: num(m[9]), totalApproved: num(m[10]), discount: num(m[11]), dosage: '' }); continue; }
+    if (e.items.length && /time\(s\)\s*per/i.test(l) && !e.items[e.items.length - 1].dosage) e.items[e.items.length - 1].dosage = l.replace(/for(\d)/i, 'for $1');
+  }
+  return e;
+}
+const EOB_FIELDS = [['approval', 'Approval no. (SSNBR)'], ['date', 'Transaction date'], ['member', 'Member card'], ['policyNo', 'Policy / contract no.'], ['mcn', 'MCN'], ['name', 'Name'], ['dob', 'Date of birth'], ['policyHolder', 'Policy holder'], ['provider', 'Provider'], ['principal', 'Principal'], ['physician', 'Physician'], ['diagnosis', 'Diagnosis'], ['approvedBy', 'Approved by'], ['note', 'Note']];
+function eobRows(list) {   // one Excel row per approved item
+  const rows = [];
+  for (const { t, e } of list) for (const it of (e.items.length ? e.items : [{}])) rows.push({
+    'Ticket': t.no, 'Approval no.': e.approval, 'Transaction date': e.date, 'Member card': e.member, 'Policy no.': e.policyNo, 'MCN': e.mcn, 'Name': e.name, 'Date of birth': e.dob,
+    'Policy holder': e.policyHolder, 'Provider': e.provider, 'Principal': e.principal, 'Diagnosis': e.diagnosis, 'Approved by': e.approvedBy,
+    'Item': it.item || '', 'Dosage': it.dosage || '', 'Unit': it.unit || '', 'Unit price': it.unitPrice, 'Qty claimed': it.qtyClaimed, 'Total claimed': it.totalClaimed, 'Qty approved': it.qtyApproved, 'Total approved': it.totalApproved, 'Item discount': it.discount,
+    'EOB total approved': e.totalApproved, 'EOB discount': e.discount, 'Net amount': e.netAmount, 'Co-insurance': e.coInsurance, 'Patient share': e.patientShare, 'Note': e.note,
+    'Ticket status': t.status, 'Requester': t.requester.email || '', 'Uploaded by': e.by || '', 'Uploaded at': e.at ? fmtDate(e.at) : '' });
+  return rows;
+}
+function allEOBs(filter) { const out = []; for (const t of DB.tickets.values()) for (const e of (t.eobs || [])) if (!filter || filter(t, e)) out.push({ t, e }); return out.sort((a, b) => String(b.e.at).localeCompare(String(a.e.at))); }
+async function eobFromFile(file) { return parseEOB(await pdfLines(await file.arrayBuffer())); }
+// check the data read from the EOB before saving it to the ticket
+function eobDialog(no, e, src) {
+  const f = {}; const box = el('div', { style: 'display:grid;gap:10px' });
+  if (!e) e = { items: [] };
+  box.append(el('div', { class: 'small muted' }, src ? 'Read from ' + src.name + ' – check and correct if needed.' : 'Enter the approval details.'),
+    el('div', { class: 'g2' }, EOB_FIELDS.map(([k, l]) => el('label', {}, l, f[k] = el('input', { type: 'text', value: e[k] ?? '', dir: 'auto' })))),
+    el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Item', 'Dosage', 'Unit', 'Qty claimed', 'Qty approved', 'Total approved', 'Discount'].map(h => el('th', {}, h)))),
+      el('tbody', {}, e.items.length ? e.items.map(it => el('tr', {}, el('td', { dir: 'auto' }, it.item), el('td', { class: 'small' }, it.dosage), el('td', {}, it.unit), el('td', { class: 'n' }, it.qtyClaimed), el('td', { class: 'n' }, el('b', {}, it.qtyApproved)), el('td', { class: 'n' }, it.totalApproved?.toLocaleString()), el('td', { class: 'n' }, it.discount?.toLocaleString())))
+        : el('tr', {}, el('td', { colspan: 7, class: 'small muted' }, 'No items found in the PDF.'))))),
+    el('div', { class: 'row small', style: 'gap:18px' }, ['totalClaimed', 'totalApproved', 'discount', 'netAmount', 'coInsurance', 'patientShare'].map(k => el('span', {}, el('span', { class: 'muted' }, ({ totalClaimed: 'Total claimed', totalApproved: 'Total approved', discount: 'Discount', netAmount: 'Net amount', coInsurance: 'Co-insurance', patientShare: 'Patient share' })[k] + ': '), el('b', {}, e[k] != null ? e[k].toLocaleString() + ' EGP' : '—')))));
+  openDialog('EOB approval – ' + no, box, [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'),
+    el('button', { class: 'btn primary', type: 'button', onclick: async ev => {
+      const d = { ...e, id: 'eob_' + rand(8), path: src ? src.path : '', fileName: src ? src.name : '' };
+      for (const [k] of EOB_FIELDS) d[k] = f[k].value.trim();
+      if (!d.approval) return toast('Approval number is required');
+      if ((DB.tickets.get(no).eobs || []).some(x => x.approval === d.approval)) return toast('Approval ' + d.approval + ' is already on this ticket');
+      ev.target.disabled = true; try { await emit('eob.add', no, d); closeDialog(); toast('EOB approval ' + d.approval + ' saved – the ticket can now be resolved'); } catch (x) { toast(x.message); ev.target.disabled = false; }
+    } }, 'Save EOB approval')], 'min(980px,calc(100vw - 24px))');
+}
+async function eobFromAttachment(no, a) {
+  try { toast('Reading ' + a.name + '…'); const file = await FS.file(a.path); const e = await eobFromFile(file); if (!e) return toast(a.name + ' is not a GlobeMed EOB (no “Explanation of Benefits”)'); eobDialog(no, e, { path: a.path, name: a.name }); }
+  catch (x) { toast('Could not read the PDF: ' + x.message); }
+}
+function eobUpload(no) {
+  const inp = el('input', { type: 'file', accept: 'application/pdf,.pdf', onchange: async ev => {
+    const file = ev.target.files[0]; if (!file) return;
+    try {
+      toast('Reading ' + file.name + '…'); const e = await eobFromFile(file);
+      const path = `${HD}/files/${no}/${rand(5)}_${safeName(file.name)}`; await FS.write(path, file);
+      if (!e) { toast('Not a GlobeMed EOB layout – please fill the details'); }
+      eobDialog(no, e, { path, name: file.name });
+    } catch (x) { toast('Could not read the PDF: ' + x.message); }
+  } });
+  inp.click();
+}
+function pspPanel(t) {
+  const eobs = t.eobs || []; const pdfs = []; const seen = new Set();
+  for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seen.has(a.path) && (a.mime === 'application/pdf' || /\.pdf$/i.test(a.name || ''))) { seen.add(a.path); pdfs.push(a); }
+  const used = new Set(eobs.map(e => e.path));
+  return [el('h3', {}, 'PSP approval (EOB)'),
+    el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid ' + (eobs.length ? '#2f8a4f' : '#c98a00') },
+      eobs.length ? null : el('div', { class: 'small', style: 'color:#9a6a00;font-weight:600' }, '⏳ Waiting for the EOB approval – the ticket cannot be resolved or closed before it is uploaded.'),
+      eobs.map(e => el('div', { style: 'border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--surface)' },
+        el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '✓ Approval ' + e.approval), el('span', { class: 'small muted' }, e.date)),
+        el('div', { class: 'small', dir: 'auto' }, (e.items || []).map(i => i.item + ' × ' + (i.qtyApproved ?? '?') + (i.dosage ? ' — ' + i.dosage : '')).join('; ') || '—'),
+        el('div', { class: 'small muted' }, 'Approved ' + (e.totalApproved != null ? e.totalApproved.toLocaleString() + ' EGP' : '—') + ' · ' + (e.provider || '') + ' · by ' + (e.approvedBy || '—')),
+        el('div', { class: 'row', style: 'gap:6px;margin-top:4px' }, e.path ? el('button', { class: 'btn sm', type: 'button', onclick: async () => window.open(await fileUrl(e.path), '_blank') }, 'Open PDF') : null,
+          el('button', { class: 'btn sm ghost', type: 'button', onclick: async () => { if (confirm('Remove approval ' + e.approval + ' from this ticket?')) await emit('eob.remove', t.no, { id: e.id }); } }, 'Remove')))),
+      el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => eobUpload(t.no) }, '⬆ Upload EOB PDF'),
+        pdfs.filter(a => !used.has(a.path)).slice(0, 4).map(a => el('button', { class: 'btn sm', type: 'button', title: 'Read this attachment as the EOB', onclick: () => eobFromAttachment(t.no, a) }, '📄 ' + String(a.name).slice(0, 18))),
+        el('button', { class: 'btn sm', type: 'button', title: 'Insert the PSP reply in the editor', onclick: () => CUR.view && CUR.view.insertReply && CUR.view.insertReply(PSP_REPLY_AR) }, '✉ PSP reply'),
+        eobs.length ? el('button', { class: 'btn sm', type: 'button', onclick: () => xlsxDownload('EOB-' + t.no, [{ name: 'EOB approvals', rows: eobRows(eobs.map(e => ({ t, e }))) }]) }, '⬇ Excel') : null))];
+}
+/* ---------------- Medicine search (GlobeMed list) + Drug Eye ---------------- */
+const MEDCAT = { list: null, loading: null };
+function loadMedCat() {
+  if (MEDCAT.list) return Promise.resolve(MEDCAT.list);
+  return MEDCAT.loading || (MEDCAT.loading = (async () => {
+    const out = [];
+    for (let from = 0; from < 20000; from += 1000) { const { data, error } = await SB.from('med_catalog').select('med_desc,members,daily,diseases').order('members', { ascending: false }).range(from, from + 999); if (error) throw error; out.push(...data); if (data.length < 1000) break; }
+    for (const m of out) { m.key = medNorm(m.med_desc); m.tri = tri(m.key.split(' ').slice(0, 2).join(' ')); }
+    MEDCAT.list = out; return out;
+  })().catch(e => { MEDCAT.loading = null; throw e; }));
+}
+const medNorm = s => normDigits(String(s || '')).toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+const tri = s => { const t = new Set(); const x = '  ' + s.replace(/ /g, '') + ' '; for (let i = 0; i < x.length - 2; i++) t.add(x.slice(i, i + 3)); return t; };
+const jac = (a, b) => { let n = 0; for (const x of a) if (b.has(x)) n++; return n / (a.size + b.size - n || 1); };
+function medSearch(q, n = 8) {
+  const L = MEDCAT.list; const k = medNorm(q); if (!L || k.length < 2) return [];
+  const words = k.split(' ').filter(w => w.length >= 2 && !/^(TAB|TABS|CAP|CAPS|MG|INJ|SACHETS?)$/.test(w)); const qt = tri(words.slice(0, 2).join(' ') || k);
+  const sc = [];
+  for (const m of L) {
+    let s = jac(qt, m.tri);
+    if (words[0] && m.key.startsWith(words[0])) s += 0.6; else if (words[0] && m.key.includes(words[0])) s += 0.3;
+    for (const w of words.slice(1)) if (m.key.includes(w)) s += 0.12;
+    s += Math.min(0.15, Math.log10(1 + m.members) / 25);
+    if (s > 0.28) sc.push([s, m]);
+  }
+  return sc.sort((a, b) => b[0] - a[0]).slice(0, n).map(x => ({ ...x[1], score: x[0] }));
+}
+const DRUGEYE = 'https://drugeye.pharorg.com/drugeyeapp/android-search/drugeye-android-live-go.aspx';
+async function openDrugEye(name) {
+  const q = String(name || '').replace(/\(.*?\)|…|\.{3}/g, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 2).join(' ');
+  try { await navigator.clipboard.writeText(q); toast('“' + q + '” copied – paste it (Ctrl+V) in the Drug Eye search box'); } catch { toast('Search Drug Eye for: ' + q); }
+  window.open(DRUGEYE, '_blank', 'noopener');
+}
+// medicine name input with live suggestions from the GlobeMed list (what is really dispensed)
+function medField(it, onPick) {
+  const wrap = el('div', { class: 'medf' }); const pop = el('div', { class: 'medpop', hidden: true });
+  const input = el('input', { type: 'text', value: it.name || '', dir: 'auto', autocomplete: 'off', placeholder: 'Type to search…', 'aria-label': 'Medicine name' });
+  let res = [], idx = -1, tm;
+  const close = () => { pop.hidden = true; idx = -1; };
+  const pick = m => { it.name = m.med_desc; it.catalog = true; input.value = m.med_desc; close(); onPick && onPick(m); };
+  const drawPop = () => {
+    if (!res.length) return close();
+    const r = input.getBoundingClientRect(); Object.assign(pop.style, { left: r.left + 'px', top: (r.bottom + 2) + 'px', minWidth: Math.max(320, r.width) + 'px' });
+    pop.replaceChildren(...res.map((m, i) => el('div', { class: 'medopt' + (i === idx ? ' on' : ''), onmousedown: e => { e.preventDefault(); pick(m); } }, el('b', {}, m.med_desc), el('span', { class: 'small muted' }, (m.members ? m.members.toLocaleString() + ' members' : '') + (m.daily ? ' · usual ' + m.daily + '/day' : '') + (m.diseases ? ' · ' + m.diseases : '')))),
+      el('div', { class: 'medopt de', onmousedown: e => { e.preventDefault(); close(); openDrugEye(input.value); } }, '🔎 Not here? Search Drug Eye for “' + input.value.slice(0, 30) + '”'));
+    pop.hidden = false;
+  };
+  const run = async () => { try { await loadMedCat(); } catch { return; } res = medSearch(input.value); idx = -1; if (document.activeElement === input) drawPop(); };
+  input.addEventListener('input', () => { it.name = input.value; it.catalog = false; clearTimeout(tm); tm = setTimeout(run, 140); });
+  input.addEventListener('focus', () => { if (input.value.length >= 2) run(); });
+  input.addEventListener('blur', () => setTimeout(close, 120));
+  input.addEventListener('change', () => onPick && onPick(null));
+  input.addEventListener('keydown', e => {
+    if (pop.hidden) return; if (e.key === 'ArrowDown') { idx = Math.min(res.length - 1, idx + 1); drawPop(); e.preventDefault(); } else if (e.key === 'ArrowUp') { idx = Math.max(0, idx - 1); drawPop(); e.preventDefault(); }
+    else if (e.key === 'Enter' && idx >= 0) { pick(res[idx]); e.preventDefault(); } else if (e.key === 'Escape') { close(); e.preventDefault(); e.stopPropagation(); }
+  });
+  wrap.append(input, el('button', { class: 'btn sm ghost', type: 'button', title: 'Search Drug Eye (opens in a new tab, name copied)', onclick: () => openDrugEye(input.value) }, '🔎'), pop);
+  return wrap;
+}
 /* ---------------- Drug eye: the handwritten line of each medicine, cut from the original form ---------------- */
 const IMG_CACHE = new Map();
 function loadImg(path) {
@@ -2012,17 +2252,29 @@ function validationDialog(no) {
     const openEye = () => eyeDialog(it.src, (i + 1) + '. ' + (it.name || 'item'), (b, path) => { it.src = { path, box: b }; it.boxFixed = true; draw(); }, ticketFiles);
     if (cv) cv.onclick = openEye;
     const showBtn = ticketFiles.length ? el('button', { class: 'btn sm', type: 'button', title: 'Open the prescription / attachments to check this line', onclick: openEye }, '🔍 Show item') : null;
-    const parts = [
-      cv ? el('div', {}, el('div', { class: 'row small muted', style: 'margin-bottom:2px;gap:8px' }, '👁 Written on the form' + (it.boxFixed ? ' (marked by you)' : ''), showBtn), cv)
-        : !(showBtn || it.ai) ? null : el('div', { style: 'display:grid;gap:4px;justify-items:start' }, showBtn, it.ai ? el('span', { class: 'small muted' }, RD && RD.at < '2026-11-15T11:25:00Z' ? '👁 Read before the drug eye existed – press “Show item” to check it on the form (Claude also re-reads it automatically).' : '👁 No position for this line (PDF or not found) – press “Show item” to check it on the form.') : null),
+    if (!it.name && !it.ai && !cv) return null;
+    // 1) the written line
+    const crop = el('div', { class: 'crop' },
+      el('div', { class: 'row small muted', style: 'gap:8px;justify-content:space-between' }, el('span', {}, '👁 ' + (cv ? 'Written on the form' + (it.boxFixed ? ' · marked by you' : '') : 'Original line')), showBtn),
+      cv || el('div', { class: 'nopic' }, ticketFiles.length ? (RD && RD.at < '2026-11-15T11:25:00Z' ? 'Read before the drug eye – press “Show item” and mark the line (Claude also re-reads it).' : 'No picture of this line yet – press “Show item” and drag a box around it.') : 'No picture attached'));
+    // 2) checks: AI vs. assessor, better name from the GlobeMed list, member history
+    const sug = it.name && MEDCAT.list && !it.catalog ? medSearch(it.name, 1)[0] : null;
+    const showSug = sug && medNorm(sug.med_desc) !== medNorm(it.name) && sug.score > 0.55;
+    const side = el('div', { class: 'side' },
+      changed ? el('div', { dir: 'auto' }, '✏️ AI read ', el('s', { class: 'muted' }, it.aiOrig.name), ' → corrected by you (Claude learns it)') : null,
+      showSug ? el('div', { class: 'sugg', dir: 'auto' }, '💡 Did you mean ', el('b', {}, sug.med_desc), '? ', el('span', { class: 'muted' }, '(' + sug.members.toLocaleString() + ' members' + (sug.daily ? ', usual ' + sug.daily + '/day' : '') + ') '),
+        el('button', { class: 'btn sm', type: 'button', onclick: () => { it.name = sug.med_desc; it.catalog = true; draw(); } }, 'Use'), ' ', el('button', { class: 'btn sm ghost', type: 'button', onclick: () => openDrugEye(it.name) }, '🔎 Drug Eye')) : null,
       m ? el('div', { class: 'hist' }, el('div', {}, '📋 On file: ', el('b', {}, m.med_desc)), el('div', {}, (m.daily != null ? m.daily + '/day' : '') + (m.monthly != null ? ' · ' + m.monthly + '/month' : '') + ' · ', el('span', { class: histActive(m) ? 'hist-act' : 'hist-exp' }, histActive(m) ? 'Active until ' + dmy2(m.cov_end) : 'Ended ' + dmy2(m.cov_end))),
         el('div', { class: 'small muted' }, 'Since ' + dmy2(m.first_dist) + ' · last dispensed ' + dmy2(m.last_dist) + ' · ' + (m.status || ''))) : (hist && hist.length && it.name ? el('div', { class: 'hist' }, '🆕 Not in this member’s chronic history – new medicine') : null),
-      it.ai ? el('div', { style: 'display:grid;gap:4px' },
-        changed ? el('div', { class: 'small', dir: 'auto' }, '✏️ AI read: ', el('s', { class: 'muted' }, it.aiOrig.name), ' → you corrected – Claude will learn it') : null,
-        el('label', { class: 'row small', title: 'Tick when you checked this line against the form. Corrections and confirmations teach the AI reader.' }, el('input', { type: 'checkbox', checked: !!it.confirmed, onchange: e => { it.confirmed = e.target.checked; } }), el('b', {}, 'Checked against the form'))) : null];
-    if (!parts.some(Boolean)) return null;
-    return el('tr', {}, el('td', { colspan: 14, style: 'padding-top:0' }, el('div', { class: 'eye' }, parts)));
+      el('div', { class: 'muted' }, 'Read: ', el('b', { dir: 'auto', style: 'color:var(--text)' }, it.name || '—'), ' · ' + (+it.dose || 0) + ' ' + it.unit + ' × ' + (+it.times || 0) + ' / ' + it.per));
+    // 3) confirm
+    const act = el('div', { class: 'act' }, it.confirmed
+      ? [el('span', { class: 'okpill', title: 'Name and dose checked against the form' }, '✓ Confirmed'), el('span', { class: 'small muted' }, (it.confirmedBy || me()) + (it.confirmedAt ? ' · ' + fmtDate(it.confirmedAt) : '')),
+         el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { it.confirmed = false; draw(); } }, 'Undo')]
+      : [el('button', { class: 'btn confirm', type: 'button', title: 'The medicine name and the dose are read correctly', onclick: () => { it.confirmed = true; it.confirmedBy = me(); it.confirmedAt = new Date().toISOString(); draw(); } }, '✓ Confirm item'), el('span', { class: 'small muted', style: 'text-align:right' }, 'name & dose correct')]);
+    return el('tr', {}, el('td', { colspan: 14, style: 'padding-top:0;border-top:0' }, el('div', { class: 'rev' + (it.confirmed ? ' ok' : '') }, crop, side, act)));
   }
+  loadMedCat().then(() => { if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
   function histPanel() {
     const inpM = el('input', { type: 'text', inputmode: 'numeric', value: histMember, placeholder: 'Card no.', style: 'width:120px' });
     const head = el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '📋 Member chronic history (GlobeMed files)'),
@@ -2055,7 +2307,7 @@ function validationDialog(no) {
       el('tbody', {}, V.labs.map((l, i) => el('tr', {}, el('td', {}, sel(l, 'test', Object.entries(TESTS).map(([k, v]) => [k, v.en]))), el('td', {}, inp(l, 'value', { type: 'text', placeholder: 'e.g. 8.1 %', style: 'width:110px' })), el('td', {}, inp(l, 'date', { type: 'date' })),
         el('td', {}, sel(l, 'result', [['high', 'High / abnormal – confirms'], ['positive', 'Positive – confirms'], ['normal', 'Normal'], ['negative', 'Negative']], '—')), el('td', {}, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.labs.splice(i, 1); draw(); } }, '×')))))));
     const items = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Medicine (as identified)', 'Class', 'Dose', 'Unit', 'Times', 'Per', 'IBS months already', 'Unreadable', 'Final decision', 'Final qty', 'Months', 'Reason to provider (if rejected)', ''].map(h => el('th', {}, h)))),
-      el('tbody', {}, V.items.map((it, i) => [el('tr', { style: it.src || it.ai || hist ? 'border-bottom:0' : '' }, el('td', { class: 'n' }, i + 1), el('td', {}, inp(it, 'name', { type: 'text', dir: 'auto', style: 'width:170px', live: false })), el('td', {}, sel(it, 'cls', CLASSES.map(c => [c[0], c[1]]), '— class —')),
+      el('tbody', {}, V.items.map((it, i) => [el('tr', { style: it.src || it.ai || hist ? 'border-bottom:0' : '' }, el('td', { class: 'n' }, i + 1), el('td', {}, medField(it, () => draw())), el('td', {}, sel(it, 'cls', CLASSES.map(c => [c[0], c[1]]), '— class —')),
         el('td', {}, inp(it, 'dose', { type: 'number', min: 0, step: .25, style: 'width:62px' })), el('td', {}, sel(it, 'unit', UNITS.map(u => u[0]))), el('td', {}, inp(it, 'times', { type: 'number', min: 0, step: .5, style: 'width:56px' })), el('td', {}, sel(it, 'per', ['day', 'week', 'month'])),
         el('td', {}, it.cls === 'ibs' ? inp(it, 'prior', { type: 'number', min: 0, style: 'width:56px' }) : '—'), el('td', {}, inp(it, 'unreadable', { type: 'checkbox', checked: it.unreadable })),
         el('td', {}, sel(it, 'final', Object.entries(DEC).map(([k, v]) => [k, v.en]), 'As suggested')), el('td', {}, inp(it, 'finalQty', { type: 'number', min: 0, placeholder: 'auto', style: 'width:64px' })), el('td', {}, inp(it, 'months', { type: 'number', min: 1, max: 12, placeholder: String(V.months), style: 'width:56px' })),
@@ -2064,7 +2316,9 @@ function validationDialog(no) {
     resultBox = el('tbody');
     box.replaceChildren(aiBar(), caseRow,
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Lab and scan results'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.labs.push({ test: 'hba1c', value: '', date: '', result: '' }); draw(); } }, '+ Add result')), labs, histPanel(),
-      el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Requested items'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('div', { class: 'row', style: 'gap:14px' }, el('b', {}, 'Requested items'), (() => { const real = V.items.filter(x => x.name || x.cls); const ok = real.filter(x => x.confirmed).length; return real.length ? el('span', { class: 'progress', title: 'Items checked against the form' }, el('span', { class: 'bar2' }, el('i', { style: 'width:' + Math.round(ok / real.length * 100) + '%' })), (ok === real.length ? '✓ ' : '') + ok + ' / ' + real.length + ' confirmed') : null; })(),
+        V.items.some(x => (x.name || x.cls) && !x.confirmed) ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Confirm every item after you checked them all', onclick: () => { for (const x of V.items) if ((x.name || x.cls) && !x.confirmed) { x.confirmed = true; x.confirmedBy = me(); x.confirmedAt = new Date().toISOString(); } draw(); } }, 'Confirm all') : null),
+        el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
       el('b', {}, 'Suggested decisions (Sarwa rules)'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
       el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; colon/IBS up to 3 months then labs; acute medicines need a separate acute approval. Decisions are suggestions – the assessor decides.'));
     recalc();
@@ -2073,6 +2327,8 @@ function validationDialog(no) {
   const save = async (toReply) => {
     const R = computeValidation(V); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
+    const notOk = V.items.map((x, i) => (x.name || x.cls) && !x.confirmed ? i + 1 : 0).filter(Boolean);
+    if (notOk.length && !confirm(`Item ${notOk.join(', ')} not confirmed yet (name & dose checked against the form).\n\nSave anyway?`)) return;
     await emit('validation', no, { ...V, member: histMember, result: R.map(x => ({ n: x.n, name: x.name, cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
     // teach the AI reader: what it read vs. what the assessor confirmed / corrected
     const learn = [];
@@ -2238,7 +2494,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15f';
+const APP_VERSION = '2026-11-15g';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
