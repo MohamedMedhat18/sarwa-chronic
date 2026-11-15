@@ -574,6 +574,12 @@ const DEFAULTS = {
   hours: { days: [0, 1, 2, 3, 4], start: 9, end: 17 },
   general: { noAttachTickets: false, roundRobin: false, defaultPriority: 'Medium', defaultType: 'New chronic request', defaultGroup: 'Chronic review', mailbox: 'Chronic@sarwa.life' },
   importer: { machine: '', label: '' },
+  messaging: { sender: '', country: '20', templates: [
+    { title: 'Request received (AR)', text: 'عميلنا العزيز {{member.name}}، تم استلام طلب صرف العلاج الشهري برقم {{ticket.no}} وجاري مراجعته. شركة ثروة لايف للتأمين.' },
+    { title: 'Approved (AR)', text: 'عميلنا العزيز {{member.name}}، تم اعتماد العلاج الشهري (طلب رقم {{ticket.no}}) ويمكنكم الصرف من الصيدلية. شركة ثروة لايف للتأمين.' },
+    { title: 'Missing documents (AR)', text: 'عميلنا العزيز {{member.name}}، لاستكمال طلب العلاج الشهري رقم {{ticket.no}} برجاء إرسال: … على البريد Chronic@sarwa.life. شركة ثروة لايف للتأمين.' },
+    { title: 'PSP approval issued (AR)', text: 'عميلنا العزيز {{member.name}}، تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل معكم من قبل مقدم الخدمة. شركة ثروة لايف للتأمين.' }
+  ] },
   ai: { enabled: false, model: 'claude-opus-5-5' },
   autoAck: {
     enabled: false, since: '', skip: 'noreply, no-reply, donotreply, mailer-daemon, postmaster, gmhis',
@@ -687,6 +693,7 @@ function applyEv(S, e) {
       t.updated = e.ts; break;
     }
     case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'msg.sms': if (!t) return; t.msgs.push({ kind: 'sms', id: e.id, at: e.ts, by: e.by, ...d }); t.timeline.push({ ts: e.ts, by: e.by, text: (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to }); t.updated = e.ts; break;
     case 'icare.check': if (!t) return; t.icare = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'i-CARE checked: ' + ((d.admin && d.admin.name) || '') + (d.verdict ? ' – ' + d.verdict : '') }); t.updated = e.ts; break;
     case 'eob.add': if (!t) return; t.eobs = (t.eobs || []).filter(x => x.approval !== d.approval); t.eobs.push({ ...d, at: e.ts, by: e.by }); t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + d.approval + ' added' + (d.totalApproved != null ? ' (' + d.totalApproved.toLocaleString() + ' EGP)' : '') }); t.updated = e.ts; break;
     case 'eob.remove': if (!t) return; { const x = (t.eobs || []).find(z => z.id === d.id); t.eobs = (t.eobs || []).filter(z => z.id !== d.id); if (x) t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + x.approval + ' removed' }); } break;
@@ -1244,6 +1251,14 @@ function attChip(a) {
     el('div', { class: 'ac' }, el('button', { class: 'btn sm', type: 'button', onclick: open }, 'Open'), save));
 }
 function msgCard(m, t, fromNo) {
+  if (m.kind === 'sms') {   // WhatsApp / SMS to the member
+    const wa = m.channel === 'whatsapp';
+    return el('div', { class: 'msg out', style: 'border-left:4px solid ' + (wa ? '#25d366' : '#2f6fb0') },
+      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
+        el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill', style: 'background:' + (wa ? '#e6f9ee;color:#128c4a' : '#e7effa;color:#2f6fb0') }, wa ? '💬 WhatsApp' : '✉ SMS'), ' to ', el('b', {}, m.to), m.toName ? el('span', { class: 'muted' }, ' (' + m.toName + ')') : null, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
+        el('div', { class: 'small muted' }, fmtDate(m.at) + ' (' + rel(m.at) + ')' + (m.from ? ' · from ' + m.from : '')))),
+      el('div', { class: 'mb', dir: 'auto', style: 'white-space:pre-wrap' }, m.text));
+  }
   if (m.kind === 'note') {
     return el('div', { class: 'msg note' },
       el('div', { class: 'mh' }, avatar(m.by), el('div', {}, el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill p-note' }, m.desc ? 'Description' : 'Private note'), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', title: fmtDate(m.at) }, rel(m.at) + ' · ' + fmtDate(m.at)))),
@@ -1387,7 +1402,7 @@ function ticketView(r) {
     all.sort((a, b) => (a.m.at < b.m.at ? -1 : a.m.at > b.m.at ? 1 : 0) * dir);
     const created = el('div', { class: 'sys' }, `Created ${fmtDate(t.created)}${t.ruleNames && t.ruleNames.length ? ' · rules applied: ' + t.ruleNames.join(', ') : ''}`);
     const head = el('div', { class: 'row', style: 'justify-content:space-between;margin:2px 2px 8px' },
-      el('span', { class: 'small muted' }, `Conversation · ${all.filter(x => x.m.kind !== 'note').length} email(s)` + (all.some(x => x.m.kind === 'note') ? ` · ${all.filter(x => x.m.kind === 'note').length} note(s)` : '')),
+      el('span', { class: 'small muted' }, `Conversation · ${all.filter(x => x.m.kind === 'in' || x.m.kind === 'out').length} email(s)` + (all.some(x => x.m.kind === 'sms') ? ` · ${all.filter(x => x.m.kind === 'sms').length} WhatsApp/SMS` : '') + (all.some(x => x.m.kind === 'note') ? ` · ${all.filter(x => x.m.kind === 'note').length} note(s)` : '')),
       el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the order of the conversation', onclick: () => { lsSet('hd-newest', newest ? '0' : '1'); layout(); threadSig = ''; drawThreadIfChanged(); } }, newest ? '⇅ Newest first' : '⇅ Oldest first'));
     const cards = all.length ? all.map(x => msgCard(x.m, t, x.from)) : [el('div', { class: 'sys' }, 'No messages yet.')];
     thread.replaceChildren(head, ...(newest ? [...cards, created] : [created, ...cards]));
@@ -1410,6 +1425,7 @@ function ticketView(r) {
       el('div', { class: 'f' }, el('label', { for: 'f-agent' }, 'Agent'), sel('agent', agentsList(), '— Unassigned —')),
       el('div', { class: 'f' }, el('label', {}, 'Member card no.'), memberIn),
       el('div', { class: 'f' }, el('label', {}, 'Member name'), memberNameIn),
+      patientInfo(t),
       el('div', { class: 'f' }, el('label', {}, 'Reply language'), langSel),
       el('div', { class: 'f' }, el('label', {}, 'Tags'), el('div', { class: 'tags' }, t.tags.map(x => el('span', { class: 'tag' }, x, el('button', { type: 'button', 'aria-label': 'Remove tag ' + x, onclick: () => emit('update', no, { tags: t.tags.filter(y => y !== x) }) }, '×'))), tagIn)),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => {
@@ -1746,7 +1762,7 @@ function pspReport(from, to) {
 /* ---------------- Admin ---------------- */
 function adminView(r) {
   const sec = r.arg || 'general'; const S = DB.settings;
-  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Team'], ['bridge', 'Outlook bridge'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data']];
+  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Team'], ['bridge', 'Outlook bridge'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['messaging', 'WhatsApp & SMS'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data']];
   const panel = el('div', { class: 'panel' });
   const save = async (section, value) => { if (!ME || ME.role !== 'admin') return toast('Only an admin can change team settings'); await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
   const lines = arr => arr.join('\n'); const unlines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
@@ -1906,6 +1922,22 @@ function adminView(r) {
       draw();
       return [el('h2', {}, 'Automation rules'), el('p', { class: 'small muted' }, 'Run in order on every new ticket created from an email. Example: subject contains "Renewal" → type Renewal.'), box,
         el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => { list.push({ name: '', match: 'all', conds: [{ field: 'subject', op: 'contains', value: '' }], set: {} }); draw(); } }, '+ Add rule'), el('button', { class: 'btn primary', type: 'button', onclick: () => save('rules', list) }, 'Save'))];
+    },
+    messaging() {
+      const m = clone(S.messaging || DEFAULTS.messaging); m.templates = m.templates || []; const box = el('div');
+      const draw = () => box.replaceChildren(...m.templates.map((c, i) => el('div', { class: 'rule' },
+        el('div', { class: 'row' }, el('input', { type: 'text', value: c.title, style: 'flex:1', 'aria-label': 'Template title', onchange: e => c.title = e.target.value }), el('button', { class: 'btn sm danger', type: 'button', onclick: () => { m.templates.splice(i, 1); draw(); } }, 'Delete')),
+        el('textarea', { rows: 3, dir: 'auto', style: 'width:100%', oninput: e => c.text = e.target.value }, c.text || ''))));
+      draw();
+      const sender = el('input', { type: 'tel', value: m.sender || '', placeholder: '01xxxxxxxxx', onchange: e => m.sender = phoneLocal(e.target.value) });
+      const cc = el('input', { type: 'text', value: m.country || '20', style: 'width:70px', onchange: e => m.country = e.target.value.replace(/\D/g, '') || '20' });
+      return [el('h2', {}, 'WhatsApp & SMS'),
+        el('p', { class: 'small muted' }, 'Agents send WhatsApp or SMS to the member’s mobile from the ticket (Patient info → 💬 / ✉). The app opens WhatsApp or the SMS app with the number and the message ready; the agent presses Send, and the message is saved in the ticket conversation.'),
+        el('div', { class: 'g2' }, el('label', {}, 'Team sender number (WhatsApp / SMS)', sender), el('label', {}, 'Country code', cc)),
+        el('p', { class: 'small muted' }, 'WhatsApp sends from the account signed in on the agent’s device or WhatsApp Web – sign in WhatsApp Web with this number on the team PCs. SMS goes from the phone (on Windows: Phone Link with this phone). Fully automatic sending without pressing Send needs a WhatsApp Business API or SMS-gateway account for this number.'),
+        el('h3', {}, 'Message templates'), el('p', { class: 'small muted' }, 'Placeholders: {{ticket.no}} {{member.name}} {{member.no}} {{agent.name}}'), box,
+        el('div', { class: 'row' }, el('button', { class: 'btn', type: 'button', onclick: () => { m.templates.push({ title: 'New template', text: '' }); draw(); } }, '+ Add'),
+          el('button', { class: 'btn primary', type: 'button', onclick: () => { if (m.sender && !validMobile(m.sender)) return toast('Sender must be an Egyptian mobile: 01xxxxxxxxx'); save('messaging', { sender: m.sender || '', country: m.country || '20', templates: m.templates.filter(x => x.text && x.text.trim()) }); } }, 'Save'))];
     },
     signature() {
       const s = clone(S.signature); const mk = (k) => el('div', { class: 'ce card', contenteditable: 'true', dir: k === 'AR' ? 'rtl' : 'ltr', html: sanitize(s[k]), style: 'min-height:80px', oninput: e => s[k] = e.target.innerHTML });
@@ -2149,7 +2181,7 @@ function parseICare(txt) {
   const g = label => { const m = s.match(new RegExp('\\n[ \\t*•-]*' + label + '[ \\t]*:?[ \\t]*([^\\n]*)(?:\\n[ \\t]*([^\\n]*))?', 'i')); if (!m) return ''; const same = m[1].replace(/\s+/g, ' ').trim(); const next = (m[2] || '').replace(/\s+/g, ' ').trim(); return same || (next && !/:\s*$/.test(next) && !/^(Risk Carrier|Holder Name|Adherent|Individual Number|Insured Mobile|Contract|Date of Birth|Relation|Gender|Marital|GlobeMed Baby|Starting Date|U\/W|Questionnaire|GR\b|Blacklisting|Dependants|Exclusions)/i.test(next) ? next : ''); };
   const a = { riskCarrier: g('Risk Carrier'), holder: g('Holder Name'), name: g('Adherent Name'), individual: normDigits(g('Individual Number')).replace(/\D/g, ''), mobile: g('Insured Mobile Number'),
     cls: g('Adherent Class'), contract: g('Contract Number'), contractType: g('Contract Type'), dob: g('Date of Birth'), relation: g('Relation'), gender: g('Gender'), marital: g('Marital Status'),
-    start: g('Starting Date'), expiry: g('Contract Expi\\w* Date'), uw: g('U/W Flag'), gr: g('GR'), grDate: g('GR Date'), blacklistDate: g('Blacklisting Date'), blacklistReason: g('Blacklisting Reason') };
+    start: g('Starting Date'), expiry: g('Contract Expi\\w* Date'), uw: g('U/W Flag'), gr: g('GR'), grDate: g('GR Date'), baby: g('GlobeMed Baby'), blacklistDate: g('Blacklisting Date'), blacklistReason: g('Blacklisting Reason') };
   for (const k of Object.keys(a)) if (/^(Insured|Adherent|Contract|Date of|Relation|Gender|Marital|GlobeMed|Starting|U\/W|Questionnaire|GR|Blacklisting)\b/.test(a[k])) a[k] = '';   // empty field picked up the next label
   if (/\($/.test(a.cls)) { const m = s.match(/Adherent Class\s*:?\s*([^\n]*\(\s*\n?\s*[^\n)]*\)?)/i); if (m) a.cls = m[1].replace(/\s+/g, ' ').trim(); }
   const limits = []; const n = v => v == null || v === '' ? null : +String(v).replace(/,/g, '');
@@ -2238,6 +2270,53 @@ function icarePanel(t) {
     (c.limits || []).filter(l => l.limit).map(l => { const p = l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('span', {}, l.level === 'Disease Related Condition' ? 'Chronic (DRC)' : l.level === 'AML' ? 'Annual (AML)' : (l.desc || l.level)), el('b', {}, l.perTransaction ? l.limit.toLocaleString() + ' / visit' : (l.balance != null ? l.balance.toLocaleString() : '—') + ' left')),
       p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
     el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + ' · ' + fmtDate(c.at)), btns)];
+}
+/* ---------------- Patient info (i-CARE / GlobeMed files) + WhatsApp / SMS to the member ---------------- */
+const phoneLocal = s => { let d = normDigits(String(s || '')).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
+const phoneIntl = s => { const d = phoneLocal(s); const cc = ((DB && DB.settings.messaging) || {}).country || '20'; return d.startsWith('0') ? cc + d.slice(1) : d; };
+const validMobile = s => /^01[0125]\d{8}$/.test(phoneLocal(s));
+const ageOf = dob => { const d = dmyDate(dob); if (!d) return ''; const n = new Date(); let a = n.getFullYear() - d.getFullYear(); if (n < new Date(n.getFullYear(), d.getMonth(), d.getDate())) a--; return a; };
+function patientInfo(t) {
+  const a = (t.icare && t.icare.admin) || {}; const mobile = t.mobile || a.mobile || '';
+  const box = el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px' });
+  const row = (k, v, strong) => v ? el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, k), el(strong ? 'b' : 'span', { dir: 'auto', style: 'text-align:right' }, v)) : null;
+  const exp = dmyDate(a.expiry); const active = exp ? exp >= new Date(new Date().toDateString()) : null;
+  const mobIn = el('input', { type: 'tel', value: mobile, placeholder: '01xxxxxxxxx', style: 'width:130px;padding:3px 6px;font-size:12.5px', 'aria-label': 'Member mobile' });
+  const saveMob = async () => { const v = phoneLocal(mobIn.value); if (v === phoneLocal(mobile)) return; if (v && !validMobile(v)) return toast('Mobile must be an Egyptian mobile: 01xxxxxxxxx'); await emit('update', t.no, { mobile: v }); toast('Mobile saved'); };
+  mobIn.addEventListener('change', saveMob);
+  const fill = (h) => box.replaceChildren(
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Patient info'), el('span', { class: 'small muted' }, t.icare ? 'i-CARE ' + fmtDay(t.icare.at) : h ? 'GlobeMed files' : '')),
+    row('Holder', a.holder || (h && h.policy_holder)), row('Adherent', a.name || (h && h.member_name), true), row('Individual no.', a.individual || t.member),
+    el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, 'Mobile'), el('div', { class: 'row', style: 'gap:4px;flex-wrap:nowrap' }, mobIn,
+      el('button', { class: 'btn sm', type: 'button', title: 'WhatsApp the member', style: 'color:#128c4a', onclick: () => msgDialog(t.no, 'whatsapp', mobIn.value) }, '💬'),
+      el('button', { class: 'btn sm', type: 'button', title: 'SMS the member', onclick: () => msgDialog(t.no, 'sms', mobIn.value) }, '✉'))),
+    row('Contract', [a.contract || (h && h.contract), a.contractType].filter(Boolean).join(' · ')), row('Date of birth', a.dob ? a.dob + ' (' + ageOf(a.dob) + ' y)' : ''),
+    row('Relation', a.relation || (h && h.relation)), row('Gender', a.gender), row('Marital status', a.marital), row('GlobeMed Baby', a.baby),
+    row('Valid', a.start || a.expiry ? (a.start || '?') + ' → ' + (a.expiry || '?') : ''), active === false ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract expired') : null,
+    a.blacklistDate || a.blacklistReason ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ Blacklisted ' + (a.blacklistDate || '') + ' ' + (a.blacklistReason || '')) : (t.icare ? row('Blacklisting', 'None') : null),
+    t.icare ? null : el('div', { class: 'small muted' }, 'Full details after an i-CARE check (panel below).'));
+  fill(null);
+  if (!t.icare && /^\d{6,10}$/.test(String(t.member || ''))) loadHistory(t.member).then(h => { if (h && h.length) fill(h.find(x => x.contract) || h[0]); }).catch(() => { });
+  return box;
+}
+function msgDialog(no, channel, number) {
+  const t = DB.tickets.get(no); const M = DB.settings.messaging || DEFAULTS.messaging; const wa = channel === 'whatsapp';
+  const to = el('input', { type: 'tel', value: phoneLocal(number || t.mobile || (t.icare && t.icare.admin && t.icare.admin.mobile) || ''), placeholder: '01xxxxxxxxx', style: 'width:100%' });
+  const fillT = s => String(s || '').replace(/\{\{\s*([\w.]+)\s*\}\}/g, (x, k) => ({ 'ticket.no': t.no, 'member.name': t.memberName || '', 'member.no': t.member || '', 'agent.name': me() })[k] ?? x);
+  const txt = el('textarea', { rows: 6, dir: 'auto', style: 'width:100%' }, fillT((M.templates || [])[0] && M.templates[0].text));
+  const tpl = el('select', { onchange: e => { const x = (M.templates || [])[+e.target.value]; if (x) txt.value = fillT(x.text); } }, (M.templates || []).map((x, i) => opt(String(i), x.title, '0')));
+  openDialog((wa ? '💬 WhatsApp' : '✉ SMS') + ' to the member – ' + no, [
+    el('div', { class: 'g2' }, el('label', {}, 'To (member mobile)', to), el('label', {}, 'Template', tpl)),
+    el('label', {}, 'Message', txt),
+    el('div', { class: 'small muted' }, wa ? 'Opens WhatsApp (app or WhatsApp Web) with the member and the message ready – it is sent from the WhatsApp account signed in on this device' + (M.sender ? ' (team number ' + M.sender + ')' : '') + '. Press Send there. The message is saved in this ticket.'
+      : 'Opens the SMS app (phone, or Windows Phone Link with your phone' + (M.sender ? ' ' + M.sender : '') + ') with the message ready. Press Send there. The message is saved in this ticket.')],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', style: wa ? 'background:#25d366;border-color:#25d366' : '', onclick: async () => {
+      const n = phoneLocal(to.value); if (!validMobile(n)) return toast('Enter an Egyptian mobile number: 01xxxxxxxxx'); if (!txt.value.trim()) return txt.focus();
+      const url = wa ? `https://wa.me/${phoneIntl(n)}?text=${encodeURIComponent(txt.value)}` : `sms:+${phoneIntl(n)}?body=${encodeURIComponent(txt.value)}`;
+      if (wa) window.open(url, '_blank', 'noopener'); else location.href = url;
+      try { await emit('msg.sms', no, { channel, to: n, toName: t.memberName || '', text: txt.value, from: M.sender || '' }); if (n !== phoneLocal(t.mobile) && !(t.icare && phoneLocal(t.icare.admin.mobile) === n)) await emit('update', no, { mobile: n }); } catch (x) { toast(x.message); }
+      closeDialog();
+    } }, wa ? 'Open WhatsApp' : 'Open SMS')]);
 }
 function pspPanel(t) {
   const eobs = t.eobs || []; const pdfs = []; const seen = new Set();
@@ -2805,7 +2884,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16c';
+const APP_VERSION = '2026-11-16d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
