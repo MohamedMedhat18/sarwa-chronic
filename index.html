@@ -1682,7 +1682,7 @@ function adminView(r) {
       const act = async (body2, okMsg) => { try { await teamCall(body2); await loadTeam(); DB = fold(); toast(okMsg); render(true); } catch (e) { toast(e.message); } };
       body.replaceChildren(...TEAM.map(p => el('tr', {},
         el('td', {}, el('div', { class: 'row', style: 'flex-wrap:nowrap' }, avatar(p.name || p.email, true), el('div', {}, el('b', {}, p.name || '—'), el('div', { class: 'small muted' }, p.email)))),
-        el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('assessor', 'Assessor', p.role), opt('admin', 'Admin', p.role)) : (ROLE_LABEL[p.role] || 'Agent')),
+        el('td', {}, isAdmin ? el('select', { 'aria-label': 'Role', onchange: e => act({ action: 'update', user_id: p.id, role: e.target.value }, 'Role changed') }, opt('agent', 'Agent', p.role), opt('admin', 'Admin', p.role)) : (ROLE_LABEL[p.role] || 'Agent')),
         el('td', { style: 'position:relative' }, groupPicker(p)),
         el('td', {}, isAdmin || p.id === ME.id ? el('button', { class: 'btn sm', type: 'button', title: 'Switch auto-assign for this agent', onclick: async () => { await setAvail(p.id, !availOf(p)); render(true); } }, availOf(p) ? '🟢 On' : '⚪ Off') : (availOf(p) ? '🟢 On' : '⚪ Off')),
         el('td', {}, p.active ? el('span', { class: 'pill p-ok' }, 'Active') : el('span', { class: 'pill p-muted' }, 'Disabled')),
@@ -1691,13 +1691,13 @@ function adminView(r) {
           p.id === ME.id ? null : el('button', { class: 'btn sm' + (p.active ? ' danger' : ''), type: 'button', onclick: () => act({ action: 'update', user_id: p.id, active: !p.active }, p.active ? 'Access removed' : 'Access restored') }, p.active ? 'Disable' : 'Enable')) : null))));
       const nf = {}; const inp = (k, label, type = 'text', extra = {}) => el('label', {}, label, nf[k] = el('input', { type, ...extra }));
       return [el('h2', {}, 'Team'),
-        el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; assessors do the medical review and upload PSP EOB approvals; agents work tickets.'),
+        el('p', { class: 'small muted' }, 'Everyone who works on tickets signs in with their own account – on the phone or on a PC. Admins manage the team and settings; agents (the assessors) work tickets, review the medicines and upload PSP EOB approvals.'),
         el('div', { class: 'tw', style: 'overflow:visible' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Member', 'Role', 'Groups', 'Auto-assign', 'Status', ''].map(h => el('th', {}, h)))), body)),
         el('p', { class: 'small muted' }, 'Auto-assign: new tickets of an agent’s groups go straight to the agents of that group who switched it on (fewest open tickets first). If nobody from the group is on, agents with no group ticked take it; otherwise it waits unassigned in the group. Each agent switches it from the button next to their name at the top.'),
         isAdmin ? el('div', { class: 'row', style: 'margin-top:10px' }, el('button', { class: 'btn primary', type: 'button', onclick: () => save('agentGroups', groups) }, 'Save groups')) : null,
         isAdmin ? el('div', { class: 'panel', style: 'margin-top:16px;background:var(--surface-2)' }, el('h2', {}, 'Add a team member'),
           el('div', { class: 'g2' }, inp('name', 'Name'), inp('email', 'Work email', 'email', { placeholder: 'name@sarwa.life', dir: 'ltr' })),
-          el('div', { class: 'g2', style: 'margin-top:8px' }, inp('password', 'First password (8+ characters)', 'text', { autocomplete: 'off' }), el('label', {}, 'Role', nf.role = el('select', {}, opt('agent', 'Agent', 'agent'), opt('assessor', 'Assessor', 'agent'), opt('admin', 'Admin', 'agent')))),
+          el('div', { class: 'g2', style: 'margin-top:8px' }, inp('password', 'First password (8+ characters)', 'text', { autocomplete: 'off' }), el('label', {}, 'Role', nf.role = el('select', {}, opt('agent', 'Agent', 'agent'), opt('admin', 'Admin', 'agent')))),
           el('p', { class: 'small muted' }, 'Give them the link of this app, their email and this first password; they can change it from the account menu (top right).'),
           el('button', { class: 'btn primary', type: 'button', onclick: () => { const b = { action: 'create', name: nf.name.value.trim(), email: nf.email.value.trim(), password: nf.password.value, role: nf.role.value }; if (!b.name || !b.email) return toast('Name and email are required'); act(b, 'Team member added'); } }, 'Add member')) : el('p', { class: 'small muted' }, 'Only an admin can add or change team members.')];
     },
@@ -1926,8 +1926,8 @@ async function xlsxDownload(name, sheets) {   // sheets: [{ name, rows: [ {col: 
   XLSX.writeFile(wb, `${name}-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 /* ---------------- PSP: EOB (Explanation of Benefits) approvals ---------------- */
-const ROLE_LABEL = { admin: 'Admin', assessor: 'Assessor', agent: 'Agent' };
-const canEOB = () => !!ME && (ME.role === 'admin' || ME.role === 'assessor');   // only the assessor (or admin) gives the EOB
+const ROLE_LABEL = { admin: 'Admin', assessor: 'Agent', agent: 'Agent' };
+const canEOB = () => !!ME;   // agents are the assessors: any team member uploads the EOB
 const isPSP = t => (t.tags || []).some(x => /^\s*psp\s*$/i.test(x));
 const cannedList = () => { const L = DB.settings.canned || []; return [...L, ...DEFAULTS.canned.filter(d => /^PSP/.test(d.title) && !L.some(x => x.title === d.title))]; };
 const PSP_REPLY_AR = '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">الرجاء التكرم بالعلم بأنه تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل مع سيادتكم من قبل مقدم الخدمة.</p>';
@@ -2570,7 +2570,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15h';
+const APP_VERSION = '2026-11-15i';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
