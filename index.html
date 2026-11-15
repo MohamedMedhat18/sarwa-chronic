@@ -407,7 +407,7 @@ function parseEml(u8, depth = 0) {
   const bin = bytesToLatin1(u8); const { headers } = splitMsg(bin); const ctx = { texts: [], htmls: [], atts: [], forwarded: [] };
   walkPart(bin, ctx, depth);
   let body = ctx.texts.join('\n').trim(); const html = ctx.htmls.join('\n'); if (!body && html) body = htmlToText(html);
-  return { subject: decodeHeader(headers.subject || ''), ...splitFrom(decodeHeader(headers.from || '')), to: decodeHeader(headers.to || ''), cc: decodeHeader(headers.cc || ''), date: parseDate(headers.date), messageId: (headers['message-id'] || '').trim(), body, html, atts: ctx.atts, forwarded: ctx.forwarded };
+  return { subject: decodeHeader(headers.subject || ''), ...splitFrom(decodeHeader(headers.from || '')), to: decodeHeader(headers.to || ''), cc: decodeHeader(headers.cc || ''), date: parseDate(headers.date), messageId: (headers['message-id'] || '').trim(), inReplyTo: (headers['in-reply-to'] || '').trim(), refs: (headers.references || '').trim(), body, html, atts: ctx.atts, forwarded: ctx.forwarded };
 }
 function readCFB(buf) {
   const u8 = new Uint8Array(buf), dv = new DataView(buf); const SIG = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
@@ -458,7 +458,8 @@ function parseMsgAt(cfb, idx, hdrSize, depth, cp) {
     const fname = a.str('3707') || a.str('3704') || a.str('3001') || 'attachment'; const cid = a.str('3712');
     atts.push({ name: fname, mime: (a.str('370E') || mimeFromName(fname)).toLowerCase(), bytes: data, inline: !!(a.props['7FFE000B'] && a.props['7FFE000B'].lo) || !!cid, cid });
   }
-  return { subject, fromName, fromEmail, to: n.str('0E04'), cc: n.str('0E03'), date, messageId, body: body.trim(), html, atts, forwarded };
+  const inReplyTo = n.str('1042') || (th['in-reply-to'] || '').trim(); const refs = n.str('1039') || (th.references || '').trim();
+  return { subject, fromName, fromEmail, to: n.str('0E04'), cc: n.str('0E03'), date, messageId, inReplyTo, refs, body: body.trim(), html, atts, forwarded };
 }
 const parseMsg = buf => parseMsgAt(readCFB(buf), 0, 32, 0, null);
 function flatten(email, depth = 0, out = { atts: [], bodies: [] }) {
@@ -590,7 +591,13 @@ const rowToEv = r => ({ id: r.id, ts: new Date(r.ts).toISOString(), by: r.actor,
 let refoldT = null;
 function refoldSoon() { clearTimeout(refoldT); refoldT = setTimeout(() => { DB = fold(); scheduleRender(); updateBadges(); }, 120); }
 async function nextNo() { const { data, error } = await SB.rpc('next_ticket'); if (error) throw new Error('Could not get a ticket number: ' + error.message); return data; }
-function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {} }; }
+function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {}, midTicket: new Map(), convTicket: new Map() }; }
+// conversation keys of a message -> its ticket (Message-ID like Outlook/Freshdesk, and Outlook's ConversationID)
+const normMid = s => String(s || '').trim().toLowerCase().replace(/^<|>$/g, '');
+function threadKeys(S, no, d) {
+  if (d.mid) S.midTicket.set(normMid(d.mid), no);
+  if (d.conv) S.convTicket.set(String(d.conv).toUpperCase(), no);
+}
 function setStatus(t, s, ts, by) {
   if (!s || t.status === s) return; const from = t.status; t.status = s; t.history.push({ ts, status: s });
   if (s === 'Resolved') t.resolvedAt = ts;
@@ -620,14 +627,27 @@ function applyEv(S, e) {
     case 'msg.in': {
       S.processed.add(d.key); S.ignored.delete(d.key); if (d.mid) S.mids.add(String(d.mid).toLowerCase());
       if (!t) return;
+      threadKeys(S, t.no, d);
       const at = d.date || e.ts; t.msgs.push({ kind: 'in', id: e.id, at, by: d.fromName || d.fromEmail, ...d });
       if (!t.lastIn || at > t.lastIn) t.lastIn = at; t.updated = e.ts;
       if (!d.initial && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (provider replied)');
-      if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: 'Provider replied' });
+      if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: (d.internal ? 'Sarwa colleague wrote' : 'Provider replied') + (d.threadBy ? ' (joined by ' + d.threadBy + ')' : '') });
       break;
     }
-    case 'msg.out': if (!t) return; t.msgs.push({ kind: 'out', id: e.id, at: e.ts, by: d.auto ? 'Auto-acknowledgement' : e.by, state: 'queued', ...d }); if (!t.firstResponseAt && !d.auto) t.firstResponseAt = e.ts; t.lastOut = e.ts; t.updated = e.ts; break;
-    case 'out.status': { if (!t) return; const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m) { m.state = d.status; m.error = d.error || ''; m.sentAt = d.sentAt || e.ts; } if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break; }
+    case 'msg.out': {
+      if (d.key) { S.processed.add(d.key); S.ignored.delete(d.key); } if (d.mid) S.mids.add(String(d.mid).toLowerCase());
+      if (!t) return;
+      threadKeys(S, t.no, d);
+      if (d.outlook) {   // replied directly from Outlook (Chronic mailbox) – already sent
+        const at = d.date || e.ts;
+        t.msgs.push({ kind: 'out', id: e.id, at, by: d.sender || 'Chronic (Outlook)', state: 'sent', sentAt: at, ...d });
+        if (!t.firstResponseAt || at < t.firstResponseAt) t.firstResponseAt = at; if (!t.lastOut || at > t.lastOut) t.lastOut = at; t.updated = e.ts;
+        t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply sent from Outlook' + (d.sender ? ' by ' + d.sender : '') });
+        break;
+      }
+      t.msgs.push({ kind: 'out', id: e.id, at: e.ts, by: d.auto ? 'Auto-acknowledgement' : e.by, state: 'queued', ...d }); if (!t.firstResponseAt && !d.auto) t.firstResponseAt = e.ts; t.lastOut = e.ts; t.updated = e.ts; break;
+    }
+    case 'out.status': { if (!t) return; threadKeys(S, t.no, d); const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m) { m.state = d.status; m.error = d.error || ''; m.sentAt = d.sentAt || e.ts; } if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break; }
     case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; break;
     case 'update': {
       if (!t) return;
@@ -769,7 +789,7 @@ async function runImporter() {
   if (importing || !DB || !STORE.connected) return; importing = true;
   try {
     for (let round = 0; round < 20; round++) {
-      const { data, error } = await SB.rpc('claim_mail', { n: 5 });
+      const { data, error } = await SB.rpc('claim_mail2', { n: 5 });
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
       if (await loadEvents()) DB = fold();   // see what other devices did just now (duplicates, replies)
@@ -777,7 +797,7 @@ async function runImporter() {
         const row = data[i];
         setSync('busy', `Importing email ${i + 1} of ${data.length}…`);
         try {
-          if (!DB.processed.has(row.path)) await importFile(row.path, { receivedAt: row.received_at });
+          if (!DB.processed.has(row.path)) await importFile(row.path, { receivedAt: row.received_at, dir: row.direction || 'in', meta: row.meta || {} });
           await SB.from('mail_inbox').update({ status: 'done', error: null }).eq('id', row.id);
         } catch (e) {
           console.error(e);
@@ -822,6 +842,34 @@ async function buildMsgIn(no, key, email, flat, atts, counted) {
   if (email.html && email.html.length < 3e6) { const p = `${HD}/files/${no}/${rand(5)}_original.html`; await FS.write(p, new Blob([email.html], { type: 'text/html' })); d.htmlPath = p; }
   return d;
 }
+/* ---- one conversation per ticket (like Outlook / Freshdesk) ----
+   1) ticket number in subject/text  2) reply chain (In-Reply-To / References = Message-ID of a message in a ticket)
+   3) Outlook conversation ID        4) same subject with the same correspondent (within 45 days) */
+const normSubj = s => normDigits(String(s || '')).replace(/\[?\s*CHR\s*-?\s*\d{6}\s*\]?/gi, ' ').replace(/^\s*((re|fw|fwd|aw|tr|رد|إعادة توجيه|اعادة توجيه|توجيه)\s*[:：]\s*)+/i, '').replace(/\s+/g, ' ').trim().toLowerCase();
+const emailsIn = s => String(s || '').toLowerCase().match(/[\w.+'-]+@[\w-]+(\.[\w-]+)+/g) || [];
+function findThread(email, meta, text, dir) {
+  const hop = (no, how) => { let t = DB.tickets.get(no), g = 0; while (t && t.mergedInto && g++ < 10) t = DB.tickets.get(t.mergedInto); return t ? { t, how } : null; };
+  const m = normDigits(email.subject).match(TICKET_RE) || normDigits(text).match(TICKET_RE);
+  if (m) { const r = hop('CHR-' + m[1], 'ticket number'); if (r) return r; }
+  const chain = [email.inReplyTo, meta.inReplyTo, email.refs, meta.refs].join(' ');
+  const ids = (chain.match(/<[^>\s]+>/g) || chain.split(/\s+/).filter(x => x.includes('@'))).reverse();
+  for (const id of ids) { const no = DB.midTicket.get(normMid(id)); if (no) { const r = hop(no, 'reply chain'); if (r) return r; } }
+  if (meta.conv) { const no = DB.convTicket.get(String(meta.conv).toUpperCase()); if (no) { const r = hop(no, 'Outlook conversation'); if (r) return r; } }
+  const ns = normSubj(email.subject);
+  if (ns.length >= 6) {
+    const people = new Set(dir === 'out' ? emailsIn([meta.to, meta.cc, email.to, email.cc].join(' ')) : [String(email.fromEmail || '').toLowerCase()]);
+    const when = Date.parse(email.date) || Date.now(); let best = null;
+    for (const t of DB.tickets.values()) {
+      if (t.mergedInto || t.status === 'Closed' || normSubj(t.subject) !== ns) continue;
+      const age = when - Date.parse(t.created); if (age < -86400000 || age > 45 * DAY) continue;
+      const theirs = new Set([String(t.requester.email || '').toLowerCase(), ...t.msgs.filter(x => x.kind === 'in').map(x => String(x.fromEmail || '').toLowerCase())]);
+      if (![...people].some(p => theirs.has(p))) continue;
+      if (!best || t.created > best.created) best = t;
+    }
+    if (best) return { t: best, how: 'same subject' };
+  }
+  return null;
+}
 async function importFile(name, opts) {
   let email;
   const f = await FS.file(name); const buf = await f.arrayBuffer();   // download problems: retried later
@@ -832,11 +880,21 @@ async function importFile(name, opts) {
   const flat = flatten(email); const atts = flat.atts.map(a => ({ ...a, ...classify(a) })); const counted = atts.filter(a => a.cls !== 'ignore');
   const mid = String(email.messageId || '').toLowerCase();
   if (mid && DB.mids.has(mid) && !opts.force) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'duplicate email', silent: true }); return; }
-  const text = flat.bodies.join('\n');
-  const m = normDigits(email.subject).match(TICKET_RE) || normDigits(text).match(TICKET_RE);
-  let target = m ? DB.tickets.get('CHR-' + m[1]) : null; let g = 0;
-  while (target && target.mergedInto && g++ < 10) target = DB.tickets.get(target.mergedInto);
-  if (target) { await emit('msg.in', target.no, await buildMsgIn(target.no, name, email, flat, atts, counted)); return; }
+  const text = flat.bodies.join('\n'); const meta = opts.meta || {};
+  const th = findThread(email, meta, text, opts.dir);
+  if (opts.dir === 'out') {   // sent from Outlook by the team: join the ticket of its conversation
+    if (!th) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'sent from Outlook – not part of any ticket', silent: true }); return; }
+    const dupe = th.t.msgs.some(x => x.kind === 'out' && !x.outlook && Math.abs(Date.parse(x.sentAt || x.at) - Date.parse(email.date)) < 20 * 60000);
+    if (dupe) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'helpdesk reply – already in the ticket', silent: true }); return; }
+    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
+    await emit('msg.out', th.t.no, { ...d, outlook: true, sender: meta.sender || email.fromName || 'Chronic', conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how });
+    return;
+  }
+  if (th) {
+    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
+    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || '') });
+    return;
+  }
   if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force) {
     await emit('email.ignored', null, { key: name, file: name, mid, why: atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
   }
@@ -845,7 +903,7 @@ async function importFile(name, opts) {
   const fields = applyRules(base, email, counted.length > 0);
   const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
-  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true;
+  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || '';
   await emit('msg.in', no, d);
   await maybeAutoAck(no, email);
 }
@@ -1119,6 +1177,17 @@ function msgCard(m, t, fromNo) {
       el('div', { class: 'mb html', dir: 'auto', html: sanitize(m.html) }),
       m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null);
   }
+  if (m.kind === 'out' && m.outlook) {   // replied directly from Outlook – part of the same conversation
+    const [main, quoted] = splitQuoted(m.text || '');
+    return el('div', { class: 'msg out' },
+      el('div', { class: 'mh' }, avatar(m.sender || 'Chronic'), el('div', { style: 'min-width:0' },
+        el('div', {}, el('span', { class: 'who', dir: 'auto' }, m.sender || 'Chronic'), ' replied ', el('span', { class: 'pill', style: 'background:#e7effa;color:#2f6fb0' }, '📨 from Outlook'), ' ', el('span', { class: 'pill p-ok' }, 'Sent'), m.threadBy ? el('span', { class: 'pill p-muted', title: 'How this email was linked to the ticket', style: 'margin-left:4px' }, 'linked by ' + m.threadBy) : null, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
+        el('div', { class: 'small muted', dir: 'auto' }, (m.to ? 'To: ' + m.to : '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at) + ' (' + rel(m.at) + ')'),
+        el('div', { class: 'small muted', dir: 'auto' }, m.subject))),
+      el('div', { class: 'mb', dir: 'auto' }, main || '(no text)', quoted ? el('details', { class: 'quoted' }, el('summary', { class: 'small' }, 'Show quoted text'), el('div', { dir: 'auto' }, quoted)) : null),
+      m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
+      m.htmlPath ? el('div', { style: 'padding:0 14px 10px 54px' }, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => showOriginal(m) }, 'View original email')) : null);
+  }
   if (m.kind === 'out') {
     const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
     return el('div', { class: 'msg out' },
@@ -1131,7 +1200,7 @@ function msgCard(m, t, fromNo) {
   const qBox = quoted ? el('details', { class: 'quoted' }, el('summary', { class: 'small' }, 'Show quoted text'), el('div', { dir: 'auto' }, quoted)) : null;
   return el('div', { class: 'msg in' },
     el('div', { class: 'mh' }, avatar(m.fromName || m.fromEmail), el('div', { style: 'min-width:0' },
-      el('div', {}, el('span', { class: 'who', dir: 'auto' }, m.fromName || m.fromEmail), ' ', el('span', { class: 'muted small' }, '<' + (m.fromEmail || '') + '>'), m.initial ? null : el('span', { class: 'pill p-resp', style: 'margin-left:6px' }, 'reply'), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
+      el('div', {}, el('span', { class: 'who', dir: 'auto' }, m.fromName || m.fromEmail), ' ', el('span', { class: 'muted small' }, '<' + (m.fromEmail || '') + '>'), m.initial ? null : el('span', { class: 'pill p-resp', style: 'margin-left:6px' }, m.internal ? 'Sarwa colleague' : 'reply'), m.threadBy ? el('span', { class: 'pill p-muted', title: 'How this email was linked to the ticket', style: 'margin-left:4px' }, 'linked by ' + m.threadBy) : null, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
       el('div', { class: 'small muted', dir: 'auto' }, (m.to ? 'To: ' + m.to + ' · ' : '') + fmtDate(m.at) + ' (' + rel(m.at) + ')'),
       el('div', { class: 'small muted', dir: 'auto' }, m.subject))),
     el('div', { class: 'mb', dir: 'auto' }, main || '(no text)', qBox),
@@ -2169,7 +2238,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-15e';
+const APP_VERSION = '2026-11-15f';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
