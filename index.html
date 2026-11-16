@@ -2296,6 +2296,7 @@ async function sarwaIcareRunner(APP) {
   box.style.cssText = 'position:fixed;top:12px;right:12px;z-index:2147483647;background:#0f5e57;color:#fff;padding:12px 16px;border-radius:10px;font:13px/1.45 Arial,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.35);max-width:440px;max-height:80vh;overflow:auto;text-align:left';
   const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const say = (h, bad) => { box.style.background = bad ? '#9b1c1c' : '#0f5e57'; box.innerHTML = h + '<div style="text-align:right;margin-top:6px"><a href="#" style="color:#fff;font-size:12px" onclick="document.getElementById(\'sarwaBox\').remove();return false">Close</a></div>'; };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   try {
     if (document.querySelector('input[name=j_password]')) { say('Sarwa: sign in to i-CARE first, then click &#11088; again.', 1); return; }
     const op = window.opener && !window.opener.closed ? window.opener : null;
@@ -2312,35 +2313,44 @@ async function sarwaIcareRunner(APP) {
     const rows = [];
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i];
-      say('Sarwa: checking ' + esc(id) + ' in i-CARE&hellip;' + (ids.length > 1 ? ' (' + (i + 1) + ' of ' + ids.length + ')' : ''));
+      say('Sarwa: opening member ' + esc(id) + '&hellip;' + (ids.length > 1 ? ' (' + (i + 1) + ' of ' + ids.length + ')' : ''));
       const res = { sarwaIcare: 1, id, ok: false };
       try {
-        const body = new URLSearchParams({ Contnbr: '', IndNbr: id, txtReference: '' });
-        const p = await (await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true' + cid + '&_cf_rc=1', { method: 'POST', body, credentials: 'same-origin' })).text();
-        if (/j_password/i.test(p)) { say('Sarwa: the i-CARE sign-in expired &ndash; sign in again, then click &#11088;.', 1); return; }
+        // i-CARE's own Patient Information search (right after a page load i-CARE answers "signed out" for a few seconds: retry)
+        let p = '';
+        for (const w of [0, 1000, 1500, 2000, 2500, 3000]) {
+          if (w) await sleep(w);
+          p = await (await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true' + cid + '&_cf_rc=1', { method: 'POST', body: new URLSearchParams({ Contnbr: '', IndNbr: id, txtReference: '' }), credentials: 'same-origin' })).text();
+          if (!/j_password/i.test(p)) break;
+        }
+        if (/j_password/i.test(p)) { say('Sarwa: i-CARE closed this session (someone signed in with the same account, or it timed out). Sign in, then click &#11088; again.', 1); return; }
         const m = p.match(/AdministrativeInfo\.cfm\?indnbr=(\d+)&(?:amp;)?contnbr=(\d+)/i);
         if (!m) res.error = 'Not found in i-CARE';
         else if (m[1] !== id) res.error = 'i-CARE returned another member (' + m[1] + ')';
         else {
-          const a = await (await fetch('/assistance/AdministrativeInfo.cfm?indnbr=' + m[1] + '&contnbr=' + m[2], { credentials: 'same-origin' })).text();
+          const url = '/assistance/AdministrativeInfo.cfm?indnbr=' + m[1] + '&contnbr=' + m[2];
+          let a = '';
+          for (const w of [0, 1000, 2000]) { if (w) await sleep(w); a = await (await fetch(url, { credentials: 'same-origin' })).text(); if (/Adherent Name/i.test(a)) break; }
           const d = new DOMParser().parseFromString(a, 'text/html');
           const text = [...d.querySelectorAll('tr')].filter(tr => !tr.querySelector('table')).map(tr => [...tr.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()).join('\t')).filter(x => x.trim()).join('\n');
           const ind = (text.match(/Individual Number:?\t\s*(\d+)/i) || [])[1] || '';
           if (!/Adherent Name/i.test(text)) res.error = 'Administrative Info did not open';
           else if (ind !== id) res.error = 'Administrative Info showed another member (' + ind + ')';
-          else Object.assign(res, { ok: true, contract: m[2], text, name: (text.match(/Adherent Name:?\t([^\n]*)/i) || [])[1] || '', mobile: (text.match(/Insured Mobile Number:?\t([^\n]*)/i) || [])[1] || '' });
+          else Object.assign(res, { ok: true, url, contract: m[2], text, name: (text.match(/Adherent Name:?\t([^\n]*)/i) || [])[1] || '', mobile: (text.match(/Insured Mobile Number:?\t([^\n]*)/i) || [])[1] || '' });
         }
       } catch (e) { res.error = e.message; }
       rows.push(res);
-      if (op) { try { op.postMessage(res, APP); } catch (e) { } }
+      if (op) { try { const msg = Object.assign({}, res); delete msg.url; op.postMessage(msg, APP); } catch (e) { } }
     }
-    const last = rows[rows.length - 1], okN = rows.filter(r => r.ok).length;
-    if (!op && last.ok) { try { await navigator.clipboard.writeText(last.text); } catch (e) { } }
-    const head = rows.length > 1 ? 'Sarwa: ' + okN + ' of ' + rows.length + ' members checked' : last.ok ? '&#10003; ' + esc(last.name) : 'Sarwa: ' + esc(last.id);
+    const okRows = rows.filter(r => r.ok), last = okRows[okRows.length - 1];
+    if (!op && last) { try { await navigator.clipboard.writeText(last.text); } catch (e) { } }
+    // one member: go straight to its Administrative Information in this tab
+    if (rows.length === 1 && last) { location.replace(last.url); return; }
     const table = '<table style="border-collapse:collapse;margin-top:6px;width:100%;color:#fff">' + rows.map(r => '<tr><td style="padding:2px 10px 2px 0;white-space:nowrap">' + esc(r.id) + '</td><td style="padding:2px 0">' + (r.ok ? esc(r.name) + (r.mobile ? ' &middot; ' + esc(r.mobile) : '') : '<span style="color:#ffd2cc">' + esc(r.error) + '</span>') + '</td></tr>').join('') + '</table>';
-    const note = '<div style="margin-top:6px">' + (op ? (okN ? 'Saved to the Sarwa ticket' + (okN > 1 ? 's' : '') + '.' : '') : (last.ok ? 'Copied &ndash; in the Sarwa ticket press Paste i-CARE info.' : '')) + '</div>';
-    const links = last.ok ? '<div style="margin-top:6px"><a href="#" style="color:#fff" onclick="window.open(\'/assistance/AdministrativeInfo.cfm?indnbr=' + last.id + '&contnbr=' + last.contract + '\',\'AdministrativeInfo\',\'width=900,height=700,resizable=1,scrollbars=1\');return false">Administrative Info</a> &middot; <a href="#" style="color:#fff" onclick="window.open(\'/Assistance/Check_Remaining_Limitation.cfm\',\'ewin\');return false">Remaining limits</a> <span style="opacity:.8">(' + esc(last.id) + ')</span></div>' : '';
-    say('<b>' + head + '</b>' + table + note + links, !okN);
+    const head = rows.length > 1 ? 'Sarwa: ' + okRows.length + ' of ' + rows.length + ' members checked' : 'Sarwa: ' + esc(rows[0].id) + ' &ndash; ' + esc(rows[0].error);
+    const note = '<div style="margin-top:6px">' + (op && okRows.length ? 'Saved to the Sarwa tickets.' : '') + '</div>';
+    const links = last ? '<div style="margin-top:6px"><a href="' + last.url + '" style="color:#fff">Administrative Information</a> (' + esc(last.id) + ')</div>' : '';
+    say('<b>' + head + '</b>' + table + note + links, !okRows.length);
   } catch (e) { say('Sarwa: ' + esc(e.message), 1); }
   finally { window.__sarwaBusy = false; }
 }
@@ -2435,33 +2445,29 @@ async function openInEdge(pairs) {   // pairs: [[ticketNo, memberId], …]
   for (const [no, id] of pairs) { ids.push(id); tks.push(await icareToken(no, id)); }
   location.href = 'microsoft-edge:' + icareUrl(ids.join(',') + '&tk=' + tks.join(','));
 }
-async function openICare(t) {
+// Open i-CARE always in THIS browser. With the helper here (e.g. Edge) it lands on the member by itself; without it (e.g. Chrome,
+// where the company blocks extensions) one click on ⭐ Sarwa i-CARE in i-CARE lands on the member. Edge is an optional extra.
+async function openICare(t, opts) {
   const id = memberNo(t);
   if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
   ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
   try { navigator.clipboard.writeText(id); } catch { }
-  if (viaEdge()) {
-    try { await openInEdge([[t.no, id]]); toast('Opening ' + id + ' in Microsoft Edge (Sarwa i-CARE helper) – the member’s Administrative Information opens there and is saved to ' + t.no + ' here. First time: tick “Always allow” and press Open.'); }
+  if (opts && opts.edge) {
+    try { await openInEdge([[t.no, id]]); toast('Opening ' + id + ' in Microsoft Edge – the member’s Administrative Information opens there and is saved to ' + t.no + ' here. First time: tick “Always allow” and press Open.'); }
     catch (x) { toast('Could not open i-CARE in Edge: ' + x.message); }
     return;
   }
   window.open(icareUrl(id), 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
   toast(icareHelper() ? 'Opening ' + id + ' in i-CARE – its Administrative Information opens and is saved to ' + t.no + '.'
-    : 'i-CARE opened for ' + id + '. Click ⭐ Sarwa i-CARE there – or install the Sarwa i-CARE helper (i-CARE panel) so this opens the member directly.');
+    : 'i-CARE opened for ' + id + ' – click ⭐ Sarwa i-CARE in the bookmarks bar there: it opens this member’s Administrative Information and saves it to ' + t.no + '.');
 }
 // Check every open ticket whose member is not verified yet, in one go.
 async function verifyAllICare() {
   const list = [...DB.tickets.values()].filter(t => !['Closed', 'Resolved'].includes(t.status) && !t.mergedInto && /^\d{6,10}$/.test(memberNo(t)) && !t.icare);
   const nos = {}; for (const t of list) { const id = memberNo(t); if (!nos[id]) nos[id] = t.no; }
-  const ids = Object.keys(nos).slice(0, viaEdge() ? 15 : 40);
+  const ids = Object.keys(nos).slice(0, 40);
   if (!ids.length) return toast('Every open ticket with a member number is already checked in i-CARE.');
   ICARE_JOB = { ids, nos, at: Date.now() };
-  if (viaEdge()) {
-    toast('Preparing ' + ids.length + ' member(s) for i-CARE…');
-    try { await openInEdge(ids.map(id => [nos[id], id])); toast('Checking ' + ids.length + ' member(s) in i-CARE in Microsoft Edge – each result is saved to its ticket here.'); }
-    catch (x) { toast('Could not open i-CARE in Edge: ' + x.message); }
-    return;
-  }
   window.open(icareUrl(ids.join(',')), 'icare');
   toast(icareHelper() ? 'Checking ' + ids.length + ' member(s) in i-CARE – each result is saved to its ticket.' : 'i-CARE opened for ' + ids.length + ' member(s). Click ⭐ Sarwa i-CARE there – each result is saved to its ticket.');
 }
@@ -2484,19 +2490,16 @@ async function processIcareRaw() {
 }
 function icareSetupHint() {
   if (icareHelper()) return el('div', { class: 'small', style: 'color:#2f8a4f' }, '✓ i-CARE helper installed – Open i-CARE goes straight to the member’s Administrative Information and saves it here.');
-  const steps = el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
-    el('div', {}, el('b', {}, 'Install the Sarwa i-CARE helper in Microsoft Edge (once per PC):')),
-    el('div', {}, '1) ', el('a', { href: 'sarwa-icare-helper.zip', download: 'sarwa-icare-helper.zip' }, 'Download the helper'), ' and unzip it (right-click › Extract All) into a folder you keep, e.g. Documents.'),
-    el('div', {}, '2) In Edge open edge://extensions, turn on “Developer mode”, press “Load unpacked” and choose the unzipped folder.'),
-    el('div', {}, '3) Sign in to i-CARE once in Edge.'),
-    el('div', { style: 'margin-top:4px' }, 'Without the helper you can drag this button to the bookmarks bar and click it on the i-CARE page: '), el('div', {}, icareBookmarkLink()));
-  if (viaEdge()) return el('details', { class: 'small muted' }, el('summary', {}, 'Open i-CARE opens the member in Microsoft Edge (Sarwa i-CARE helper) – setup'), steps);
-  return el('details', { class: 'small muted' }, el('summary', {}, 'Make Open i-CARE open the member directly (one-time setup, 1 minute)'), steps);
+  return el('details', { class: 'small muted' }, el('summary', {}, 'Open the member directly in this browser – one-time setup'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
+    el('div', {}, el('b', {}, 'Any browser (Chrome, Edge…), no install: '), 'drag this button to the bookmarks bar once (Ctrl+Shift+B shows it):'), el('div', {}, icareBookmarkLink()),
+    el('div', {}, 'Then: 🔎 Open i-CARE → click ⭐ Sarwa i-CARE on the i-CARE page → this member’s Administrative Information opens and is saved here.'),
+    el('div', { style: 'margin-top:4px' }, el('b', {}, 'No click at all: '), 'the Sarwa i-CARE helper extension (works where the browser allows extensions – Edge on our PCs; in Chrome IT must allow it once). ',
+      el('a', { href: 'sarwa-icare-helper.zip', download: 'sarwa-icare-helper.zip' }, 'Download'), ', unzip, then browser › Extensions › Developer mode › Load unpacked.')));
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
   const nameWarn = formName && t.memberName && sameName(formName, t.memberName) === false;
-  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => openICare(t) }, c ? '↻ Check again in i-CARE' : '🔎 Open i-CARE'), el('button', { class: 'btn sm', type: 'button', title: 'Paste copied i-CARE text (Administrative Info or Remaining limits)', onclick: () => icareDialog(t.no) }, '📋 Paste'));
+  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => openICare(t) }, c ? '↻ Check again in i-CARE' : '🔎 Open i-CARE'), el('button', { class: 'btn sm', type: 'button', title: 'Paste copied i-CARE text (Administrative Info or Remaining limits)', onclick: () => icareDialog(t.no) }, '📋 Paste'), viaEdge() ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Open the member in Microsoft Edge, where the Sarwa i-CARE helper does it without any click; the details come back to this ticket', onclick: () => openICare(t, { edge: true }) }, 'Open in Edge') : null);
   const unverified = [...DB.tickets.values()].filter(x => !['Closed', 'Resolved'].includes(x.status) && !x.mergedInto && !x.icare && /^\d{6,10}$/.test(memberNo(x))).length;
   const allBtn = unverified > 1 ? el('button', { class: 'btn sm ghost', type: 'button', style: 'justify-self:start', title: 'Opens i-CARE once; one click on ⭐ Sarwa i-CARE checks them (40 at a time) and saves each result to its ticket', onclick: verifyAllICare }, '✓ Check all unverified open tickets (' + unverified + ')') : null;
   if (!c) return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid var(--border)' },
@@ -3187,7 +3190,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16n';
+const APP_VERSION = '2026-11-16o';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
