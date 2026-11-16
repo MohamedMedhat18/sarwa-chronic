@@ -262,6 +262,15 @@ textarea{resize:vertical}
 .kpi.bad b{color:var(--bad)} .kpi.warn b{color:var(--warn)} .kpi.ok b{color:#2f8a4f}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.decbox{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;display:grid;grid-template-columns:minmax(0,1fr);gap:10px;margin-bottom:10px;min-width:0}
+.decgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px}
+.decbtn{display:flex;align-items:center;justify-content:center;gap:6px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--c);font:inherit;font-size:13px;font-weight:650;cursor:pointer;transition:background .12s,border-color .12s}
+.decbtn .di{font-size:13px;line-height:1}
+.decbtn:hover{border-color:var(--c);background:color-mix(in srgb,var(--c) 8%,var(--surface))}
+.decbtn.on{background:var(--c);border-color:var(--c);color:#fff}
+.deccur{border-left:3px solid var(--c);background:color-mix(in srgb,var(--c) 7%,var(--surface));border-radius:0 8px 8px 0;padding:8px 10px;display:grid;gap:3px}
+.deccur b{color:var(--c);font-size:13.5px}
+.decsug{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--surface-2);border-radius:8px;padding:8px 10px}
 .dash .dhead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
 .dash .dhead h2{margin:0;font-size:20px;letter-spacing:-.01em}
 .live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2f8a4f;box-shadow:0 0 0 3px color-mix(in srgb,#2f8a4f 25%,transparent);animation:livep 2s infinite}
@@ -1146,7 +1155,9 @@ async function createManual(d, requestId, by) {
 let renderQueued = false;
 function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(false); processIcareRaw().catch(() => { }); }); }
 function route() { const h = location.hash.replace(/^#\/?/, ''); const [path, qs] = h.split('?'); const parts = path.split('/'); return { name: parts[0] || 'tickets', arg: decodeURIComponent(parts[1] || ''), params: new URLSearchParams(qs || '') }; }
-let CUR = { key: '', view: null };
+let CUR = { key: '', view: null }; const LIST_SCROLL = new Map();
+// the Tickets icon on a ticket page goes back to the list it was opened from (not always Unresolved)
+document.addEventListener('click', e => { const a = e.target.closest && e.target.closest('.rail a[data-r="tickets"]'); if (a && /^#\/t\//.test(location.hash) && typeof ORIGIN !== 'undefined') { e.preventDefault(); location.hash = ORIGIN.hash; } });
 window.addEventListener('hashchange', () => render(true));
 function render(nav) {
   if (!DB || !STORE.connected) return;
@@ -1155,8 +1166,11 @@ function render(nav) {
   updateBadges();
   const V = VIEWS[r.name] || VIEWS.tickets;
   if (nav || key !== CUR.key || !CUR.view) {
+    const host = $('#view');
+    if (CUR.key && CUR.key.startsWith('tickets/')) LIST_SCROLL.set(CUR.key, host.scrollTop);   // keep each list's scroll position
     CUR = { key, view: V(r) };
-    const host = $('#view'); host.replaceChildren(CUR.view.el); if (nav) host.scrollTop = 0;
+    host.replaceChildren(CUR.view.el);
+    if (r.name === 'tickets' && LIST_SCROLL.has(key)) host.scrollTop = LIST_SCROLL.get(key); else if (nav) host.scrollTop = 0;
   } else if (CUR.view.update) CUR.view.update();
 }
 function updateBadges() {
@@ -1275,8 +1289,20 @@ function folderPane(view) {
     link('unverified', 'Not checked in i-CARE', cnt(t => VIEW_DEFS.unverified.f(t)), { icon: '🔎' }),
     link('resolved', 'Resolved', 0, { icon: '✓' }), link('closed', 'Closed', 0, { icon: '✕' }), link('all', 'All tickets', T.length, { icon: '∑' }));
 }
+// The list a ticket was opened from (queue / folder / view + search): "← Back" and closing a ticket return there.
+const ORIGIN = (() => { try { return JSON.parse(sessionStorage.getItem('hd-origin') || 'null') || { hash: '#/tickets?view=unresolved', label: 'Unresolved' }; } catch { return { hash: '#/tickets?view=unresolved', label: 'Unresolved' }; } })();
+function setOrigin(hash, label) { ORIGIN.hash = hash; ORIGIN.label = label; try { sessionStorage.setItem('hd-origin', JSON.stringify(ORIGIN)); } catch { } }
+// after a ticket is closed / resolved: the next ticket of the same list, else back to that list
+function afterDone(no) {
+  const ids = LIST.last.map(x => x.t.no); const i = ids.indexOf(no);
+  const next = i >= 0 ? ids.slice(i + 1).concat(ids.slice(0, i).reverse()).find(x => { const t = DB.tickets.get(x); return t && openT(t); }) : null;
+  if (next) { location.hash = '#/t/' + next; toast(no + ' done – next in ' + ORIGIN.label + ': ' + next); }
+  else { location.hash = ORIGIN.hash; toast(no + ' done – back to ' + ORIGIN.label); }
+}
+const isDone = s => s === 'Closed' || s === 'Resolved';
 function ticketList(r) {
   const view = r.params.get('view') || 'unresolved', q = r.params.get('q') || ''; const VD = viewDef(view);
+  setOrigin('#/tickets?' + (r.params.toString() || 'view=unresolved'), VD.label);
   const F = LIST.filters; F.sort = F.sort || 'created'; F.dir = F.dir || 'desc';
   const root = el('div', { class: 'lt' }); const left = el('div'); const filters = el('aside', { class: 'filters', 'aria-label': 'Filters' });
   let pane = el('nav', { class: 'fpane' }); root.append(pane);
@@ -1631,7 +1657,9 @@ function ticketView(r) {
         await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), statusAfter: afterSel.value });
         toast('Reply queued – Outlook sends it within a few minutes');
       }
+      const doneAfter = isDone(afterSel.value);
       ce.innerHTML = ''; files.length = 0; drawFiles(); afterSel.value = '';
+      if (doneAfter) setTimeout(() => afterDone(no), 400);   // replied and closed: next ticket of the same queue
     } catch (e) { toast('Could not save: ' + e.message); }
     sendBtn.disabled = false;
   }
@@ -1640,14 +1668,14 @@ function ticketView(r) {
     const prev = idx > 0 ? LIST.last[idx - 1].t.no : '', next = idx >= 0 && idx < LIST.last.length - 1 ? LIST.last[idx + 1].t.no : '';
     top.replaceChildren(
       el('div', { class: 'tbar' },
-        el('a', { class: 'btn sm', href: '#/tickets' }, '← Tickets'),
+        el('a', { class: 'btn sm', href: ORIGIN.hash, title: 'Back to ' + ORIGIN.label }, '← ' + (ORIGIN.label.length > 26 ? ORIGIN.label.slice(0, 25) + '…' : ORIGIN.label)),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'reply'; drawEditor(); ce.focus(); } }, 'Reply ', el('span', { class: 'kbd' }, 'r')),
         el('button', { class: 'btn sm', type: 'button', title: 'Forward an email of this ticket (with its attachments) – like Outlook', onclick: () => { mode = 'forward'; drawEditor(); fwdTo.focus(); } }, '↪ Forward ', el('span', { class: 'kbd' }, 'f')),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'note'; drawEditor(); ce.focus(); } }, 'Note ', el('span', { class: 'kbd' }, 'n')),
         el('button', { class: 'btn sm primary', type: 'button', onclick: () => validationDialog(no) }, t.validation ? '✓ Validation' : 'Validate medicines'),
         el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog([no]) }, 'Merge'),
         el('button', { class: 'btn sm', type: 'button', title: 'Every action on this ticket with its details – who did what and when, including who opened it', onclick: () => activityDialog(no) }, '🕘 Activity ', el('span', { class: 'pill p-muted', style: 'font-size:11px;padding:0 6px' }, String([...STORE.events.values()].filter(e => e.t === no).length))),
-        t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Closed' }) }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
+        t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: async () => { try { await emit('update', no, { status: 'Closed' }); afterDone(no); } catch { } } }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
         el('div', { style: 'flex:1' }),
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
       t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
@@ -1696,7 +1724,7 @@ function ticketView(r) {
         if (memberNameIn.value.trim() !== t.memberName) ch.memberName = memberNameIn.value.trim();
         if (langSel.value !== t.lang) ch.lang = langSel.value;
         if (!Object.keys(ch).length) { toast('Nothing changed'); return; }
-        await emit('update', no, ch); toast('Ticket updated');
+        await emit('update', no, ch); if (isDone(ch.status)) afterDone(no); else toast('Ticket updated');
       } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null,
         isPSP(t) ? null : el('button', { class: 'btn ghost sm', type: 'button', title: 'Mark as PSP (needs an EOB approval before closing)', onclick: () => emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] }) }, '+ PSP')),
       isPSP(t) || (t.eobs || []).length ? pspPanel(t) : null,
@@ -2869,21 +2897,28 @@ function decisionDialog(t, d, preset) {
       try {
         const ch = { decision: d, _decisionReason: needs ? reason.value : '', _decisionNote: note.value.trim(), _decisionAt: new Date().toISOString(), _decisionBy: me() };
         if (t.status !== D.status) ch.status = D.status;
-        await emit('update', t.no, ch); closeDialog(); toast(t.no + ': ' + d + (needs && reason.value ? ' – ' + reason.value : ''));
+        await emit('update', t.no, ch); closeDialog(); toast(t.no + ': ' + d + (needs && reason.value ? ' – ' + reason.value : '')); if (isDone(D.status)) setTimeout(() => afterDone(t.no), 600);
       } catch (x) { e.target.disabled = false; }
     } }, 'Save – ' + d)]);
 }
 function decisionPanel(t) {
   const cur = t.decision && DECISIONS[t.decision] ? t.decision : ''; const sug = suggestedDecision(t);
-  const btn = d => { const D = DECISIONS[d], on = cur === d; return el('button', { class: 'btn sm', type: 'button', title: d + ' – ' + D.ar, 'aria-pressed': on ? 'true' : 'false', style: 'flex:1;justify-content:center;font-weight:600;' + (on ? 'background:' + D.c + ';border-color:' + D.c + ';color:#fff' : 'color:' + D.c), onclick: () => decisionDialog(t, d, d === cur ? t.decisionReason : (sug && sug.d === d ? sug.reason : '')) }, D.icon + ' ' + (d === 'Partially approved' ? 'Partial' : d)); };
-  return [el('h3', {}, 'Decision'), el('div', { class: 'slabox', style: 'display:grid;gap:8px' },
-    el('div', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, Object.keys(DECISIONS).map(btn)),
-    cur ? el('div', { class: 'small', style: 'border-left:3px solid ' + DECISIONS[cur].c + ';padding-left:8px' },
-      el('b', { style: 'color:' + DECISIONS[cur].c }, DECISIONS[cur].icon + ' ' + cur), t.decisionReason ? ' – ' + t.decisionReason : '',
-      t.decisionNote ? el('div', { dir: 'auto', style: 'margin-top:2px' }, t.decisionNote) : null,
-      el('div', { class: 'muted' }, (t.decisionBy || '') + (t.decisionAt ? ' · ' + fmtDate(t.decisionAt) : '')))
-      : sug ? el('div', { class: 'small muted' }, 'Suggested from the validation: ', el('a', { href: '#', onclick: e => { e.preventDefault(); decisionDialog(t, sug.d, sug.reason); } }, DECISIONS[sug.d].icon + ' ' + sug.d + (sug.reason ? ' – ' + sug.reason : '')))
-      : el('div', { class: 'small muted' }, 'Approved and Rejected close the ticket; Pending keeps it open with the reason.'))];
+  const SHORT = { Approved: 'Approved', 'Partially approved': 'Partial', Pending: 'Pending', Rejected: 'Rejected' };
+  const btn = d => { const D = DECISIONS[d], on = cur === d;
+    return el('button', { class: 'decbtn' + (on ? ' on' : ''), type: 'button', style: '--c:' + D.c, title: d + ' – ' + D.ar + (D.status === 'Closed' ? ' (closes the ticket)' : ' (keeps it open)'), 'aria-pressed': on ? 'true' : 'false',
+      onclick: () => decisionDialog(t, d, d === cur ? t.decisionReason : (sug && sug.d === d ? sug.reason : '')) }, el('span', { class: 'di', 'aria-hidden': 'true' }, D.icon), SHORT[d]); };
+  const D = cur ? DECISIONS[cur] : null;
+  return [el('h3', {}, 'Decision'), el('div', { class: 'decbox' },
+    el('div', { class: 'decgrid' }, Object.keys(DECISIONS).map(btn)),
+    cur ? el('div', { class: 'deccur', style: '--c:' + D.c },
+        el('div', { class: 'row', style: 'justify-content:space-between;gap:6px;flex-wrap:nowrap' }, el('b', {}, D.icon + ' ' + cur), el('span', { class: 'small muted' }, D.status === 'Closed' ? 'ticket closed' : 'ticket pending')),
+        t.decisionReason ? el('div', { class: 'small' }, t.decisionReason) : null,
+        t.decisionNote ? el('div', { class: 'small', dir: 'auto', style: 'color:var(--muted)' }, '“' + t.decisionNote + '”') : null,
+        el('div', { class: 'small muted' }, (t.decisionBy || '') + (t.decisionAt ? ' · ' + fmtDate(t.decisionAt) : '')))
+      : sug ? el('div', { class: 'decsug' },
+          el('div', { style: 'min-width:0' }, el('div', { class: 'small muted' }, 'Suggested from the validation'), el('div', { class: 'small', style: 'font-weight:600;color:' + DECISIONS[sug.d].c }, DECISIONS[sug.d].icon + ' ' + sug.d), sug.reason ? el('div', { class: 'small muted', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: sug.reason }, sug.reason) : null),
+          el('button', { class: 'btn sm', type: 'button', onclick: () => decisionDialog(t, sug.d, sug.reason) }, 'Apply'))
+      : el('div', { class: 'small muted' }, 'Approved, Partial and Rejected close the ticket. Pending keeps it open with its reason.'))];
 }
 /* ---------------- Patient info (i-CARE / GlobeMed files) + WhatsApp / SMS to the member ---------------- */
 const phoneLocal = s => { let d = normDigits(String(s || '')).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
@@ -3262,6 +3297,12 @@ function histMatch(name, rows) {
 }
 const histActive = r => r.cov_end && r.cov_end >= new Date().toISOString().slice(0, 10);
 const dmy2 = s => s ? s.slice(8, 10) + '/' + s.slice(5, 7) + '/' + s.slice(0, 4) : '—';
+// a drug-eye picture belongs to this ticket: one of its own attachments (also a page of its own PDF)
+function srcOwned(t, src) {
+  const p = String((src && src.path) || '').split('#')[0]; if (!p) return false;
+  if (p.startsWith(HD + '/files/' + t.no + '/')) return true;
+  return t.msgs.some(m => (m.atts || []).some(a => a.path === p));
+}
 function validationDialog(no) {
   const t = DB.tickets.get(no); if (!t) return;
   const today = new Date().toISOString().slice(0, 10);
@@ -3350,6 +3391,8 @@ function validationDialog(no) {
   const ticketFiles = []; const seenF = new Set();
   for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seenF.has(a.path) && a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) { seenF.add(a.path); ticketFiles.push({ path: a.path, name: a.name, mime: a.mime }); }
   function eyeRow(it, i) {
+    // never show a picture of another ticket: take the repaired one from the latest AI reading (same item), else none
+    if (it.src && !srcOwned(t, it.src)) { const a = ((t.aiRead && t.aiRead.data && t.aiRead.data.items) || []).find(x => x.name === (it.aiOrig ? it.aiOrig.name : it.name) && x.src && srcOwned(t, x.src)); it.src = a ? { ...a.src } : null; }
     const m = hist ? histMatch(it.name, hist) : null;
     const changed = it.aiOrig && (it.name !== it.aiOrig.name || it.cls !== it.aiOrig.cls || +it.dose !== +it.aiOrig.dose || it.unit !== it.aiOrig.unit || +it.times !== +it.aiOrig.times || it.per !== it.aiOrig.per);
     const cv = cropCanvas(it.src);
@@ -3600,7 +3643,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-17c';
+const APP_VERSION = '2026-11-17d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
