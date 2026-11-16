@@ -1146,7 +1146,7 @@ function ticketList(r) {
       if (F.priority && F.priority.length && !F.priority.includes(t.priority)) continue;
       if (F.tag && !t.tags.some(x => x.toLowerCase().includes(F.tag.toLowerCase()))) continue;
       if (F.created) { const age = Date.now() - Date.parse(t.created); if (F.created === 'today' && new Date(t.created).toDateString() !== new Date().toDateString()) continue; if (F.created === '7' && age > 7 * DAY) continue; if (F.created === '30' && age > 30 * DAY) continue; }
-      if (ql) { const hay = [t.no, t.subject, t.requester.name, t.requester.email, t.member, t.memberName, t.tags.join(' '), t.agent, ...t.msgs.map(m => m.kind === 'in' ? (m.fromEmail + ' ' + (m.text || '').slice(0, 3000)) : '')].join(' ').toLowerCase(); if (!normDigits(hay).includes(ql)) continue; }
+      if (ql) { const hay = [t.no, t.subject, t.requester.name, t.requester.email, t.member, t.memberName, t.mobile, t.tags.join(' '), t.agent, ...t.msgs.map(m => m.kind === 'in' ? (m.fromEmail + ' ' + (m.text || '').slice(0, 3000)) : '')].join(' ').toLowerCase(); if (!normDigits(hay).includes(ql)) continue; }
       out.push({ t, s });
     }
     const pr = { Low: 1, Medium: 2, High: 3, Urgent: 4 }; const dir = F.dir === 'asc' ? 1 : -1;
@@ -1168,6 +1168,7 @@ function ticketList(r) {
     else if (s.frPending && Date.now() > s.frDue) badges.push(el('span', { class: 'pill p-over' }, 'First response overdue'));
     else if (s.dueToday) badges.push(el('span', { class: 'pill p-due' }, 'Due today'));
     if (t.mergedInto) badges.push(el('span', { class: 'pill p-muted' }, 'Merged → ' + t.mergedInto));
+    if (t.icare) { const bad = (t.icare.issues || []).some(x => /differs|EXPIRED|Blacklist|Risk carrier|almost used/i.test(x)); badges.push(el('span', { class: 'pill ' + (bad ? 'p-over' : 'p-ok'), title: 'GlobeMed i-CARE: ' + (t.icare.verdict || '') + ' · ' + fmtDate(t.icare.at) }, bad ? '⚠ i-CARE' : '✓ i-CARE')); }
     const unread = t.msgs.some(m => m.kind === 'in' && m.atts && m.atts.some(a => a.cls === 'unreadable'));
     const cb = el('input', { type: 'checkbox', 'aria-label': 'Select ' + t.no, checked: LIST.sel.has(t.no), onchange: e => { e.target.checked ? LIST.sel.add(t.no) : LIST.sel.delete(t.no); drawHead(); rowEl.classList.toggle('sel', e.target.checked); } });
     const rowEl = el('div', { class: 'tr pri-' + t.priority + (LIST.sel.has(t.no) ? ' sel' : '') },
@@ -1180,7 +1181,7 @@ function ticketList(r) {
           el('span', { dir: 'auto' }, t.requester.name || t.requester.email || '—'), el('span', {}, t.no),
           el('span', { title: fmtDate(t.created) }, 'Created ' + rel(t.created)),
           s.done ? el('span', {}, t.status + ' ' + rel(t.resolvedAt)) : el('span', { title: fmtDate(s.resDue) }, (s.isPaused ? 'SLA paused' : 'Due ' + rel(s.resDue))),
-          t.member ? el('span', {}, 'Member ' + t.member) : null, t.type ? el('span', {}, t.type) : null,
+          t.member ? el('span', { dir: 'auto' }, 'Member ' + t.member + (t.memberName ? ' · ' + t.memberName : '')) : null, t.mobile ? el('span', {}, '📱 ' + t.mobile) : null, t.type ? el('span', {}, t.type) : null,
           unread ? el('span', { style: 'color:var(--bad)' }, 'Word/HEIC file') : null,
           t.tags.length ? el('span', {}, '#' + t.tags.join(' #')) : null)),
       el('div', { class: 'props' },
@@ -1481,6 +1482,9 @@ function ticketView(r) {
     const other = [...DB.tickets.values()].filter(x => x.no !== no && ((t.requester.email && x.requester.email === t.requester.email) || (t.member && x.member === t.member))).sort((a, b) => a.created < b.created ? 1 : -1).slice(0, 8);
     const slaLine = (label, due, at, late, pending) => el('div', {}, el('span', { class: 'muted' }, label + ': '), at ? el('span', {}, (late ? '⚠ late · ' : '✓ ') + fmtDate(at)) : pending ? el('span', { style: late ? 'color:var(--bad);font-weight:600' : '' }, (late ? 'overdue · ' : 'due ') + fmtDate(due) + ` (${rel(due)})`) : el('span', {}, '—'));
     side.replaceChildren(
+      el('h3', {}, 'Member'),
+      patientInfo(t),
+      icarePanel(t),
       el('h3', {}, 'Properties'),
       el('div', { class: 'f' }, el('label', { for: 'f-status' }, 'Status'), sel('status', S.statuses)),
       el('div', { class: 'f' }, el('label', { for: 'f-priority' }, 'Priority'), sel('priority', S.priorities)),
@@ -1490,7 +1494,6 @@ function ticketView(r) {
       el('div', { class: 'f' }, el('label', { for: 'f-agent' }, 'Agent'), sel('agent', agentsList(), '— Unassigned —')),
       el('div', { class: 'f' }, el('label', {}, 'Member card no.'), memberIn),
       el('div', { class: 'f' }, el('label', {}, 'Member name'), memberNameIn),
-      patientInfo(t),
       el('div', { class: 'f' }, el('label', {}, 'Reply language'), langSel),
       el('div', { class: 'f' }, el('label', {}, 'Tags'), el('div', { class: 'tags' }, t.tags.map(x => el('span', { class: 'tag' }, x, el('button', { type: 'button', 'aria-label': 'Remove tag ' + x, onclick: () => emit('update', no, { tags: t.tags.filter(y => y !== x) }) }, '×'))), tagIn)),
       el('div', { class: 'row' }, el('button', { class: 'btn primary', type: 'button', onclick: async () => {
@@ -1503,7 +1506,6 @@ function ticketView(r) {
       } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null,
         isPSP(t) ? null : el('button', { class: 'btn ghost sm', type: 'button', title: 'Mark as PSP (needs an EOB approval before closing)', onclick: () => emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] }) }, '+ PSP')),
       isPSP(t) || (t.eobs || []).length ? pspPanel(t) : null,
-      icarePanel(t),
       t.validation ? [el('h3', {}, 'Validation'), el('div', { class: 'slabox' },
         (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to)) : null)),
         el('div', { class: 'small muted' }, 'by ' + t.validation.by + ' · ' + fmtDate(t.validation.at) + (t.exportedAt ? ' · exported to GlobeMed ' + fmtDate(t.exportedAt) : '')))] : null,
@@ -2276,61 +2278,108 @@ function icareVerdict(t, c) {
   for (const l of c.limits || []) if (l.limit && l.balance != null) { const p = l.balance / l.limit; if (p <= 0.1 || l.balance < 2500) out.push([p <= 0.02 ? 'bad' : 'warn', (l.level === 'AML' ? 'Annual limit' : l.level === 'Disease Related Condition' ? 'Chronic (DRC) limit' : l.desc || l.level) + ' almost used: ' + l.balance.toLocaleString() + ' ' + l.curr + ' left of ' + l.limit.toLocaleString()]); }
   return out;
 }
-/* ---- "Sarwa ✓" i-CARE bookmark: runs INSIDE i-CARE (its own sign-in), searches the member like Patient Information does,
-   reads Administrative Info and sends it back to the ticket that opened i-CARE. Nothing is posted from this site to i-CARE. ---- */
+/* ---- i-CARE check. Proven on the live i-CARE: Administrative Info always shows the patient LAST SEARCHED in i-CARE's
+   Patient Information (its session), whatever member the link names; and that search only works when it is sent from
+   inside i-CARE (sent from this site it goes without the i-CARE sign-in and signs the agent out). So the "⭐ Sarwa i-CARE"
+   bookmark runs inside i-CARE: it asks this app which member(s) to check, searches each one exactly like Patient Information,
+   reads its Administrative Info and sends it back here, where it is saved on the ticket with the member's mobile. ---- */
 const ICARE_ORIGIN = new URL(ICARE_URL).origin;
-let ICARE_PENDING = null;   // { no, id, at } – the ticket that last pressed "Open i-CARE"
-function icareBookmarklet() {
-  const app = location.origin;
-  const src = `(async()=>{const APP=${JSON.stringify(app)};
-if(!/i-care\\.globemedegypt\\.com/i.test(location.host)){alert('Sarwa: open i-CARE (signed in) first, then click this bookmark.');return}
-const box=document.createElement('div');box.style.cssText='position:fixed;top:12px;right:12px;z-index:2147483647;background:#0f5e57;color:#fff;padding:12px 16px;border-radius:10px;font:14px/1.4 Arial,sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.3);max-width:380px';document.body.appendChild(box);
-const say=(h,bad)=>{box.style.background=bad?'#9b1c1c':'#0f5e57';box.innerHTML=h};
-say('Sarwa: asking the ticket which member…');
-let aw=null;try{aw=window.open('about:blank','AdministrativeInfo','width=900,height=700,resizable=1,menubar=0,status=0,scrollbars=1');aw.document.title='i-CARE';aw.document.body.innerHTML='<p style="font:15px Arial;padding:24px">Sarwa: searching the member in i-CARE…</p>'}catch(e){}
-const fail=(h)=>{try{aw&&aw.close()}catch(e){}say(h,1)};
-let id='';
-if(window.opener&&!window.opener.closed){id=await new Promise(res=>{const h=e=>{if(e.origin===APP&&e.data&&e.data.sarwaPending!==undefined){removeEventListener('message',h);res(String(e.data.sarwaPending||''))}};addEventListener('message',h);try{window.opener.postMessage({sarwaIcareAsk:1},APP)}catch(e){}setTimeout(()=>{removeEventListener('message',h);res('')},700)})}
-if(!id){id=(location.hash.match(/sarwa=(\\d+)/)||[])[1]||''}
-if(!id){id=(prompt('Sarwa: Individual Nbr. (member card no.) – Ctrl+V pastes the number copied from the ticket',window.__sarwaLast||'')||'').replace(/\\D/g,'')}
-if(!id){try{aw&&aw.close()}catch(e){}box.remove();return}window.__sarwaLast=id;
-say('Sarwa: searching '+id+' in i-CARE…');
-try{
-const body=new URLSearchParams({Contnbr:'',IndNbr:id,txtReference:'','btnPatientInfo.x':'12','btnPatientInfo.y':'9'});
-const cid=typeof _cf_clientid==='string'?'&_cf_clientid='+encodeURIComponent(_cf_clientid):'';
-const r=await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true'+cid+'&_cf_rc=1',{method:'POST',body,credentials:'same-origin'});
-const p=await r.text();
-const m=p.match(/AdministrativeInfo\\.cfm\\?indnbr=(\\d+)&(?:amp;)?contnbr=(\\d+)/i);
-if(!m){fail(/j_password/i.test(p)?'Sarwa: sign in to i-CARE first, then click the bookmark again.':'Sarwa: '+id+' was not found in i-CARE Patient Information.');return}
-if(m[1]!==id){fail('Sarwa: i-CARE answered for another patient ('+m[1]+') – click the bookmark again.');return}
-const url='/assistance/AdministrativeInfo.cfm?indnbr='+m[1]+'&contnbr='+m[2];
-const a=await (await fetch(url,{credentials:'same-origin'})).text();
-const d=new DOMParser().parseFromString(a,'text/html');
-const text=[...d.querySelectorAll('tr')].filter(tr=>!tr.querySelector('table')).map(tr=>[...tr.children].map(c=>c.textContent.replace(/\\s+/g,' ').trim()).join('\\t')).filter(x=>x.trim()).join('\\n');
-if(!/Adherent Name/i.test(text)){fail('Sarwa: i-CARE did not return Administrative Info – sign in again and retry.');return}
-const ind=(text.match(/Individual Number:?\\t\\s*(\\d+)/i)||[])[1]||'';
-if(ind&&ind!==m[1]){fail('Sarwa: i-CARE returned another patient ('+ind+') – press the bookmark again.');return}
-const nm=(text.match(/Adherent Name:?\\t([^\\n]*)/i)||[])[1]||'';
-let sent=false;try{if(window.opener&&!window.opener.closed){window.opener.postMessage({sarwaIcare:1,id:m[1],contract:m[2],text},APP);sent=true}}catch(e){}
-try{await navigator.clipboard.writeText(text)}catch(e){}
-try{if(aw&&!aw.closed)aw.location.href=url}catch(e){}
-say('✓ <b>'+nm+'</b> ('+m[1]+')<br>'+(sent?'Sent to the Sarwa ticket – check it and press Save.':'Copied – in the Sarwa ticket press “Paste i-CARE info” and paste.')+'<br><a href="'+url+'" target="AdministrativeInfo" style="color:#fff">Administrative Info</a> · <a href="/Assistance/Check_Remaining_Limitation.cfm" target="_blank" style="color:#fff">Remaining limits</a> · <a href="#" style="color:#fff" onclick="this.parentNode.remove();return false">Close</a>');
-}catch(e){fail('Sarwa: '+e.message)}})();`;
-  return 'javascript:' + encodeURIComponent(src.replace(/\n/g, ''));
+let ICARE_JOB = null;   // { ids: [...], nos: { id: ticketNo }, at } – what the bookmark checks next
+// Runs INSIDE i-CARE – it becomes the bookmark's code, so it must not use anything from this app.
+async function sarwaIcareRunner(APP) {
+  if (!/i-care\.globemedegypt\.com/i.test(location.host)) { alert('Sarwa: click this bookmark on the i-CARE page (signed in to i-CARE).'); return; }
+  if (window.__sarwaBusy) return; window.__sarwaBusy = true;
+  let box = document.getElementById('sarwaBox');
+  if (!box) { box = document.createElement('div'); box.id = 'sarwaBox'; document.body.appendChild(box); }
+  box.style.cssText = 'position:fixed;top:12px;right:12px;z-index:2147483647;background:#0f5e57;color:#fff;padding:12px 16px;border-radius:10px;font:13px/1.45 Arial,sans-serif;box-shadow:0 8px 28px rgba(0,0,0,.35);max-width:440px;max-height:80vh;overflow:auto;text-align:left';
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  const say = (h, bad) => { box.style.background = bad ? '#9b1c1c' : '#0f5e57'; box.innerHTML = h + '<div style="text-align:right;margin-top:6px"><a href="#" style="color:#fff;font-size:12px" onclick="document.getElementById(\'sarwaBox\').remove();return false">Close</a></div>'; };
+  try {
+    if (document.querySelector('input[name=j_password]')) { say('Sarwa: sign in to i-CARE first, then click &#11088; again.', 1); return; }
+    const op = window.opener && !window.opener.closed ? window.opener : null;
+    let ids = [];
+    if (op) ids = await new Promise(res => {
+      const h = e => { if (e.origin === APP && e.data && Array.isArray(e.data.sarwaIds)) { removeEventListener('message', h); res(e.data.sarwaIds.map(String)); } };
+      addEventListener('message', h); try { op.postMessage({ sarwaIcareAsk: 1 }, APP); } catch (e) { }
+      setTimeout(() => { removeEventListener('message', h); res([]); }, 1500);
+    });
+    if (!ids.length) { const h = (location.hash.match(/sarwa=([\d,]+)/) || [])[1]; if (h) ids = h.split(',').filter(x => /^\d{6,10}$/.test(x)); }
+    if (!ids.length) { const v = (prompt('Sarwa: member card no. (Individual Nbr.)', '') || '').replace(/\D/g, ''); if (v) ids = [v]; }
+    if (!ids.length) { box.remove(); return; }
+    let cid = ''; try { if (typeof _cf_clientid === 'string') cid = '&_cf_clientid=' + encodeURIComponent(_cf_clientid); } catch (e) { }
+    const rows = [];
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      say('Sarwa: checking ' + esc(id) + ' in i-CARE&hellip;' + (ids.length > 1 ? ' (' + (i + 1) + ' of ' + ids.length + ')' : ''));
+      const res = { sarwaIcare: 1, id, ok: false };
+      try {
+        const body = new URLSearchParams({ Contnbr: '', IndNbr: id, txtReference: '' });
+        const p = await (await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true' + cid + '&_cf_rc=1', { method: 'POST', body, credentials: 'same-origin' })).text();
+        if (/j_password/i.test(p)) { say('Sarwa: the i-CARE sign-in expired &ndash; sign in again, then click &#11088;.', 1); return; }
+        const m = p.match(/AdministrativeInfo\.cfm\?indnbr=(\d+)&(?:amp;)?contnbr=(\d+)/i);
+        if (!m) res.error = 'Not found in i-CARE';
+        else if (m[1] !== id) res.error = 'i-CARE returned another member (' + m[1] + ')';
+        else {
+          const a = await (await fetch('/assistance/AdministrativeInfo.cfm?indnbr=' + m[1] + '&contnbr=' + m[2], { credentials: 'same-origin' })).text();
+          const d = new DOMParser().parseFromString(a, 'text/html');
+          const text = [...d.querySelectorAll('tr')].filter(tr => !tr.querySelector('table')).map(tr => [...tr.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()).join('\t')).filter(x => x.trim()).join('\n');
+          const ind = (text.match(/Individual Number:?\t\s*(\d+)/i) || [])[1] || '';
+          if (!/Adherent Name/i.test(text)) res.error = 'Administrative Info did not open';
+          else if (ind !== id) res.error = 'Administrative Info showed another member (' + ind + ')';
+          else Object.assign(res, { ok: true, contract: m[2], text, name: (text.match(/Adherent Name:?\t([^\n]*)/i) || [])[1] || '', mobile: (text.match(/Insured Mobile Number:?\t([^\n]*)/i) || [])[1] || '' });
+        }
+      } catch (e) { res.error = e.message; }
+      rows.push(res);
+      if (op) { try { op.postMessage(res, APP); } catch (e) { } }
+    }
+    const last = rows[rows.length - 1], okN = rows.filter(r => r.ok).length;
+    if (!op && last.ok) { try { await navigator.clipboard.writeText(last.text); } catch (e) { } }
+    const head = rows.length > 1 ? 'Sarwa: ' + okN + ' of ' + rows.length + ' members checked' : last.ok ? '&#10003; ' + esc(last.name) : 'Sarwa: ' + esc(last.id);
+    const table = '<table style="border-collapse:collapse;margin-top:6px;width:100%;color:#fff">' + rows.map(r => '<tr><td style="padding:2px 10px 2px 0;white-space:nowrap">' + esc(r.id) + '</td><td style="padding:2px 0">' + (r.ok ? esc(r.name) + (r.mobile ? ' &middot; ' + esc(r.mobile) : '') : '<span style="color:#ffd2cc">' + esc(r.error) + '</span>') + '</td></tr>').join('') + '</table>';
+    const note = '<div style="margin-top:6px">' + (op ? (okN ? 'Saved to the Sarwa ticket' + (okN > 1 ? 's' : '') + '.' : '') : (last.ok ? 'Copied &ndash; in the Sarwa ticket press Paste i-CARE info.' : '')) + '</div>';
+    const links = last.ok ? '<div style="margin-top:6px"><a href="#" style="color:#fff" onclick="window.open(\'/assistance/AdministrativeInfo.cfm?indnbr=' + last.id + '&contnbr=' + last.contract + '\',\'AdministrativeInfo\',\'width=900,height=700,resizable=1,scrollbars=1\');return false">Administrative Info</a> &middot; <a href="#" style="color:#fff" onclick="window.open(\'/Assistance/Check_Remaining_Limitation.cfm\',\'ewin\');return false">Remaining limits</a> <span style="opacity:.8">(' + esc(last.id) + ')</span></div>' : '';
+    say('<b>' + head + '</b>' + table + note + links, !okN);
+  } catch (e) { say('Sarwa: ' + esc(e.message), 1); }
+  finally { window.__sarwaBusy = false; }
 }
+function icareBookmarklet() { return 'javascript:' + encodeURIComponent('void (' + sarwaIcareRunner.toString() + ')(' + JSON.stringify(location.origin) + ')'); }
 function icareBookmarkLink() {
-  return el('a', { href: icareBookmarklet(), class: 'btn sm', style: 'cursor:grab;border-style:dashed', title: 'Drag me to the bookmarks bar (Ctrl+Shift+B shows it). Then click it while i-CARE is open.', onclick: e => { e.preventDefault(); toast('Drag this button to your bookmarks bar, then click it inside i-CARE.'); } }, '⭐ Sarwa i-CARE');
+  return el('a', { href: icareBookmarklet(), class: 'btn sm', style: 'cursor:grab;border-style:dashed', title: 'Drag me to the Chrome bookmarks bar (Ctrl+Shift+B shows it). Then click it on the i-CARE page.', onclick: e => { e.preventDefault(); toast('Drag this button to your bookmarks bar, then click it on the i-CARE page.'); } }, '⭐ Sarwa i-CARE');
 }
-window.addEventListener('message', e => {
-  if (e.origin !== ICARE_ORIGIN || !e.data) return;
-  if (e.data.sarwaIcareAsk) { try { e.source.postMessage({ sarwaPending: ICARE_PENDING && Date.now() - ICARE_PENDING.at < 30 * 60000 ? ICARE_PENDING.id : '' }, ICARE_ORIGIN); } catch { } return; }   // only the card no. of the ticket that pressed Open i-CARE
-  if (!e.data.sarwaIcare || !DB) return;
-  const id = String(e.data.id || ''); const text = String(e.data.text || '').slice(0, 20000);
-  let no = ICARE_PENDING && ICARE_PENDING.id === id ? ICARE_PENDING.no : '';
-  if (!no) { const hit = [...DB.tickets.values()].filter(t => normDigits(String(t.member || '')).trim() === id && t.status !== 'Closed').sort((a, b) => a.updated < b.updated ? 1 : -1)[0]; no = hit ? hit.no : (ICARE_PENDING && ICARE_PENDING.no) || ''; }
-  if (!no) return toast('i-CARE details received for ' + id + ' – open its ticket and press “Paste i-CARE info”.');
-  if (location.hash !== '#/t/' + no) location.hash = '#/t/' + no;
-  setTimeout(() => { icareDialog(no, text); window.focus(); }, 300);
+const memberNo = t => normDigits(String((t && (t.member || (t.aiRead && t.aiRead.data && t.aiRead.data.member))) || '')).replace(/\D/g, '');
+// save an i-CARE check on a ticket: Administrative Info (+ limits when pasted), the member's name and mobile from i-CARE
+async function saveICare(no, c, via) {
+  const t = DB.tickets.get(no); if (!t) return null;
+  const v = icareVerdict(t, c); const bad = v.filter(x => x[0] === 'bad').length;
+  const sameMember = t.icare && t.icare.admin && t.icare.admin.individual === c.admin.individual;
+  const limits = c.limits.length ? c.limits : sameMember ? t.icare.limits || [] : [];
+  await emit('icare.check', no, { admin: c.admin, limits, verdict: bad ? bad + ' problem(s)' : 'verified', issues: v.filter(x => x[0] !== 'ok').map(x => x[1]), via: via || 'paste' });
+  const ch = {};
+  if (!t.member && c.admin.individual) ch.member = c.admin.individual;
+  if (c.admin.name && (!t.memberName || t.memberSrc !== 'i-CARE')) { ch.memberName = c.admin.name; ch._memberSrc = 'i-CARE'; }
+  const mob = phoneLocal(c.admin.mobile);
+  if (validMobile(mob) && phoneLocal(t.mobile) !== mob) { ch.mobile = mob; ch._mobileSrc = 'i-CARE'; }
+  if (Object.keys(ch).length) await emit('update', no, ch);
+  return { bad, v };
+}
+window.addEventListener('message', async e => {
+  if (e.origin !== ICARE_ORIGIN || !e.data || !DB) return;
+  if (e.data.sarwaIcareAsk) {   // the bookmark asks which member(s) to check: only the card numbers of the job started here
+    const job = ICARE_JOB && Date.now() - ICARE_JOB.at < 30 * 60000 ? ICARE_JOB : null;
+    try { e.source.postMessage({ sarwaIds: job ? job.ids : [] }, ICARE_ORIGIN); } catch { }
+    return;
+  }
+  if (!e.data.sarwaIcare) return;
+  const r = e.data; const id = String(r.id || '').replace(/\D/g, '');
+  const nos = ICARE_JOB && ICARE_JOB.nos[id] ? [ICARE_JOB.nos[id]] : [...DB.tickets.values()].filter(t => memberNo(t) === id && t.status !== 'Closed').map(t => t.no);
+  if (!r.ok) return toast('i-CARE ' + id + ': ' + (r.error || 'not checked') + (nos.length ? ' (' + nos.join(', ') + ')' : ''));
+  const c = parseICare(String(r.text || '').slice(0, 20000));
+  if (c.admin.individual !== id) return toast('i-CARE ' + id + ': the details belong to another member – not saved');
+  if (!nos.length) return toast('i-CARE details received for ' + id + ' – no open ticket has this member number');
+  for (const no of nos) {
+    try { const s = await saveICare(no, c, 'bookmark'); toast(no + ': ' + (c.admin.name || id) + (s && s.bad ? ' – ' + s.bad + ' problem(s), see the i-CARE panel' : ' – verified in i-CARE ✓') + (c.admin.mobile ? ' · mobile ' + c.admin.mobile : '')); }
+    catch (x) { toast(no + ': ' + x.message); }
+  }
 });
 function icareDialog(no, prefill) {
   const t = DB.tickets.get(no); const ta = el('textarea', { rows: 12, style: 'width:100%;font-family:Consolas,monospace;font-size:12px', placeholder: 'In i-CARE: Patient Information › Administrative Info → Ctrl+A, Ctrl+C, then paste here.\nThen Remaining Limitation and Excess amount → Ctrl+A, Ctrl+C, paste under it.' });
@@ -2347,7 +2396,7 @@ function icareDialog(no, prefill) {
   if (prefill) ta.value = prefill;
   ta.addEventListener('input', show); show();
   openDialog('i-CARE check – ' + no + (t.member ? ' · ' + t.member : ''), [
-    el('div', { class: 'row', style: 'gap:8px' }, el('button', { class: 'btn', type: 'button', onclick: () => openICare(t) }, '🔎 Open i-CARE (card no. copied)'), el('span', { class: 'small muted' }, 'Then click ⭐ Sarwa i-CARE in i-CARE – or: Patient Information › Individual Nbr. › Administrative Info, Ctrl+A, Ctrl+C and paste here.'), icareBookmarkLink()),
+    el('div', { class: 'row', style: 'gap:8px' }, el('button', { class: 'btn', type: 'button', onclick: () => { closeDialog(); openICare(t); } }, '🔎 Open i-CARE'), el('span', { class: 'small muted' }, 'then click ⭐ Sarwa i-CARE there – it saves by itself. Or paste here: i-CARE › Patient Information › Administrative Info / Remaining limits › Ctrl+A, Ctrl+C.')),
     ta, prev],
     [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => {
       const c = parseICare(ta.value); if (!c.admin.name && !c.admin.individual && !c.limits.length) return toast('Nothing recognised – copy the i-CARE page text (Ctrl+A, Ctrl+C) and paste it');
@@ -2356,46 +2405,46 @@ function icareDialog(no, prefill) {
       if (c.admin.individual && /^\d{6,10}$/.test(tm) && c.admin.individual !== tm) return toast(`Not saved: this i-CARE page is for another patient (${c.admin.individual}${c.admin.name ? ' ' + c.admin.name : ''}). Search ${tm} in Patient Information first.`);
       e.target.disabled = true;
       try {
-        await emit('icare.check', no, { admin: c.admin, limits: c.limits, verdict: bad ? bad + ' problem(s)' : 'verified', issues: v.filter(x => x[0] !== 'ok').map(x => x[1]) });
-        const ch = {}; if (!t.member && c.admin.individual) ch.member = c.admin.individual;
-        if (c.admin.name && (!t.memberName || t.memberSrc !== 'i-CARE')) { ch.memberName = c.admin.name; ch._memberSrc = 'i-CARE'; }
-        if (Object.keys(ch).length) await emit('update', no, ch);
-        closeDialog(); toast(bad ? 'Saved – ' + bad + ' problem(s) found, see the i-CARE panel' : 'Member verified in i-CARE ✓');
+        await saveICare(no, c, 'paste');
+        closeDialog(); toast(bad ? 'Saved – ' + bad + ' problem(s) found, see the i-CARE panel' : 'Member verified in i-CARE ✓' + (c.admin.mobile ? ' · mobile ' + c.admin.mobile + ' saved' : ''));
       } catch (x) { toast(x.message); e.target.disabled = false; }
     } }, 'Save i-CARE check')], 'min(900px,calc(100vw - 24px))');
   ta.focus();
 }
-// With the contract no. known, open the member's Administrative Info page directly (i-CARE must be signed in in this browser);
-// otherwise open i-CARE with the card no. copied for Patient Information.
-async function openICare(t) {
-  const id = normDigits(String(t.member || (t.aiRead && t.aiRead.data && t.aiRead.data.member) || '')).trim();
-  const w = window.open('about:blank', 'icare');   // open now (inside the click), fill the address after the lookup
-  let contract = (t.icare && t.icare.admin && t.icare.admin.contract) || ((t.eobs || []).find(e => e.policyNo) || {}).policyNo || '';
-  if (!contract && /^\d{6,10}$/.test(id)) { try { const { data } = await SB.from('member_meds').select('contract').eq('member', id).not('contract', 'is', null).limit(1); contract = (data && data[0] && data[0].contract) || ''; } catch { } }
-  contract = String(contract || '').replace(/\D/g, '');
-  if (id) { try { await navigator.clipboard.writeText(id); } catch { } }
-  if (!/^\d{6,10}$/.test(id)) { if (w) w.location.href = ICARE_URL; else window.open(ICARE_URL, 'icare'); return toast('Open Patient Information in i-CARE'); }
-  // i-CARE shows Administrative Info for the patient last searched in its Patient Information screen (its session), whatever the
-  // link says – so open i-CARE itself with the card no. copied; the agent searches it there (never post to i-CARE from this site:
-  // the browser does not send the i-CARE sign-in with it and i-CARE starts a new, signed-out session).
-  ICARE_PENDING = { no: t.no, id, at: Date.now() };
-  const url = ICARE_URL + '#sarwa=' + id + (contract ? ',' + contract : '');   // the hash never reaches i-CARE's server; the ⭐ bookmark reads it
-  if (w) w.location.href = url; else window.open(url, 'icare');
-  toast('i-CARE opened for ' + id + ' (copied). Click ⭐ Sarwa i-CARE in your bookmarks bar there – the member’s details come back to this ticket.');
+// Open i-CARE for this ticket's member: the ⭐ bookmark (clicked on the i-CARE page) then checks this member and saves the result here.
+function openICare(t) {
+  const id = memberNo(t);
+  if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
+  ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
+  try { navigator.clipboard.writeText(id); } catch { }
+  window.open(ICARE_URL + '#sarwa=' + id, 'icare');   // the part after # never reaches i-CARE's server; the bookmark reads it
+  toast('i-CARE opened for ' + id + '. On the i-CARE page click ⭐ Sarwa i-CARE – the member’s details and mobile are saved to ' + t.no + '.');
+}
+// Check every open ticket whose member is not verified yet, in one click of the bookmark.
+function verifyAllICare() {
+  const list = [...DB.tickets.values()].filter(t => !['Closed', 'Resolved'].includes(t.status) && !t.mergedInto && /^\d{6,10}$/.test(memberNo(t)) && !t.icare);
+  const nos = {}; for (const t of list) { const id = memberNo(t); if (!nos[id]) nos[id] = t.no; }
+  const ids = Object.keys(nos).slice(0, 40);
+  if (!ids.length) return toast('Every open ticket with a member number is already checked in i-CARE.');
+  ICARE_JOB = { ids, nos, at: Date.now() };
+  window.open(ICARE_URL + '#sarwa=' + ids.join(','), 'icare');
+  toast('i-CARE opened for ' + ids.length + ' member(s). On the i-CARE page click ⭐ Sarwa i-CARE – each result is saved to its ticket.');
 }
 function icareSetupHint() {
-  return el('details', { class: 'small muted' }, el('summary', {}, 'Automatic i-CARE check – one-time setup'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
-    el('div', {}, '1) Drag this button to your Chrome bookmarks bar (Ctrl+Shift+B shows the bar):'), el('div', {}, icareBookmarkLink()),
-    el('div', {}, '2) Press 🔎 Open i-CARE here, then click ⭐ Sarwa i-CARE inside i-CARE. It searches this member in i-CARE with your own i-CARE sign-in, and the Administrative Info comes back to this ticket ready to save.')));
+  return el('details', { class: 'small muted' }, el('summary', {}, 'How the automatic i-CARE check works'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
+    el('div', {}, 'Once: drag this button to the Chrome bookmarks bar (Ctrl+Shift+B shows the bar):'), el('div', {}, icareBookmarkLink()),
+    el('div', {}, 'Each time: press 🔎 Open i-CARE, then click ⭐ Sarwa i-CARE on the i-CARE page. It searches this member inside i-CARE with your own sign-in (exactly like Patient Information) and saves the Administrative Info and the member’s mobile here. Remaining limits: open them from the green box in i-CARE and paste them with 📋.')));
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
   const nameWarn = formName && t.memberName && sameName(formName, t.memberName) === false;
-  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm', type: 'button', onclick: () => openICare(t) }, '🔎 Open i-CARE'), el('button', { class: 'btn sm primary', type: 'button', onclick: () => icareDialog(t.no) }, c ? '↻ Check again' : '📋 Paste i-CARE info'));
+  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => openICare(t) }, c ? '↻ Check again in i-CARE' : '🔎 Open i-CARE'), el('button', { class: 'btn sm', type: 'button', title: 'Paste copied i-CARE text (Administrative Info or Remaining limits)', onclick: () => icareDialog(t.no) }, '📋 Paste'));
+  const unverified = [...DB.tickets.values()].filter(x => !['Closed', 'Resolved'].includes(x.status) && !x.mergedInto && !x.icare && /^\d{6,10}$/.test(memberNo(x))).length;
+  const allBtn = unverified > 1 ? el('button', { class: 'btn sm ghost', type: 'button', style: 'justify-self:start', title: 'Opens i-CARE once; one click on ⭐ Sarwa i-CARE checks them (40 at a time) and saves each result to its ticket', onclick: verifyAllICare }, '✓ Check all unverified open tickets (' + unverified + ')') : null;
   if (!c) return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid var(--border)' },
     el('div', { class: 'small muted' }, 'Not verified yet. Check the member, contract and remaining limits in i-CARE.'),
     t.memberName ? el('div', { class: 'small' }, 'Name: ', el('b', { dir: 'auto' }, t.memberName), t.memberSrc ? el('span', { class: 'muted' }, ' (from ' + t.memberSrc + ')') : null) : null,
-    nameWarn ? el('div', { class: 'small', style: 'color:var(--bad)' }, '⚠ Form says “' + formName + '”') : null, btns, icareSetupHint())];
+    nameWarn ? el('div', { class: 'small', style: 'color:var(--bad)' }, '⚠ Form says “' + formName + '”') : null, btns, allBtn, icareSetupHint())];
   const a = c.admin || {}; const v = icareVerdict(t, c); const bad = v.some(x => x[0] === 'bad'), warn = v.some(x => x[0] === 'warn');
   return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid ' + (bad ? 'var(--bad)' : warn ? '#c98a00' : '#2f8a4f') },
     el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', { dir: 'auto' }, a.name || '—'), el('span', { class: 'pill ' + (bad ? 'p-over' : warn ? 'p-due' : 'p-ok') }, bad ? '⚠ Check' : warn ? '⚠ Note' : '✓ Verified')),
@@ -2403,7 +2452,7 @@ function icarePanel(t) {
     el('div', { class: 'small', style: 'display:grid;gap:2px' }, [['Holder', a.holder], ['Class', a.cls], ['Contract', a.contract], ['Born', a.dob], ['Relation', a.relation], ['Mobile', a.mobile], ['Valid', (a.start || '') + ' → ' + (a.expiry || '')]].filter(x => x[1] && x[1].trim() !== '→').map(([k, val]) => el('div', {}, el('span', { class: 'muted' }, k + ': '), val))),
     (c.limits || []).filter(l => l.limit).map(l => { const p = l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('span', {}, l.level === 'Disease Related Condition' ? 'Chronic (DRC)' : l.level === 'AML' ? 'Annual (AML)' : (l.desc || l.level)), el('b', {}, l.perTransaction ? l.limit.toLocaleString() + ' / visit' : (l.balance != null ? l.balance.toLocaleString() : '—') + ' left')),
       p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
-    el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + ' · ' + fmtDate(c.at)), btns)];
+    el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + (c.via === 'bookmark' ? ' (automatic)' : '') + ' · ' + fmtDate(c.at)), btns)];
 }
 /* ---------------- Patient info (i-CARE / GlobeMed files) + WhatsApp / SMS to the member ---------------- */
 const phoneLocal = s => { let d = normDigits(String(s || '')).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
@@ -2421,14 +2470,15 @@ function patientInfo(t) {
   const fill = (h) => box.replaceChildren(
     el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Patient info'), el('span', { class: 'small muted' }, t.icare ? 'i-CARE ' + fmtDay(t.icare.at) : h ? 'GlobeMed files' : '')),
     row('Holder', a.holder || (h && h.policy_holder)), row('Adherent', a.name || (h && h.member_name), true), row('Individual no.', a.individual || t.member),
-    el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, 'Mobile'), el('div', { class: 'row', style: 'gap:4px;flex-wrap:nowrap' }, mobIn,
-      el('button', { class: 'btn sm', type: 'button', title: 'WhatsApp the member', style: 'color:#128c4a', onclick: () => msgDialog(t.no, 'whatsapp', mobIn.value) }, '💬'),
-      el('button', { class: 'btn sm', type: 'button', title: 'SMS the member', onclick: () => msgDialog(t.no, 'sms', mobIn.value) }, '✉'))),
+    el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, 'Mobile' + (t.mobileSrc === 'i-CARE' || (!t.mobile && a.mobile) ? ' (i-CARE)' : '')), mobIn),
+    el('div', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+      el('button', { class: 'btn sm', type: 'button', title: 'WhatsApp the member', style: 'color:#128c4a;border-color:#9fdcb8', onclick: () => msgDialog(t.no, 'whatsapp', mobIn.value) }, '💬 WhatsApp'),
+      el('button', { class: 'btn sm', type: 'button', title: 'SMS the member', style: 'color:#2f6fb0;border-color:#a9c4e6', onclick: () => msgDialog(t.no, 'sms', mobIn.value) }, '✉ SMS')),
     row('Contract', [a.contract || (h && h.contract), a.contractType].filter(Boolean).join(' · ')), row('Date of birth', a.dob ? a.dob + ' (' + ageOf(a.dob) + ' y)' : ''),
     row('Relation', a.relation || (h && h.relation)), row('Gender', a.gender), row('Marital status', a.marital), row('GlobeMed Baby', a.baby),
     row('Valid', a.start || a.expiry ? (a.start || '?') + ' → ' + (a.expiry || '?') : ''), active === false ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract expired') : null,
     a.blacklistDate || a.blacklistReason ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ Blacklisted ' + (a.blacklistDate || '') + ' ' + (a.blacklistReason || '')) : (t.icare ? row('Blacklisting', 'None') : null),
-    t.icare ? null : el('div', { class: 'small muted' }, 'Full details after an i-CARE check (panel below).'));
+    t.icare ? null : el('div', { class: 'small muted' }, 'Full details and mobile after the i-CARE check below.'));
   fill(null);
   if (!t.icare && /^\d{6,10}$/.test(String(t.member || ''))) loadHistory(t.member).then(h => { if (h && h.length) fill(h.find(x => x.contract) || h[0]); }).catch(() => { });
   return box;
@@ -3079,7 +3129,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16i';
+const APP_VERSION = '2026-11-16j';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
