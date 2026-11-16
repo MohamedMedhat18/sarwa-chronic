@@ -21,12 +21,24 @@
     for (const f of document.querySelectorAll('form[action*="_cf_clientid="]')) { const m = f.getAttribute('action').match(/_cf_clientid=([^&]+)/); if (m) return decodeURIComponent(m[1]); }
     return '';
   }
-  function tell(msg) { const op = window.opener; if (!op) return false; for (const o of APPS) { try { op.postMessage(msg, o); } catch (e) { } } return true; }
+  // Results go back to the Sarwa ticket: straight to the Sarwa tab that opened i-CARE (same browser), or – when i-CARE was
+  // opened from another browser (e.g. Chrome) – through the Sarwa server with the one-time link the ticket created.
+  const SERVER = 'https://dqjkmhorcusaynbmjcxx.supabase.co/functions/v1/icare';
+  function tell(msg) { const op = window.opener; if (!op || op.closed) return false; for (const o of APPS) { try { op.postMessage(msg, o); } catch (e) { } } return true; }
+  async function send(msg, tk) {
+    if (tell(msg)) return true;
+    if (!tk) return false;
+    try {
+      const r = await fetch(SERVER, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save', token: tk, id: msg.id, ok: msg.ok, error: msg.error, text: msg.text, contract: msg.contract, name: msg.name, mobile: msg.mobile }) });
+      const j = await r.json().catch(() => ({})); return r.ok && j.ok;
+    } catch (e) { return false; }
+  }
   function takeHash() {
-    const m = location.hash.match(/sarwa=([\d,]+)/);
+    const m = location.hash.match(/sarwa=([\d,]+)(?:&tk=([\w,-]+))?/);
     if (!m) return;
-    const ids = m[1].split(',').filter(x => /^\d{6,10}$/.test(x));
-    if (ids.length) sessionStorage.setItem(KEY, JSON.stringify({ ids, at: Date.now() }));
+    const all = m[1].split(','), tks = (m[2] || '').split(',');
+    const ids = [], keep = []; all.forEach((x, i) => { if (/^\d{6,10}$/.test(x)) { ids.push(x); keep.push(tks[i] || ''); } });
+    if (ids.length) sessionStorage.setItem(KEY, JSON.stringify({ ids, tks: keep, at: Date.now() }));
     history.replaceState(null, '', location.pathname + location.search);
   }
   // i-CARE's Patient Information search for one member, then its Administrative Information
@@ -71,13 +83,13 @@
         const id = job.ids[i];
         banner('Sarwa: opening member <b>' + esc(id) + '</b>&hellip;' + (job.ids.length > 1 ? ' (' + (i + 1) + ' of ' + job.ids.length + ')' : ''));
         let r; try { r = await check(id, cid); } catch (e) { r = { id, ok: false, error: e.message }; }
-        if (r.signedOut) { sessionStorage.setItem(KEY, JSON.stringify({ ids: job.ids.slice(i), at: Date.now() })); banner('Sarwa: i-CARE closed this session (signed in elsewhere with the same account, or timed out). Sign in – the member opens right after.', 'bad'); return; }
+        if (r.signedOut) { sessionStorage.setItem(KEY, JSON.stringify({ ids: job.ids.slice(i), tks: (job.tks || []).slice(i), at: Date.now() })); banner('Sarwa: i-CARE closed this session (signed in elsewhere with the same account, or timed out). Sign in – the member opens right after.', 'bad'); return; }
+        r.sent = await send({ sarwaIcare: 1, id: r.id, ok: r.ok, error: r.error, contract: r.contract, text: r.text, name: r.name, mobile: r.mobile }, (job.tks || [])[i]);
         rows.push(r);
-        tell({ sarwaIcare: 1, id: r.id, ok: r.ok, error: r.error, contract: r.contract, text: r.text, name: r.name, mobile: r.mobile });
       }
       const okRows = rows.filter(r => r.ok), last = okRows[okRows.length - 1];
       if (rows.length === 1 && !last) { banner('Sarwa: member <b>' + esc(rows[0].id) + '</b> – ' + esc(rows[0].error) + '.', 'bad'); return; }
-      sessionStorage.setItem(DONE, JSON.stringify({ rows: rows.map(r => ({ id: r.id, ok: r.ok, name: r.name, mobile: r.mobile, error: r.error })), sent: !!window.opener, at: Date.now() }));
+      sessionStorage.setItem(DONE, JSON.stringify({ rows: rows.map(r => ({ id: r.id, ok: r.ok, name: r.name, mobile: r.mobile, error: r.error })), sent: okRows.some(r => r.sent), at: Date.now() }));
       if (last) location.replace(last.url);   // the (last) member's Administrative Information, in this tab
       else showDone();
     } catch (e) { banner('Sarwa: ' + esc(e.message), 'bad'); }

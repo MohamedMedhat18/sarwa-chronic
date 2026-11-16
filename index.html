@@ -706,6 +706,7 @@ function applyEv(S, e) {
     case 'msg.sms': if (!t) return; t.msgs.push({ kind: 'sms', id: e.id, at: e.ts, by: e.by, ...d }); t.timeline.push({ ts: e.ts, by: e.by, text: (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' (sent directly' + (d.from ? ' from ' + d.from : '') + ')' : d.via === 'manual' ? ' (opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'the SMS app') + ')' : ''), detail: d.text }); t.updated = e.ts; break;
     case 'msg.sms.state': { if (!t) return; const m = t.msgs.find(x => x.kind === 'sms' && x.id === d.ref); if (m) { m.state = d.state; m.error = d.error || ''; } if (/fail/i.test(d.state)) t.timeline.push({ ts: e.ts, by: 'SMS gateway', text: 'SMS to ' + (m ? m.to : '') + ' failed', detail: d.error || d.state }); break; }
     case 'view': if (!t) return; (t.views = t.views || []).push({ ts: e.ts, by: e.by }); break;
+    case 'icare.raw': if (!t) return; t.icareRaw = { ...d, evId: e.id, at: e.ts }; t.timeline.push({ ts: e.ts, by: e.by, text: 'i-CARE details received from the Edge helper' + (d.ok ? ' (' + (d.name || d.id) + ')' : ': ' + (d.error || 'not found')) }); break;
     case 'icare.check': if (!t) return; t.icare = { ...d, at: e.ts, by: e.by }; t.timeline.push({ ts: e.ts, by: e.by, text: 'i-CARE checked: ' + ((d.admin && d.admin.name) || '') + (d.verdict ? ' – ' + d.verdict : '') }); t.updated = e.ts; break;
     case 'eob.add': if (!t) return; t.eobs = (t.eobs || []).filter(x => x.approval !== d.approval); t.eobs.push({ ...d, at: e.ts, by: e.by }); t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + d.approval + ' added' + (d.totalApproved != null ? ' (' + d.totalApproved.toLocaleString() + ' EGP)' : '') }); t.updated = e.ts; break;
     case 'eob.remove': if (!t) return; { const x = (t.eobs || []).find(z => z.id === d.id); t.eobs = (t.eobs || []).filter(z => z.id !== d.id); if (x) t.timeline.push({ ts: e.ts, by: e.by, text: 'EOB approval ' + x.approval + ' removed' }); } break;
@@ -1026,7 +1027,7 @@ async function createManual(d, requestId, by) {
    Router + rendering
    ===================================================================== */
 let renderQueued = false;
-function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(false); }); }
+function scheduleRender() { if (renderQueued) return; renderQueued = true; requestAnimationFrame(() => { renderQueued = false; render(false); processIcareRaw().catch(() => { }); }); }
 function route() { const h = location.hash.replace(/^#\/?/, ''); const [path, qs] = h.split('?'); const parts = path.split('/'); return { name: parts[0] || 'tickets', arg: decodeURIComponent(parts[1] || ''), params: new URLSearchParams(qs || '') }; }
 let CUR = { key: '', view: null };
 window.addEventListener('hashchange', () => render(true));
@@ -1366,6 +1367,7 @@ function describeEv(e) {
     case 'eob.add': return ['change', 'EOB approval ' + (d.approval || '') + ' added', d.totalApproved != null ? d.totalApproved.toLocaleString() + ' EGP' : ''];
     case 'eob.remove': return ['change', 'EOB approval ' + (d.approval || '') + ' removed', ''];
     case 'view': return ['view', 'Opened the ticket', ''];
+    case 'icare.raw': return ['change', 'i-CARE details received (Edge helper)', d.ok ? [d.name, d.id, d.mobile].filter(Boolean).join(' · ') : (d.error || '')];
     default: return ['change', e.type, clip(JSON.stringify(d), 200)];
   }
 }
@@ -2411,39 +2413,85 @@ function icareDialog(no, prefill) {
     } }, 'Save i-CARE check')], 'min(900px,calc(100vw - 24px))');
   ta.focus();
 }
-// Open i-CARE for this ticket's member: the ⭐ bookmark (clicked on the i-CARE page) then checks this member and saves the result here.
-// The "Sarwa i-CARE helper" (a small Chrome extension, folder icare-helper/) runs i-CARE's own Patient Information search for the
-// member named after #sarwa= and opens that member's Administrative Information; the ⭐ bookmark does the same on a click.
+// Open i-CARE. i-CARE's Administrative Info shows the patient last searched in its Patient Information, and that search only
+// works from inside i-CARE, so the "Sarwa i-CARE helper" browser extension (folder icare-helper/) runs it for the member named
+// after #sarwa= and lands on that member's Administrative Information.
+//  - this browser has the helper (e.g. Edge): open i-CARE here; the helper sends the details straight back to this tab.
+//  - no helper here (e.g. Chrome, where the company blocks extensions) on Windows: open i-CARE in Microsoft Edge, where the helper
+//    is installed, with a one-time link; the helper sends the details through the Sarwa server and this ticket updates by itself.
+//  - otherwise: open i-CARE here; the ⭐ bookmark does the same on a click.
 const icareHelper = () => document.documentElement.dataset.sarwaIcareHelper || '';
+const viaEdge = () => !icareHelper() && /Windows/i.test(navigator.userAgent);
 // i-CARE's own links carry ?tss=<ddMMyyyyHHmmss>; open it the same way
 const icareUrl = ids => { const d = new Date(), p = n => String(n).padStart(2, '0'); return ICARE_URL + '?tss=' + p(d.getDate()) + p(d.getMonth() + 1) + d.getFullYear() + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + (ids ? '#sarwa=' + ids : ''); };
-function openICare(t) {
+async function icareToken(no, id) {
+  const { data, error } = await SB.functions.invoke('icare', { body: { action: 'token', ticket: no, member: id } });
+  if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { } throw new Error(msg); }
+  if (!data || !data.token) throw new Error((data && data.error) || 'No link from the server');
+  return data.token;
+}
+async function openInEdge(pairs) {   // pairs: [[ticketNo, memberId], …]
+  const ids = [], tks = [];
+  for (const [no, id] of pairs) { ids.push(id); tks.push(await icareToken(no, id)); }
+  location.href = 'microsoft-edge:' + icareUrl(ids.join(',') + '&tk=' + tks.join(','));
+}
+async function openICare(t) {
   const id = memberNo(t);
   if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
   ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
   try { navigator.clipboard.writeText(id); } catch { }
+  if (viaEdge()) {
+    try { await openInEdge([[t.no, id]]); toast('Opening ' + id + ' in Microsoft Edge (Sarwa i-CARE helper) – the member’s Administrative Information opens there and is saved to ' + t.no + ' here. First time: tick “Always allow” and press Open.'); }
+    catch (x) { toast('Could not open i-CARE in Edge: ' + x.message); }
+    return;
+  }
   window.open(icareUrl(id), 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
   toast(icareHelper() ? 'Opening ' + id + ' in i-CARE – its Administrative Information opens and is saved to ' + t.no + '.'
-    : 'i-CARE opened for ' + id + '. Install the Sarwa i-CARE helper (i-CARE panel › How it works) so this opens the member directly – or click ⭐ Sarwa i-CARE there.');
+    : 'i-CARE opened for ' + id + '. Click ⭐ Sarwa i-CARE there – or install the Sarwa i-CARE helper (i-CARE panel) so this opens the member directly.');
 }
 // Check every open ticket whose member is not verified yet, in one go.
-function verifyAllICare() {
+async function verifyAllICare() {
   const list = [...DB.tickets.values()].filter(t => !['Closed', 'Resolved'].includes(t.status) && !t.mergedInto && /^\d{6,10}$/.test(memberNo(t)) && !t.icare);
   const nos = {}; for (const t of list) { const id = memberNo(t); if (!nos[id]) nos[id] = t.no; }
-  const ids = Object.keys(nos).slice(0, 40);
+  const ids = Object.keys(nos).slice(0, viaEdge() ? 15 : 40);
   if (!ids.length) return toast('Every open ticket with a member number is already checked in i-CARE.');
   ICARE_JOB = { ids, nos, at: Date.now() };
+  if (viaEdge()) {
+    toast('Preparing ' + ids.length + ' member(s) for i-CARE…');
+    try { await openInEdge(ids.map(id => [nos[id], id])); toast('Checking ' + ids.length + ' member(s) in i-CARE in Microsoft Edge – each result is saved to its ticket here.'); }
+    catch (x) { toast('Could not open i-CARE in Edge: ' + x.message); }
+    return;
+  }
   window.open(icareUrl(ids.join(',')), 'icare');
   toast(icareHelper() ? 'Checking ' + ids.length + ' member(s) in i-CARE – each result is saved to its ticket.' : 'i-CARE opened for ' + ids.length + ' member(s). Click ⭐ Sarwa i-CARE there – each result is saved to its ticket.');
 }
+// i-CARE details that arrived through the server (helper in Edge, opened from another browser): save them on the ticket – done by
+// the app of the agent who pressed Open i-CARE, once.
+const RAW_DONE = new Set();
+async function processIcareRaw() {
+  if (!DB || !ME) return;
+  for (const t of DB.tickets.values()) {
+    const r = t.icareRaw; if (!r || RAW_DONE.has(r.evId) || r.by !== ME.id) continue;
+    if (t.icare && t.icare.at >= r.at) { RAW_DONE.add(r.evId); continue; }
+    if (Date.now() - new Date(r.at) > 24 * 3600 * 1000) { RAW_DONE.add(r.evId); continue; }
+    RAW_DONE.add(r.evId);
+    if (!r.ok) { toast(t.no + ' – i-CARE: ' + (r.error || 'not found')); continue; }
+    const c = parseICare(String(r.text || ''));
+    if (c.admin.individual !== String(r.id)) { toast(t.no + ' – i-CARE details belong to another member, not saved'); continue; }
+    try { const s = await saveICare(t.no, c, 'edge'); toast(t.no + ': ' + (c.admin.name || r.id) + (s && s.bad ? ' – ' + s.bad + ' problem(s), see the i-CARE panel' : ' – verified in i-CARE ✓') + (c.admin.mobile ? ' · mobile ' + c.admin.mobile : '')); }
+    catch (x) { RAW_DONE.delete(r.evId); toast(t.no + ': ' + x.message); }
+  }
+}
 function icareSetupHint() {
   if (icareHelper()) return el('div', { class: 'small', style: 'color:#2f8a4f' }, '✓ i-CARE helper installed – Open i-CARE goes straight to the member’s Administrative Information and saves it here.');
-  return el('details', { class: 'small muted' }, el('summary', {}, 'Make Open i-CARE open the member directly (one-time setup, 1 minute)'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
-    el('div', {}, el('b', {}, 'Install the Sarwa i-CARE helper in Chrome (once per PC):')),
+  const steps = el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
+    el('div', {}, el('b', {}, 'Install the Sarwa i-CARE helper in Microsoft Edge (once per PC):')),
     el('div', {}, '1) ', el('a', { href: 'sarwa-icare-helper.zip', download: 'sarwa-icare-helper.zip' }, 'Download the helper'), ' and unzip it (right-click › Extract All) into a folder you keep, e.g. Documents.'),
-    el('div', {}, '2) Open chrome://extensions, turn on “Developer mode” (top right), press “Load unpacked” and choose the unzipped folder.'),
-    el('div', {}, '3) Reload this page. Open i-CARE then lands on the member’s Administrative Information and saves the details and mobile here – no clicks in i-CARE.'),
-    el('div', { style: 'margin-top:4px' }, 'No extensions allowed? Drag this button to the bookmarks bar and click it on the i-CARE page instead: '), el('div', {}, icareBookmarkLink())));
+    el('div', {}, '2) In Edge open edge://extensions, turn on “Developer mode”, press “Load unpacked” and choose the unzipped folder.'),
+    el('div', {}, '3) Sign in to i-CARE once in Edge.'),
+    el('div', { style: 'margin-top:4px' }, 'Without the helper you can drag this button to the bookmarks bar and click it on the i-CARE page: '), el('div', {}, icareBookmarkLink()));
+  if (viaEdge()) return el('details', { class: 'small muted' }, el('summary', {}, 'Open i-CARE opens the member in Microsoft Edge (Sarwa i-CARE helper) – setup'), steps);
+  return el('details', { class: 'small muted' }, el('summary', {}, 'Make Open i-CARE open the member directly (one-time setup, 1 minute)'), steps);
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -3139,7 +3187,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16m';
+const APP_VERSION = '2026-11-16n';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
