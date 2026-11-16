@@ -2415,12 +2415,14 @@ function icareDialog(no, prefill) {
 // The "Sarwa i-CARE helper" (a small Chrome extension, folder icare-helper/) runs i-CARE's own Patient Information search for the
 // member named after #sarwa= and opens that member's Administrative Information; the ⭐ bookmark does the same on a click.
 const icareHelper = () => document.documentElement.dataset.sarwaIcareHelper || '';
+// i-CARE's own links carry ?tss=<ddMMyyyyHHmmss>; open it the same way
+const icareUrl = ids => { const d = new Date(), p = n => String(n).padStart(2, '0'); return ICARE_URL + '?tss=' + p(d.getDate()) + p(d.getMonth() + 1) + d.getFullYear() + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + (ids ? '#sarwa=' + ids : ''); };
 function openICare(t) {
   const id = memberNo(t);
   if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
   ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
   try { navigator.clipboard.writeText(id); } catch { }
-  window.open(ICARE_URL + '#sarwa=' + id, 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
+  window.open(icareUrl(id), 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
   toast(icareHelper() ? 'Opening ' + id + ' in i-CARE – its Administrative Information opens and is saved to ' + t.no + '.'
     : 'i-CARE opened for ' + id + '. Install the Sarwa i-CARE helper (i-CARE panel › How it works) so this opens the member directly – or click ⭐ Sarwa i-CARE there.');
 }
@@ -2431,7 +2433,7 @@ function verifyAllICare() {
   const ids = Object.keys(nos).slice(0, 40);
   if (!ids.length) return toast('Every open ticket with a member number is already checked in i-CARE.');
   ICARE_JOB = { ids, nos, at: Date.now() };
-  window.open(ICARE_URL + '#sarwa=' + ids.join(','), 'icare');
+  window.open(icareUrl(ids.join(',')), 'icare');
   toast(icareHelper() ? 'Checking ' + ids.length + ' member(s) in i-CARE – each result is saved to its ticket.' : 'i-CARE opened for ' + ids.length + ' member(s). Click ⭐ Sarwa i-CARE there – each result is saved to its ticket.');
 }
 function icareSetupHint() {
@@ -3137,7 +3139,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16k';
+const APP_VERSION = '2026-11-16l';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

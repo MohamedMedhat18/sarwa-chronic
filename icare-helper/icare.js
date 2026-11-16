@@ -30,15 +30,25 @@
     history.replaceState(null, '', location.pathname + location.search);
   }
   // i-CARE's Patient Information search for one member, then its Administrative Information
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const isLogin = html => /j_password/i.test(html);
   async function check(id, cid) {
-    const p = await (await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true' + (cid ? '&_cf_clientid=' + encodeURIComponent(cid) : '') + '&_cf_rc=1',
-      { method: 'POST', body: new URLSearchParams({ Contnbr: '', IndNbr: id, txtReference: '' }), credentials: 'same-origin' })).text();
-    if (/j_password/i.test(p)) return { id, ok: false, signedOut: true, error: 'i-CARE sign-in expired' };
+    // right after i-CARE's page loads, i-CARE answers with its sign-in form for a few seconds although the agent is signed
+    // in – so retry for ~12 s before deciding the sign-in really expired
+    let p = '';
+    for (const wait of [0, 1000, 1500, 2000, 2500, 3000]) {
+      if (wait) await sleep(wait);
+      p = await (await fetch('/Assistance/Index.cfm?_cf_containerId=WorkArea&_cf_nodebug=true&_cf_nocache=true' + (cid ? '&_cf_clientid=' + encodeURIComponent(cid) : '') + '&_cf_rc=1',
+        { method: 'POST', body: new URLSearchParams({ Contnbr: '', IndNbr: id, txtReference: '' }), credentials: 'same-origin' })).text();
+      if (!isLogin(p)) break;
+    }
+    if (isLogin(p)) return { id, ok: false, signedOut: true, error: 'i-CARE sign-in expired' };
     const m = p.match(/AdministrativeInfo\.cfm\?indnbr=(\d+)&(?:amp;)?contnbr=(\d+)/i);
     if (!m) return { id, ok: false, error: 'Not found in i-CARE' };
     if (m[1] !== id) return { id, ok: false, error: 'i-CARE returned another member (' + m[1] + ')' };
     const url = '/assistance/AdministrativeInfo.cfm?indnbr=' + m[1] + '&contnbr=' + m[2];
-    const a = await (await fetch(url, { credentials: 'same-origin' })).text();
+    let a = '';
+    for (const wait of [0, 1000, 2000]) { if (wait) await sleep(wait); a = await (await fetch(url, { credentials: 'same-origin' })).text(); if (/Adherent Name/i.test(a)) break; }
     const d = new DOMParser().parseFromString(a, 'text/html');
     const text = [...d.querySelectorAll('tr')].filter(tr => !tr.querySelector('table')).map(tr => [...tr.children].map(c => c.textContent.replace(/\s+/g, ' ').trim()).join('\t')).filter(x => x.trim()).join('\n');
     const ind = (text.match(/Individual Number:?\t\s*(\d+)/i) || [])[1] || '';
@@ -53,6 +63,9 @@
     if (signedOut()) { banner('Sarwa: sign in to i-CARE – member ' + esc(job.ids.join(', ')) + ' opens right after.'); return; }
     busy = true; sessionStorage.removeItem(KEY);
     try {
+      banner('Sarwa: opening member <b>' + esc(job.ids[0]) + '</b>&hellip;');
+      if (document.readyState !== 'complete') await new Promise(r => addEventListener('load', r, { once: true }));
+      await sleep(800);   // let i-CARE's own page finish its start-up requests first
       const cid = clientId(); const rows = [];
       for (let i = 0; i < job.ids.length; i++) {
         const id = job.ids[i];
