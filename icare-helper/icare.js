@@ -60,7 +60,7 @@
     if (busy) return;
     let job = null; try { job = JSON.parse(sessionStorage.getItem(KEY) || 'null'); } catch (e) { }
     if (!job || !Array.isArray(job.ids) || !job.ids.length || Date.now() - job.at > 15 * 60000) return;
-    if (signedOut()) { banner('Sarwa: sign in to i-CARE – member ' + esc(job.ids.join(', ')) + ' opens right after.'); return; }
+    if (signedOut()) { banner('Sarwa: sign in to i-CARE – member <b>' + esc(job.ids.join(', ')) + '</b> opens right after.<br><span style="opacity:.85">i-CARE allows one session per account: if someone else signed in with the same account, this one was closed.</span>'); return; }
     busy = true; sessionStorage.removeItem(KEY);
     try {
       banner('Sarwa: opening member <b>' + esc(job.ids[0]) + '</b>&hellip;');
@@ -71,7 +71,7 @@
         const id = job.ids[i];
         banner('Sarwa: opening member <b>' + esc(id) + '</b>&hellip;' + (job.ids.length > 1 ? ' (' + (i + 1) + ' of ' + job.ids.length + ')' : ''));
         let r; try { r = await check(id, cid); } catch (e) { r = { id, ok: false, error: e.message }; }
-        if (r.signedOut) { sessionStorage.setItem(KEY, JSON.stringify({ ids: job.ids.slice(i), at: Date.now() })); banner('Sarwa: the i-CARE sign-in expired – sign in, the member opens right after.', 'bad'); return; }
+        if (r.signedOut) { sessionStorage.setItem(KEY, JSON.stringify({ ids: job.ids.slice(i), at: Date.now() })); banner('Sarwa: i-CARE closed this session (signed in elsewhere with the same account, or timed out). Sign in – the member opens right after.', 'bad'); return; }
         rows.push(r);
         tell({ sarwaIcare: 1, id: r.id, ok: r.ok, error: r.error, contract: r.contract, text: r.text, name: r.name, mobile: r.mobile });
       }

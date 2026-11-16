@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sarwa Chronic – i-CARE helper",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Open i-CARE from a Sarwa Chronic ticket goes straight to that member's Administrative Information and saves the details to the ticket.",
   "content_scripts": [
     {
