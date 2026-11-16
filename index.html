@@ -208,6 +208,47 @@ textarea{resize:vertical}
 .kpi.bad b{color:var(--bad)} .kpi.warn b{color:var(--warn)} .kpi.ok b{color:#2f8a4f}
 .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+.dash .dhead{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.dash .dhead h2{margin:0;font-size:20px;letter-spacing:-.01em}
+.live-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#2f8a4f;box-shadow:0 0 0 3px color-mix(in srgb,#2f8a4f 25%,transparent);animation:livep 2s infinite}
+@keyframes livep{50%{box-shadow:0 0 0 6px color-mix(in srgb,#2f8a4f 0%,transparent)}}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:9px;overflow:hidden;background:var(--surface)}
+.seg button{border:0;background:none;padding:6px 12px;font:inherit;font-size:13px;color:var(--muted);cursor:pointer}
+.seg button+button{border-left:1px solid var(--border)}
+.seg button.on{background:var(--accent);color:#fff}
+.dash .kpis{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+.dash .kpi{transition:border-color .15s,box-shadow .15s,transform .15s}
+.dash .kpi:hover{box-shadow:0 4px 14px rgba(0,0,0,.07);transform:translateY(-1px)}
+.dash .kpi .klabel{color:var(--muted);font-size:12.5px}
+.dash .kpi b{margin:4px 0 2px}
+.kpi .delta{font-size:11px;font-weight:600;border-radius:999px;padding:1px 7px;white-space:nowrap}
+.kpi .delta.up{background:var(--ok-bg);color:var(--ok)} .kpi .delta.down{background:var(--bad-bg);color:var(--bad)}
+.kpi .spark{display:block;margin-top:4px}
+.dgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.dgrid .span2{grid-column:span 2}
+@media (max-width:1100px){.dgrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:720px){.dgrid{grid-template-columns:1fr}.dgrid .span2{grid-column:auto}}
+.dgrid .phead{display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px}
+.dgrid h3{margin:0;font-size:14px}
+.hbars{display:grid;gap:7px}
+.hbar{display:grid;grid-template-columns:minmax(90px,38%) 1fr auto;align-items:center;gap:8px;font-size:12.5px;color:var(--text);text-decoration:none}
+.hbar:hover .hl{color:var(--accent)}
+.hbar .hl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hbar .ht{height:8px;background:var(--surface-2);border-radius:5px;overflow:hidden}
+.hbar .ht i{display:block;height:100%;border-radius:5px}
+.hbar b{font-variant-numeric:tabular-nums;min-width:22px;text-align:right}
+.hbar .hs{grid-column:2/4;color:var(--muted);font-size:11px;margin-top:-4px}
+.stack{display:flex;height:14px;border-radius:7px;overflow:hidden;background:var(--surface-2)}
+.stack a{display:block;height:100%;transition:filter .15s} .stack a:hover{filter:brightness(1.12)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:12px}
+.legend a,.legend span{color:var(--text);text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px}
+.table-wrap{overflow:auto}
+.t.dt td,.t.dt th{padding:7px 10px}
+.feed{display:grid;gap:2px;max-height:340px;overflow:auto}
+.feed .fi{display:flex;gap:9px;align-items:flex-start;padding:6px;border-radius:8px;color:var(--text);text-decoration:none;font-size:12.5px}
+.feed .fi:hover{background:var(--surface-2)}
+.feed .ft{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .panel h2{font-size:14px;margin:0 0 12px}
 .bar{display:grid;grid-template-columns:130px minmax(0,1fr) 40px;gap:8px;align-items:center;font-size:13px;margin:6px 0}
 .bar .tr2{background:var(--surface-2);border-radius:5px;height:14px;overflow:hidden}
@@ -597,9 +638,36 @@ const DEFAULTS = {
     EN: '<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>We have received your request regarding: {{ticket.subject}}<br>It has been registered under ticket No. <b>{{ticket.no}}</b>.<br>The request will be reviewed and we will reply as soon as possible.</p>'
   },
   rules: [],
+  // email-safe signature (tables + inline styles: Outlook, Gmail, mobile); images are served by the app's site
   signature: {
-    AR: 'للمتابعة، برجاء ذكر رقم التذكرة {{ticket.no}} في أي مراسلات لاحقة.<br>وتفضلوا بقبول فائق الاحترام والتقدير،،،<br><b>شركة ثروة لتأمينات الحياة – إدارة المطالبات الطبية</b>',
-    EN: 'For follow-up, please quote ticket No. {{ticket.no}} in any further correspondence.<br>Kind regards,<br><b>Sarwa Life Insurance – Medical Claims Department</b>'
+    AR: '<div dir="rtl" style="font-family:Arial,Tahoma,sans-serif;color:#1f2a2a">'
+      + '<p dir="rtl" style="margin:0 0 4px">وتفضلوا بقبول فائق الاحترام والتقدير،</p>'
+      + '<table dir="rtl" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-top:10px"><tr>'
+      + '<td style="padding:0 0 0 14px;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="62" height="80" alt="Sarwa Life" style="display:block;border:0"></td>'
+      + '<td style="border-right:3px solid #c8a05a;padding:2px 14px 2px 0;vertical-align:middle;line-height:1.5">'
+      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">{{agent.name}}</div>'
+      + '<div style="font-size:12px;color:#5b6b6b">إدارة الموافقات الطبية – Medical Approvals</div>'
+      + '<div style="font-size:12px;font-weight:bold;color:#1f2a2a">شركة ثروة لايف للتأمين · Sarwa Life Insurance S.A.E</div>'
+      + '<div style="font-size:11px;color:#5b6b6b;padding-top:4px">📍 15 شارع قصر النيل، وسط البلد، القاهرة &nbsp;|&nbsp; ☎ <b style="color:#1d5c52">15185</b></div>'
+      + '<div style="font-size:11px;color:#5b6b6b">🌐 <a href="https://www.sarwa.insurance/sarwa-life" style="color:#1d5c52;text-decoration:none">www.sarwa.insurance/sarwa-life</a> &nbsp;|&nbsp; ✉ <a href="mailto:Chronic@sarwa.life" style="color:#1d5c52;text-decoration:none">Chronic@sarwa.life</a></div>'
+      + '</td>'
+      + '<td style="padding:0 14px 0 0;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/award-2022.png" width="54" height="59" alt="Best Digital Transformation FinTech Company 2022" style="display:block;border:0"></td>'
+      + '</tr></table>'
+      + '<p dir="rtl" style="margin:10px 0 0;font-size:10px;color:#8a9696">للمتابعة يرجى ذكر رقم الطلب <b>{{ticket.no}}</b> في أي مراسلات لاحقة.</p></div>',
+    EN: '<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2a2a">'
+      + '<p style="margin:0 0 4px">Kind regards,</p>'
+      + '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-top:10px"><tr>'
+      + '<td style="padding:0 14px 0 0;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="62" height="80" alt="Sarwa Life" style="display:block;border:0"></td>'
+      + '<td style="border-left:3px solid #c8a05a;padding:2px 0 2px 14px;vertical-align:middle;line-height:1.5">'
+      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">{{agent.name}}</div>'
+      + '<div style="font-size:12px;color:#5b6b6b">Medical Approvals Department</div>'
+      + '<div style="font-size:12px;font-weight:bold;color:#1f2a2a">Sarwa Life Insurance S.A.E</div>'
+      + '<div style="font-size:11px;color:#5b6b6b;padding-top:4px">📍 15 Kasr El Nile Street, Downtown, Cairo, Egypt &nbsp;|&nbsp; ☎ <b style="color:#1d5c52">15185</b></div>'
+      + '<div style="font-size:11px;color:#5b6b6b">🌐 <a href="https://www.sarwa.insurance/sarwa-life" style="color:#1d5c52;text-decoration:none">www.sarwa.insurance/sarwa-life</a> &nbsp;|&nbsp; ✉ <a href="mailto:Chronic@sarwa.life" style="color:#1d5c52;text-decoration:none">Chronic@sarwa.life</a></div>'
+      + '</td>'
+      + '<td style="padding:0 0 0 14px;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/award-2022.png" width="54" height="59" alt="Best Digital Transformation FinTech Company 2022" style="display:block;border:0"></td>'
+      + '</tr></table>'
+      + '<p style="margin:10px 0 0;font-size:10px;color:#8a9696">For follow-up, please quote request No. <b>{{ticket.no}}</b> in any further correspondence.</p></div>'
   },
   canned: [
     { title: 'Missing documents (AR)', html: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">بالإشارة إلى طلب الموافقة على الأدوية الشهرية المقدم للعضو / {{member.name}} – رقم الكارت {{member.no}} (رقم التذكرة {{ticket.no}})، نحيط سيادتكم علماً بأنه بعد المراجعة الطبية تم اتخاذ القرار التالي:</p><p dir="rtl"><b>المتطلبات الناقصة</b><br>برجاء التكرم بإرسال ما يلي لاستكمال المراجعة:</p><ul dir="rtl"><li>…</li></ul>' },
@@ -1012,7 +1080,7 @@ function ackEligible(email, A) {
 async function maybeAutoAck(no, email) {
   const A = DB.settings.autoAck; if (!ackEligible(email, A)) return;
   const t = DB.tickets.get(no); if (!t) return; const lang = t.lang === 'EN' ? 'EN' : 'AR';
-  const body = sanitize(fillPlaceholders(A[lang] || A.AR || '', t)); const sig = fillPlaceholders(DB.settings.signature[lang] || '', t);
+  const body = sanitize(fillPlaceholders(A[lang] || A.AR || '', t)); const sig = fillPlaceholders(String(DB.settings.signature[lang] || '').replace(/\{\{\s*agent\.name\s*\}\}/g, lang === 'AR' ? 'فريق الأدوية المزمنة' : 'Chronic Medication Team'), t);
   const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br>${sig}</div>`;
   await queueReply(t, { to: email.fromEmail, cc: '', subject: replySubject(t), html, files: [], auto: true });
 }
@@ -1063,6 +1131,12 @@ const VIEW_DEFS = {
   onhold: { label: 'On hold (pending / waiting)', f: t => DB.settings.paused.includes(t.status) },
   resolved: { label: 'Resolved tickets', f: t => t.status === 'Resolved' },
   closed: { label: 'Closed tickets', f: t => t.status === 'Closed' },
+  approved: { label: 'Decision: Approved', f: t => t.decision === 'Approved' },
+  partial: { label: 'Decision: Partially approved', f: t => t.decision === 'Partially approved' },
+  pending: { label: 'Decision: Pending', f: t => t.decision === 'Pending' && t.status !== 'Closed' },
+  rejected: { label: 'Decision: Rejected', f: t => t.decision === 'Rejected' },
+  nodecision: { label: 'Open without a decision', f: t => !t.decision && t.status !== 'Resolved' && t.status !== 'Closed' },
+  unverified: { label: 'Open, not checked in i-CARE', f: t => !t.icare && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto },
   all: { label: 'All tickets', f: () => true }
 };
 const LIST = { sel: new Set(), shown: 50, last: [], filters: JSON.parse(lsGet('hd-filters', '{}') || '{}') };
@@ -1169,7 +1243,8 @@ function ticketList(r) {
     else if (s.frPending && Date.now() > s.frDue) badges.push(el('span', { class: 'pill p-over' }, 'First response overdue'));
     else if (s.dueToday) badges.push(el('span', { class: 'pill p-due' }, 'Due today'));
     if (t.mergedInto) badges.push(el('span', { class: 'pill p-muted' }, 'Merged → ' + t.mergedInto));
-    if (t.icare) { const bad = (t.icare.issues || []).some(x => /differs|EXPIRED|Blacklist|Risk carrier|almost used/i.test(x)); badges.push(el('span', { class: 'pill ' + (bad ? 'p-over' : 'p-ok'), title: 'GlobeMed i-CARE: ' + (t.icare.verdict || '') + ' · ' + fmtDate(t.icare.at) }, bad ? '⚠ i-CARE' : '✓ i-CARE')); }
+    if (t.decision && DECISIONS[t.decision]) { const D = DECISIONS[t.decision]; badges.push(el('span', { class: 'pill', style: 'background:' + D.bg + ';color:' + D.c, title: (t.decisionReason || '') + (t.decisionNote ? ' – ' + t.decisionNote : '') }, D.icon + ' ' + t.decision + (t.decision === 'Pending' && t.decisionReason ? ': ' + t.decisionReason.replace(/\s*\(.*\)$/, '') : ''))); }
+    if (t.icare) { const bad =(t.icare.issues || []).some(x => /differs|EXPIRED|Blacklist|Risk carrier|almost used/i.test(x)); badges.push(el('span', { class: 'pill ' + (bad ? 'p-over' : 'p-ok'), title: 'GlobeMed i-CARE: ' + (t.icare.verdict || '') + ' · ' + fmtDate(t.icare.at) }, bad ? '⚠ i-CARE' : '✓ i-CARE')); }
     const unread = t.msgs.some(m => m.kind === 'in' && m.atts && m.atts.some(a => a.cls === 'unreadable'));
     const cb = el('input', { type: 'checkbox', 'aria-label': 'Select ' + t.no, checked: LIST.sel.has(t.no), onchange: e => { e.target.checked ? LIST.sel.add(t.no) : LIST.sel.delete(t.no); drawHead(); rowEl.classList.toggle('sel', e.target.checked); } });
     const rowEl = el('div', { class: 'tr pri-' + t.priority + (LIST.sel.has(t.no) ? ' sel' : '') },
@@ -1295,7 +1370,7 @@ function msgCard(m, t, fromNo) {
   if (m.kind === 'out') {
     const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
     return el('div', { class: 'msg out' },
-      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : ' replied ', state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
+      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : m.forward ? ' forwarded to ' + (m.to || '') + ' ' : ' replied ', m.forward ? el('span', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0' }, '↪ Forward') : null, state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
       el('div', { class: 'mb html', dir: 'auto', html: sanitize(m.html) }),
       m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
       m.state === 'error' ? el('div', { style: 'padding:0 14px 12px 54px' }, el('button', { class: 'btn sm', type: 'button', onclick: async () => { await queueReply(t, { to: m.to, cc: m.cc, subject: m.subject, html: m.html, files: [], reuseAtts: m.atts || [] }); toast('Queued again'); } }, 'Try again')) : null);
@@ -1325,15 +1400,20 @@ function fillPlaceholders(html, t) {
   return String(html).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (x, k) => esc(map[k] ?? x));
 }
 function replySubject(t) { let s = String(t.subject || '').trim(); if (!/^(re|رد)\s*:/i.test(s)) s = 'RE: ' + s; if (!s.includes(t.no)) s += ` [${t.no}]`; return s; }
-async function queueReply(t, { to, cc, subject, html, files, reuseAtts, statusAfter, auto }) {
+async function queueReply(t, { to, cc, subject, html, files, reuseAtts, statusAfter, auto, forward }) {
   const outId = 'out_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files || []) { const p = `${HD}/outbox/${outId}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   for (const a of reuseAtts || []) atts.push(a);
   const lastIn = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? -1 : 1).pop();
-  const job = { outId, ticket: t.no, to, cc, subject, html, replyToMid: lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString() };
+  // Forward: Outlook forwards the original email itself (with its attachments); if Outlook cannot find it, a new email carries a
+  // copy of the original text (fwdHtml) and its attachments (fwdPaths)
+  const fwdAtts = forward ? (forward.msg.atts || []).filter(a => a.path && !a.inline) : [];
+  for (const a of fwdAtts) atts.push(a);
+  const job = { outId, ticket: t.no, to, cc, subject, html, replyToMid: forward ? forward.msg.mid || '' : lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString(),
+    ...(forward ? { forward: true, fwdHtml: forward.html, fwdPaths: fwdAtts.map(a => a.path) } : {}) };
   const { error } = await SB.from('outbox').insert({ id: outId, ticket: t.no, job, status: 'queued' });
-  if (error) { toast('Reply not queued: ' + error.message); throw new Error(error.message); }
-  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto });
+  if (error) { toast((forward ? 'Forward' : 'Reply') + ' not queued: ' + error.message); throw new Error(error.message); }
+  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
 }
 /* ---- Activity: every action on a ticket with its details (also who opened it) ---- */
@@ -1352,7 +1432,7 @@ function describeEv(e) {
   switch (e.type) {
     case 'ticket.create': return ['change', 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : ''), [d.subject, d.fromEmail || d.requester && d.requester.email].filter(Boolean).join('\n')];
     case 'msg.in': return ['message', d.internal ? 'Email from a Sarwa colleague' : 'Email received', `From: ${d.fromName || ''} <${d.fromEmail || ''}>\nSubject: ${d.subject || ''}${(d.atts || []).length ? `\nAttachments: ${d.atts.length}` : ''}\n${clip(d.text || stripHtml(d.html))}`];
-    case 'msg.out': return ['message', d.outlook ? 'Reply sent from Outlook' : d.auto ? 'Auto-acknowledgement sent' : 'Reply sent', `To: ${d.to || ''}${d.cc ? '  Cc: ' + d.cc : ''}\nSubject: ${d.subject || ''}\n${clip(d.text || stripHtml(d.html))}`];
+    case 'msg.out': return ['message', d.outlook ? 'Reply sent from Outlook' : d.auto ? 'Auto-acknowledgement sent' : d.forward ? 'Forwarded' : 'Reply sent', `To: ${d.to || ''}${d.cc ? '  Cc: ' + d.cc : ''}\nSubject: ${d.subject || ''}\n${clip(d.text || stripHtml(d.html))}`];
     case 'out.status': return ['message', 'Email ' + (d.status === 'error' ? 'could not be sent' : d.status || 'status'), d.error || (d.sentAt ? 'Sent ' + fmtDate(d.sentAt) : '')];
     case 'note': return ['message', d.desc ? 'Description added' : 'Private note', clip(stripHtml(d.html))];
     case 'msg.sms': return ['message', (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' – sent directly' : d.via === 'manual' ? ' – opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS app') : ''), (d.toName ? d.toName + '\n' : '') + (d.from ? 'From: ' + d.from + '\n' : '') + clip(d.text)];
@@ -1411,20 +1491,33 @@ function ticketView(r) {
   const afterSel = el('select', { 'aria-label': 'Status after sending' }, opt('', 'Keep status'), DB.settings.statuses.map(s => opt(s, 'Then set ' + s, '')));
   const sendBtn = el('button', { class: 'btn primary', type: 'button', onclick: send }, 'Send');
   const tabs = el('div', { class: 'tabs' });
+  // Forward (like Outlook): which email to forward – default the newest one from the provider / member
+  const fwdSel = el('select', { 'aria-label': 'Email to forward', style: 'flex:1;min-width:0' });
+  const fwdTo = el('input', { type: 'text', 'aria-label': 'Forward to', placeholder: 'name@company.com; …' });
+  const fwdMsgs = () => { const t = DB.tickets.get(no); return t.msgs.filter(m => m.kind === 'in' || (m.kind === 'out' && m.outlook)).sort((a, b) => a.at < b.at ? 1 : -1); };
+  const fwdSubject = m => 'FW: ' + String((m && m.subject) || DB.tickets.get(no).subject).replace(/^\s*((RE|FW|FWD|TR)\s*:\s*)+/i, '');
+  const quoteOf = m => { const head = `<hr><p style="font-size:10pt;color:#555"><b>From:</b> ${esc(m.fromName || m.sender || '')} &lt;${esc(m.fromEmail || '')}&gt;<br><b>Sent:</b> ${esc(fmtDate(m.at))}<br><b>To:</b> ${esc(m.to || DB.settings.general.mailbox)}${m.cc ? '<br><b>Cc:</b> ' + esc(m.cc) : ''}<br><b>Subject:</b> ${esc(m.subject || '')}</p>`; return head + (m.html ? sanitize(m.html) : `<div style="white-space:pre-wrap">${esc(m.text || '')}</div>`); };
   function drawEditor() {
     const t = DB.tickets.get(no);
-    tabs.replaceChildren(el('button', { type: 'button', class: mode === 'reply' ? 'on' : '', onclick: () => { mode = 'reply'; drawEditor(); } }, 'Reply'), el('button', { type: 'button', class: mode === 'note' ? 'on' : '', onclick: () => { mode = 'note'; drawEditor(); } }, 'Add private note'));
+    const tab = (k, label) => el('button', { type: 'button', class: mode === k ? 'on' : '', onclick: () => { mode = k; drawEditor(); } }, label);
+    tabs.replaceChildren(tab('reply', '↩ Reply'), tab('forward', '↪ Forward'), tab('note', '🔒 Private note'));
     if (!toIn.value) toIn.value = t.requester.email || '';
-    ce.dataset.ph = mode === 'reply' ? 'Write your reply… (signature and ticket number are added automatically)' : 'Write a private note for the team (not sent to the provider)…';
-    sendBtn.textContent = mode === 'reply' ? 'Send' : 'Add note';
+    if (mode === 'forward') { const list = fwdMsgs(); const keep = fwdSel.value; fwdSel.replaceChildren(...list.map(m => opt(m.id, `${fmtDate(m.at)} – ${m.fromName || m.fromEmail || m.sender || ''}${(m.atts || []).filter(a => !a.inline).length ? ' – 📎 ' + (m.atts || []).filter(a => !a.inline).length : ''}`, keep || (list[0] && list[0].id)))); }
+    ce.dataset.ph = mode === 'reply' ? 'Write your reply… (signature and ticket number are added automatically)' : mode === 'forward' ? 'Add a message above the forwarded email (optional)…' : 'Write a private note for the team (not sent to the provider)…';
+    sendBtn.textContent = mode === 'reply' ? 'Send' : mode === 'forward' ? 'Forward' : 'Add note';
+    const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
       mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
+      mode === 'forward' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), fwdTo), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn),
+        el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
+        el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
+  fwdSel.addEventListener('change', () => drawEditor());
   async function send() {
     const t = DB.tickets.get(no); const body = sanitize(ce.innerHTML).trim();
-    if (!htmlToPlain(body) && !files.length) { toast('Write something first.'); ce.focus(); return; }
+    if (mode !== 'forward' && !htmlToPlain(body) && !files.length) { toast('Write something first.'); ce.focus(); return; }
     if (!me()) { askName(); return; }
     sendBtn.disabled = true;
     try {
@@ -1433,6 +1526,14 @@ function ticketView(r) {
         await emit('note', no, { html: body || '<i>Attached files</i>', atts: fl });
         if (afterSel.value) await emit('update', no, { status: afterSel.value });
         toast('Note added');
+      } else if (mode === 'forward') {
+        const to = fwdTo.value.trim(); if (!/@/.test(to)) { toast('Enter who to forward to in "To".'); fwdTo.focus(); sendBtn.disabled = false; return; }
+        const m = fwdMsgs().find(x => x.id === fwdSel.value); if (!m) { toast('Choose the email to forward.'); sendBtn.disabled = false; return; }
+        const plain = htmlToPlain(body); const lang = !plain ? 'EN' : isAr(plain) ? 'AR' : 'EN';
+        const sig = fillPlaceholders(DB.settings.signature[lang] || '', t);
+        const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body ? body + '<br><br>' : ''}${sig}</div>`;
+        await queueReply(t, { to, cc: ccIn.value.trim(), subject: fwdSubject(m), html, files: files.slice(), statusAfter: afterSel.value, forward: { msg: m, html: quoteOf(m) } });
+        fwdTo.value = ''; toast('Forward queued – Outlook sends it within a minute');
       } else {
         const to = toIn.value.trim(); if (!/@/.test(to)) { toast('Enter the provider email in "To".'); toIn.focus(); sendBtn.disabled = false; return; }
         const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
@@ -1452,6 +1553,7 @@ function ticketView(r) {
       el('div', { class: 'tbar' },
         el('a', { class: 'btn sm', href: '#/tickets' }, '← Tickets'),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'reply'; drawEditor(); ce.focus(); } }, 'Reply ', el('span', { class: 'kbd' }, 'r')),
+        el('button', { class: 'btn sm', type: 'button', title: 'Forward an email of this ticket (with its attachments) – like Outlook', onclick: () => { mode = 'forward'; drawEditor(); fwdTo.focus(); } }, '↪ Forward ', el('span', { class: 'kbd' }, 'f')),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { mode = 'note'; drawEditor(); ce.focus(); } }, 'Note ', el('span', { class: 'kbd' }, 'n')),
         el('button', { class: 'btn sm primary', type: 'button', onclick: () => validationDialog(no) }, t.validation ? '✓ Validation' : 'Validate medicines'),
         el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog([no]) }, 'Merge'),
@@ -1487,6 +1589,7 @@ function ticketView(r) {
       el('h3', {}, 'Member'),
       patientInfo(t),
       icarePanel(t),
+      decisionPanel(t),
       el('h3', {}, 'Properties'),
       el('div', { class: 'f' }, el('label', { for: 'f-status' }, 'Status'), sel('status', S.statuses)),
       el('div', { class: 'f' }, el('label', { for: 'f-priority' }, 'Priority'), sel('priority', S.priorities)),
@@ -1528,46 +1631,149 @@ function ticketView(r) {
   const sigOf = t => t.msgs.length + '|' + t.msgs.map(m => m.state || '').join('') + '|' + t.mergedFrom.join(',') + '|' + t.mergedFrom.map(n => (DB.tickets.get(n) || { msgs: [] }).msgs.length).join(',');
   const drawThreadIfChanged = () => { const s = sigOf(DB.tickets.get(no)); if (s !== threadSig) { threadSig = s; drawThread(); } };
   drawTop(); drawThreadIfChanged(); drawEditor(); drawSide();
-  const view = { el: root, insertReply(html) { mode = 'reply'; drawEditor(); ce.innerHTML = sanitize(html); ce.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, update() { if (!DB.tickets.get(no)) return; drawTop(); drawThreadIfChanged(); if (!sideDirty && !side.contains(document.activeElement)) drawSide(); }, keys(k) { if (k === 'r') { mode = 'reply'; drawEditor(); ce.focus(); return true; } if (k === 'n') { mode = 'note'; drawEditor(); ce.focus(); return true; } } };
+  const view = { el: root, insertReply(html) { mode = 'reply'; drawEditor(); ce.innerHTML = sanitize(html); ce.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, update() { if (!DB.tickets.get(no)) return; drawTop(); drawThreadIfChanged(); if (!sideDirty && !side.contains(document.activeElement)) drawSide(); }, keys(k) { if (k === 'r') { mode = 'reply'; drawEditor(); ce.focus(); return true; } if (k === 'n') { mode = 'note'; drawEditor(); ce.focus(); return true; } if (k === 'f') { mode = 'forward'; drawEditor(); fwdTo.focus(); return true; } } };
   return view;
 }
 
 /* ---------------- Dashboard ---------------- */
 function bars(rows, max) { const m = max || Math.max(1, ...rows.map(r => r[1])); return rows.map(([l, v, href]) => el('div', { class: 'bar' }, href ? el('a', { class: 'lbl', href, dir: 'auto' }, l) : el('span', { class: 'lbl', dir: 'auto' }, l), el('div', { class: 'tr2' }, el('div', { class: 'fill', style: `width:${Math.round(v / m * 100)}%` })), el('span', { class: 'v' }, v))); }
+/* ---------------- Dashboard: operations view of the chronic desk (live for the whole team) ----------------
+   Period switch, KPI cards compared with the previous period (each opens its tickets), SLA compliance and response times,
+   decisions and pending reasons, workload per agent, ageing of open tickets, top providers, items most often not covered,
+   AI reading and i-CARE coverage, and the live activity feed. */
 function dashboard() {
-  const root = el('div', { class: 'pad' });
-  function draw() {
-    const T = [...DB.tickets.values()].filter(t => !t.mergedInto); const un = T.filter(t => t.status !== 'Resolved' && t.status !== 'Closed');
-    const sl = new Map(un.map(t => [t.no, slaOf(t)]));
-    const k = (label, v, href, cls) => el('a', { class: 'kpi' + (cls ? ' ' + cls : ''), href }, el('b', {}, v), el('span', {}, label));
-    const byAgent = {}; un.forEach(t => { const a = t.agent || 'Unassigned'; byAgent[a] = (byAgent[a] || 0) + 1; });
-    const byStatus = DB.settings.statuses.map(s => [s, T.filter(t => t.status === s).length, '#/tickets?view=all']);
-    const byType = {}; un.forEach(t => { const a = t.type || '—'; byType[a] = (byType[a] || 0) + 1; });
-    // 14-day created vs resolved
-    const days = [...Array(14)].map((_, i) => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 13 + i); return d; });
-    const cnt = (f) => days.map(d => T.filter(t => { const x = f(t); return x && new Date(x).toDateString() === d.toDateString(); }).length);
-    const cr = cnt(t => t.created), rs = cnt(t => t.resolvedAt); const mx = Math.max(1, ...cr, ...rs); const W = 560, H = 160, bw = W / 14;
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', `0 0 ${W} ${H + 22}`); svg.setAttribute('width', '100%'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'Tickets created and resolved per day, last 14 days');
+  const root = el('div', { class: 'pad dash' });
+  let range = +lsGet('hd-dash-range', '7') || 7;
+  const NS = 'http://www.w3.org/2000/svg';
+  const svgEl = (tag, attrs, kids) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v); for (const c of [].concat(kids || [])) if (c) n.append(c); return n; };
+  const tip = (node, text) => { node.append(svgEl('title', {}, [document.createTextNode(text)])); return node; };
+  const H = 3600e3, DAYMS = 864e5;
+  const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  const dur = ms => ms == null ? '—' : ms < H ? Math.round(ms / 60000) + ' min' : ms < 48 * H ? (ms / H).toFixed(1).replace(/\.0$/, '') + ' h' : (ms / DAYMS).toFixed(1).replace(/\.0$/, '') + ' d';
+  const pct = (a, b) => b ? Math.round(a / b * 100) : null;
+  function kpi({ label, value, href, tone, delta, deltaGood, hint, spark }) {
+    const d = delta == null || !isFinite(delta) || delta === 0 ? null : el('span', { class: 'delta ' + ((delta > 0) === (deltaGood !== false) ? 'up' : 'down') }, (delta > 0 ? '▲ ' : '▼ ') + Math.abs(Math.round(delta)) + (typeof delta === 'number' && hint === '%' ? ' pts' : '%'));
+    return el('a', { class: 'kpi' + (tone ? ' ' + tone : ''), href: href || '#/tickets', title: hint && hint !== '%' ? hint : label },
+      el('div', { class: 'row', style: 'justify-content:space-between;gap:6px;flex-wrap:nowrap' }, el('span', { class: 'klabel' }, label), d),
+      el('b', {}, value == null ? '—' : String(value)), spark || null);
+  }
+  function spark(values, color) {
+    const W = 120, Hh = 26, mx = Math.max(1, ...values), step = W / Math.max(1, values.length - 1);
+    const pts = values.map((v, i) => `${(i * step).toFixed(1)},${(Hh - v / mx * (Hh - 2) - 1).toFixed(1)}`).join(' ');
+    return svgEl('svg', { viewBox: `0 0 ${W} ${Hh}`, width: '100%', height: Hh, class: 'spark', 'aria-hidden': 'true' }, [svgEl('polyline', { points: pts, fill: 'none', stroke: color || 'var(--accent)', 'stroke-width': 1.6, 'stroke-linejoin': 'round' })]);
+  }
+  function hbars(rows, opts = {}) {   // rows: [label, value, href, color, sub]
+    const m = Math.max(1, ...rows.map(r => r[1]));
+    return el('div', { class: 'hbars' }, rows.map(([l, v, href, color, sub]) => el(href ? 'a' : 'div', { class: 'hbar', href: href || undefined, title: l + ': ' + v + (sub ? ' · ' + sub : '') },
+      el('span', { class: 'hl', dir: 'auto' }, l), el('span', { class: 'ht' }, el('i', { style: `width:${Math.max(v ? 2 : 0, v / m * 100)}%;background:${color || 'var(--accent)'}` })), el('b', {}, v), sub ? el('span', { class: 'hs' }, sub) : null)));
+  }
+  function stacked(parts, total) {   // one horizontal bar split in coloured parts, with a legend
+    const sum = total || parts.reduce((a, p) => a + p.v, 0) || 1;
+    return [el('div', { class: 'stack' }, parts.filter(p => p.v).map(p => el('a', { href: p.href || '#/tickets', style: `width:${p.v / sum * 100}%;background:${p.c}`, title: p.l + ': ' + p.v }))),
+      el('div', { class: 'legend' }, parts.map(p => el('a', { href: p.href || '#/tickets' }, el('i', { style: 'background:' + p.c }), p.l + ' ', el('b', {}, p.v))))];
+  }
+  function trend(days, series) {   // grouped bars per day + open backlog line
+    const W = 640, Hh = 170, n = days.length, bw = W / n;
+    const mx = Math.max(1, ...series.flatMap(s => s.v));
+    const g = svgEl('svg', { viewBox: `0 0 ${W} ${Hh + 24}`, width: '100%', role: 'img', 'aria-label': 'Requests received and closed per day' });
+    for (let i = 0; i <= 4; i++) { const y = Hh - i / 4 * Hh; g.append(svgEl('line', { x1: 0, x2: W, y1: y, y2: y, stroke: 'var(--border)', 'stroke-width': 1 })); }
     days.forEach((d, i) => {
-      const mk = (v, x, col, lab) => { const r = document.createElementNS(svg.namespaceURI, 'rect'); const h = v / mx * H; r.setAttribute('x', x); r.setAttribute('y', H - h); r.setAttribute('width', bw * .34); r.setAttribute('height', Math.max(h, v ? 1 : 0)); r.setAttribute('rx', 2); r.setAttribute('fill', col); const tt = document.createElementNS(svg.namespaceURI, 'title'); tt.textContent = `${fmtDay(d)}: ${v} ${lab}`; r.append(tt); svg.append(r); };
-      mk(cr[i], i * bw + bw * .12, 'var(--accent)', 'created'); mk(rs[i], i * bw + bw * .5, 'var(--ok)', 'resolved');
-      if (i % 2 === 0) { const tx = document.createElementNS(svg.namespaceURI, 'text'); tx.setAttribute('x', i * bw + bw / 2); tx.setAttribute('y', H + 16); tx.setAttribute('text-anchor', 'middle'); tx.setAttribute('font-size', '11'); tx.setAttribute('fill', 'var(--muted)'); tx.textContent = `${d.getDate()}/${d.getMonth() + 1}`; svg.append(tx); }
+      series.filter(s => s.kind === 'bar').forEach((s, j, arr) => { const v = s.v[i], h = v / mx * Hh, w = bw * .7 / arr.length; g.append(tip(svgEl('rect', { x: i * bw + bw * .15 + j * w, y: Hh - h, width: Math.max(1, w - 1), height: Math.max(h, v ? 1.5 : 0), rx: 2, fill: s.c }), `${fmtDay(d)} – ${s.l}: ${v}`)); });
+      const step = n > 45 ? 14 : n > 20 ? 5 : n > 10 ? 2 : 1;
+      if (i % step === 0 || i === n - 1) g.append(svgEl('text', { x: i * bw + bw / 2, y: Hh + 16, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, [document.createTextNode(`${d.getDate()}/${d.getMonth() + 1}`)]));
     });
+    series.filter(s => s.kind === 'line').forEach(s => {
+      const lm = Math.max(1, ...s.v); const pts = s.v.map((v, i) => `${(i * bw + bw / 2).toFixed(1)},${(Hh - v / lm * Hh * .92).toFixed(1)}`).join(' ');
+      g.append(svgEl('polyline', { points: pts, fill: 'none', stroke: s.c, 'stroke-width': 2, 'stroke-dasharray': '4 3' }));
+      s.v.forEach((v, i) => g.append(tip(svgEl('circle', { cx: i * bw + bw / 2, cy: Hh - v / lm * Hh * .92, r: 2.6, fill: s.c }), `${fmtDay(days[i])} – ${s.l}: ${v}`)));
+    });
+    return el('div', {}, g, el('div', { class: 'legend' }, series.map(s => el('span', {}, el('i', { style: 'background:' + s.c + (s.kind === 'line' ? ';height:3px;border-radius:2px' : '') }), s.l))));
+  }
+  function draw() {
+    const now = Date.now(); const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (range - 1));
+    const from = start.getTime(), prevFrom = from - range * DAYMS;
+    const inR = (x, a = from, b = now + 1) => { const v = x ? Date.parse(x) : NaN; return v >= a && v < b; };
+    const T = [...DB.tickets.values()].filter(t => !t.mergedInto);
+    const open = T.filter(openT), sl = new Map(T.map(t => [t.no, slaOf(t)]));
+    const created = T.filter(t => inR(t.created)), createdPrev = T.filter(t => inR(t.created, prevFrom, from));
+    const closed = T.filter(t => !openT(t) && inR(t.resolvedAt)), closedPrev = T.filter(t => !openT(t) && inR(t.resolvedAt, prevFrom, from));
+    const fr = T.filter(t => t.firstResponseAt && inR(t.firstResponseAt)).map(t => Date.parse(t.firstResponseAt) - Date.parse(t.created));
+    const frPrev = T.filter(t => t.firstResponseAt && inR(t.firstResponseAt, prevFrom, from)).map(t => Date.parse(t.firstResponseAt) - Date.parse(t.created));
+    const rt = closed.map(t => Date.parse(t.resolvedAt) - Date.parse(t.created)), rtPrev = closedPrev.map(t => Date.parse(t.resolvedAt) - Date.parse(t.created));
+    const slaOk = closed.filter(t => !sl.get(t.no).resLate).length, slaOkPrev = closedPrev.filter(t => !sl.get(t.no).resLate).length;
+    const frOk = T.filter(t => t.firstResponseAt && inR(t.firstResponseAt) && !sl.get(t.no).frLate).length;
+    const chg = (a, b) => b ? (a - b) / b * 100 : null;
+    const overdue = open.filter(t => sl.get(t.no).overdue), dueToday = open.filter(t => sl.get(t.no).dueToday);
+    // per-day series
+    const days = [...Array(range)].map((_, i) => { const d = new Date(from); d.setDate(d.getDate() + i); return d; });
+    const perDay = f => days.map(d => { const a = d.getTime(), b = a + DAYMS; return T.filter(t => { const x = f(t); return x && inR(x, a, b); }).length; });
+    const cr = perDay(t => t.created), rs = perDay(t => openT(t) ? null : t.resolvedAt);
+    const backlog = days.map(d => { const end = d.getTime() + DAYMS; return T.filter(t => Date.parse(t.created) < end && (openT(t) || Date.parse(t.resolvedAt || t.closedAt || now) >= end)).length; });
+    // decisions (in the period, by decision time) and pending reasons (open now)
+    const decIn = T.filter(t => t.decision && inR(t.decisionAt || t.updated));
+    const dc = k => decIn.filter(t => t.decision === k).length;
+    const pendingNow = open.filter(t => t.decision === 'Pending');
+    const reasons = {}; pendingNow.forEach(t => { const r = (t.decisionReason || 'Not given').replace(/\s*\(.*\)$/, ''); reasons[r] = (reasons[r] || 0) + 1; });
+    const rejReasons = {}; decIn.filter(t => t.decision === 'Rejected').forEach(t => { const r = t.decisionReason || 'Not given'; rejReasons[r] = (rejReasons[r] || 0) + 1; });
+    // agents
+    const agents = new Map();
+    const ag = n => { if (!agents.has(n)) agents.set(n, { open: 0, overdue: 0, closed: 0, fr: [], replies: 0 }); return agents.get(n); };
+    open.forEach(t => { const a = ag(t.agent || 'Unassigned'); a.open++; if (sl.get(t.no).overdue) a.overdue++; });
+    closed.forEach(t => { ag(t.agent || 'Unassigned').closed++; });
+    T.forEach(t => t.msgs.forEach(m => { if (m.kind === 'out' && !m.auto && !m.outlook && inR(m.at)) ag(m.by || 'Unknown').replies++; }));
+    T.filter(t => t.firstResponseAt && inR(t.firstResponseAt)).forEach(t => ag(t.agent || 'Unassigned').fr.push(Date.parse(t.firstResponseAt) - Date.parse(t.created)));
+    // ageing of open tickets
+    const age = t => (now - Date.parse(t.created)) / DAYMS;
+    const buckets = [['< 1 day', t => age(t) < 1, '#2f8a4f'], ['1–2 days', t => age(t) >= 1 && age(t) < 2, '#7aa83a'], ['2–3 days', t => age(t) >= 2 && age(t) < 3, '#c98a00'], ['3–7 days', t => age(t) >= 3 && age(t) < 7, '#d0662b'], ['> 7 days', t => age(t) >= 7, 'var(--bad)']];
+    // providers (sender domains) with open tickets
+    const prov = {}; open.forEach(t => { const d = (t.requester.email || '').split('@')[1] || '—'; prov[d] = (prov[d] || 0) + 1; });
+    // items most often not covered / rejected in the period
+    const items = {}; T.forEach(t => { if (!t.validation || !inR(t.validation.at)) return; (t.validation.result || []).forEach(x => { if (['NOT_COVERED', 'NOT_COVERED_DX', 'NOT_JUSTIFIED'].includes(x.final)) { const k = String(x.name || '').toUpperCase().split(' ').slice(0, 2).join(' '); if (k) { items[k] = items[k] || { n: 0, d: x.final }; items[k].n++; } } }); });
+    // AI and i-CARE coverage of open tickets
+    const withFiles = open.filter(t => t.msgs.some(m => m.kind === 'in' && (m.atts || []).some(a => a.cls === 'readable')));
+    const aiRead = withFiles.filter(t => t.aiRead && t.aiRead.data).length;
+    const withMember = open.filter(t => /^\d{6,10}$/.test(memberNo(t))), icared = withMember.filter(t => t.icare).length;
+    // live feed
+    const feed = [...STORE.events.values()].filter(e => e.t && !['view', 'icare.raw', 'out.status', 'email.ignored'].includes(e.type)).sort((a, b) => a.ts < b.ts ? 1 : -1).slice(0, 14);
+    const RANGES = [[1, 'Today'], [7, '7 days'], [30, '30 days'], [90, '90 days']];
     root.replaceChildren(
-      el('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:12px' }, el('h2', { style: 'margin:0;font-size:18px' }, 'Dashboard'), el('span', { class: 'muted small' }, 'Live for the whole team · ' + TEAM.filter(p => p.active).length + ' members')),
+      el('div', { class: 'dhead' },
+        el('div', {}, el('h2', {}, 'Chronic desk overview'), el('div', { class: 'small muted' }, el('span', { class: 'live-dot' }), ' Live · ' + TEAM.filter(p => p.active).length + ' team members · updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))),
+        el('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, RANGES.map(([v, l]) => el('button', { type: 'button', class: range === v ? 'on' : '', 'aria-pressed': range === v ? 'true' : 'false', onclick: () => { range = v; lsSet('hd-dash-range', String(v)); draw(); } }, l)))),
       el('div', { class: 'kpis' },
-        k('Unresolved', un.length, '#/tickets?view=unresolved'),
-        k('Overdue', [...sl.values()].filter(s => s.overdue).length, '#/tickets?view=overdue', 'bad'),
-        k('Due today', [...sl.values()].filter(s => s.dueToday).length, '#/tickets?view=today', 'warn'),
-        k('Unassigned', un.filter(t => !t.agent).length, '#/tickets?view=unassigned'),
-        k('Provider responded', un.filter(t => VIEW_DEFS.responded.f(t)).length, '#/tickets?view=responded'),
-        k('On hold', un.filter(t => DB.settings.paused.includes(t.status)).length, '#/tickets?view=onhold'),
-        k('My open', un.filter(t => t.agent === me()).length, '#/tickets?view=mine')),
-      el('div', { class: 'grid2' },
-        el('div', { class: 'panel' }, el('h2', {}, 'Created vs resolved – last 14 days'), svg, el('div', { class: 'row small muted' }, el('span', {}, el('span', { style: 'display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:2px' }), ' Created'), el('span', {}, el('span', { style: 'display:inline-block;width:10px;height:10px;background:var(--ok);border-radius:2px' }), ' Resolved'))),
-        el('div', { class: 'panel' }, el('h2', {}, 'Unresolved by agent'), Object.keys(byAgent).length ? bars(Object.entries(byAgent).sort((a, b) => b[1] - a[1]).map(([a, v]) => [a, v])) : el('div', { class: 'muted' }, 'Nothing open.')),
-        el('div', { class: 'panel' }, el('h2', {}, 'All tickets by status'), bars(byStatus)),
-        el('div', { class: 'panel' }, el('h2', {}, 'Unresolved by type'), Object.keys(byType).length ? bars(Object.entries(byType).sort((a, b) => b[1] - a[1])) : el('div', { class: 'muted' }, 'Nothing open.'))));
+        kpi({ label: 'Open now', value: open.length, href: '#/tickets?view=unresolved', spark: spark(backlog, 'var(--accent)') }),
+        kpi({ label: 'Overdue', value: overdue.length, href: '#/tickets?view=overdue', tone: overdue.length ? 'bad' : 'ok' }),
+        kpi({ label: 'Due today', value: dueToday.length, href: '#/tickets?view=today', tone: dueToday.length ? 'warn' : '' }),
+        kpi({ label: 'Unassigned', value: open.filter(t => !t.agent).length, href: '#/tickets?view=unassigned', tone: open.some(t => !t.agent) ? 'warn' : '' }),
+        kpi({ label: 'Received', value: created.length, href: '#/tickets?view=all', delta: chg(created.length, createdPrev.length), deltaGood: true, spark: spark(cr, 'var(--accent)') }),
+        kpi({ label: 'Closed / resolved', value: closed.length, href: '#/tickets?view=closed', delta: chg(closed.length, closedPrev.length), deltaGood: true, spark: spark(rs, '#2f8a4f'), tone: 'ok' }),
+        kpi({ label: 'SLA met (resolution)', value: closed.length ? pct(slaOk, closed.length) + '%' : null, tone: closed.length && pct(slaOk, closed.length) < 85 ? 'warn' : 'ok', hint: '%', delta: closed.length && closedPrev.length ? pct(slaOk, closed.length) - pct(slaOkPrev, closedPrev.length) : null }),
+        kpi({ label: 'First response (median)', value: dur(median(fr)), delta: median(frPrev) ? -chg(median(fr), median(frPrev)) : null, hint: 'Median time from request to first reply in the period' }),
+        kpi({ label: 'Resolution time (median)', value: dur(median(rt)), delta: median(rtPrev) ? -chg(median(rt), median(rtPrev)) : null, hint: 'Median time from request to close in the period' }),
+        kpi({ label: 'Waiting for provider reply', value: open.filter(t => VIEW_DEFS.responded.f(t)).length, href: '#/tickets?view=responded', hint: 'Provider wrote back and nobody answered yet' })),
+      el('div', { class: 'dgrid' },
+        el('section', { class: 'panel span2' }, el('div', { class: 'phead' }, el('h3', {}, 'Requests received vs closed'), el('span', { class: 'small muted' }, 'dashed line = open backlog at day end')),
+          trend(days, [{ l: 'Received', v: cr, c: 'var(--accent)', kind: 'bar' }, { l: 'Closed', v: rs, c: '#2f8a4f', kind: 'bar' }, { l: 'Open backlog', v: backlog, c: '#c98a00', kind: 'line' }])),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Decisions'), el('span', { class: 'small muted' }, decIn.length + ' in the period')),
+          decIn.length ? stacked([{ l: 'Approved', v: dc('Approved'), c: '#2f8a4f', href: '#/tickets?view=approved' }, { l: 'Partial', v: dc('Partially approved'), c: '#2f6fb0', href: '#/tickets?view=partial' }, { l: 'Pending', v: dc('Pending'), c: '#c98a00', href: '#/tickets?view=pending' }, { l: 'Rejected', v: dc('Rejected'), c: 'var(--bad)', href: '#/tickets?view=rejected' }]) : el('div', { class: 'small muted' }, 'No decisions yet – use Decision in the ticket (Approved / Pending / Rejected).'),
+          el('div', { class: 'small muted', style: 'margin:12px 0 6px' }, 'Pending now – why (' + pendingNow.length + ')'),
+          Object.keys(reasons).length ? hbars(Object.entries(reasons).sort((a, b) => b[1] - a[1]).map(([r, v]) => [r, v, '#/tickets?view=pending', '#c98a00'])) : el('div', { class: 'small muted' }, 'Nothing pending.'),
+          Object.keys(rejReasons).length ? [el('div', { class: 'small muted', style: 'margin:12px 0 6px' }, 'Rejected – why'), hbars(Object.entries(rejReasons).sort((a, b) => b[1] - a[1]).map(([r, v]) => [r, v, '#/tickets?view=rejected', 'var(--bad)']))] : null,
+          el('a', { class: 'small', href: '#/tickets?view=nodecision', style: 'display:inline-block;margin-top:10px' }, open.filter(t => !t.decision).length + ' open without a decision →')),
+        el('section', { class: 'panel span2' }, el('div', { class: 'phead' }, el('h3', {}, 'Team workload'), el('span', { class: 'small muted' }, 'open now · in the period')),
+          el('div', { class: 'tw' }, el('table', { class: 't dt' }, el('thead', {}, el('tr', {}, ['Agent', 'Open', 'Overdue', 'Closed', 'Replies', 'First response'].map((h, i) => el('th', { class: i ? 'n' : '' }, h)))),
+            el('tbody', {}, [...agents.entries()].sort((a, b) => (b[1].open + b[1].closed) - (a[1].open + a[1].closed)).map(([n, a]) => el('tr', {},
+              el('td', {}, el('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, avatar(n, true), n, DB.avail && Object.values(DB.avail).length ? null : null)),
+              el('td', { class: 'n' }, el('a', { href: n === 'Unassigned' ? '#/tickets?view=unassigned' : '#/tickets?view=unresolved' }, a.open)), el('td', { class: 'n', style: a.overdue ? 'color:var(--bad);font-weight:600' : '' }, a.overdue), el('td', { class: 'n' }, a.closed), el('td', { class: 'n' }, a.replies), el('td', { class: 'n' }, dur(median(a.fr))))))))),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Open tickets by age')), stacked(buckets.map(([l, f, c]) => ({ l, v: open.filter(f).length, c, href: '#/tickets?view=unresolved' })), open.length),
+          el('div', { class: 'small muted', style: 'margin:14px 0 6px' }, 'Coverage of open tickets'),
+          hbars([['AI read the prescription', aiRead, '#/tickets?view=unresolved', 'var(--accent)', withFiles.length ? pct(aiRead, withFiles.length) + '% of ' + withFiles.length : ''], ['Checked in i-CARE', icared, '#/tickets?view=unverified', '#2f6fb0', withMember.length ? pct(icared, withMember.length) + '% of ' + withMember.length : ''], ['First response on time', frOk, '#/tickets?view=all', '#2f8a4f', fr.length ? pct(frOk, fr.length) + '% of ' + fr.length : '']])),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Providers with open requests')),
+          Object.keys(prov).length ? hbars(Object.entries(prov).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([d, v]) => [d, v, '#/tickets?view=unresolved&q=' + encodeURIComponent(d)])) : el('div', { class: 'small muted' }, 'Nothing open.')),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Items most often not covered / rejected')),
+          Object.keys(items).length ? hbars(Object.entries(items).sort((a, b) => b[1].n - a[1].n).slice(0, 8).map(([k, x]) => [k, x.n, '', x.d === 'NOT_JUSTIFIED' ? '#d0662b' : 'var(--bad)', DEC[x.d] ? DEC[x.d].en : x.d])) : el('div', { class: 'small muted' }, 'No rejected items in the period.')),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Live activity')),
+          el('div', { class: 'feed' }, feed.map(e => { const k = describeEv(e); return el('a', { class: 'fi', href: '#/t/' + e.t }, avatar(e.by, true), el('div', { style: 'min-width:0' }, el('div', { class: 'ft', dir: 'auto' }, el('b', {}, e.by), ' · ', k[1]), el('div', { class: 'small muted' }, e.t + ' · ' + rel(e.ts)))); })))));
   }
   draw(); return { el: root, update: draw };
 }
@@ -2048,7 +2254,7 @@ const CLASSES = [ // [key, label, test that confirms it]
 const CLS = Object.fromEntries(CLASSES.map(c => [c[0], { label: c[1], test: c[2] }]));
 const UNITS = [['tablet', 'قرص'], ['capsule', 'كبسولة'], ['unit (IU)', 'وحدة'], ['ml', 'مل'], ['puff', 'بخة'], ['drop', 'نقطة'], ['sachet', 'كيس'], ['patch', 'لاصقة'], ['injection', 'حقنة'], ['pen', 'قلم'], ['vial', 'فيال'], ['application', 'دهان'], ['suppository', 'لبوس'], ['g', 'جم'], ['mg', 'مجم']];
 const PERIOD = { day: 1, week: 7, month: 30 }; const PERIOD_AR = { day: 'يومياً', week: 'أسبوعياً', month: 'شهرياً' };
-const DEC = { APPROVED: { en: 'Approved', ar: 'معتمد', c: 'p-ok' }, MORE_INFO: { en: 'Needs more evidence', ar: 'مطلوب مستندات', c: 'p-due' }, ACUTE: { en: 'Acute – not monthly', ar: 'علاج حاد', c: 'p-muted' }, NOT_JUSTIFIED: { en: 'Not justified', ar: 'مرفوض', c: 'p-over' }, UNREADABLE: { en: 'Unreadable – ask provider', ar: 'غير واضح', c: 'p-muted' } };
+const DEC = { APPROVED: { en: 'Approved', ar: 'معتمد', c: 'p-ok' }, MORE_INFO: { en: 'Needs more evidence', ar: 'مطلوب مستندات', c: 'p-due' }, ACUTE: { en: 'Acute – not monthly', ar: 'علاج حاد', c: 'p-muted' }, NOT_JUSTIFIED: { en: 'Not justified', ar: 'مرفوض', c: 'p-over' }, NOT_COVERED: { en: 'Not covered item', ar: 'غير مغطى تأمينياً', c: 'p-over' }, NOT_COVERED_DX: { en: 'Not covered under this diagnosis', ar: 'غير مغطى تحت التشخيص الموضح', c: 'p-over' }, ALTERNATIVE: { en: 'Alternative – one item only', ar: 'صنف بديل – صنف واحد فقط', c: 'p-muted' }, UNREADABLE: { en: 'Unreadable – ask provider', ar: 'غير واضح', c: 'p-muted' } };
 const CONFIRMS = ['high', 'positive', 'abnormal'];
 function addMonths(iso, m) { const d = new Date(iso + 'T00:00:00'); const day = d.getDate(); d.setMonth(d.getMonth() + m); if (d.getDate() < day) d.setDate(0); d.setDate(d.getDate() - 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 const dmy = iso => iso ? iso.split('-').reverse().join('/') : '';
@@ -2057,6 +2263,8 @@ function itemCalc(it, V) { const per = PERIOD[it.per] || 1; const upd = (+it.dos
 function diabetesShown(V) { return V.items.some(i => i.cls === 'antidiabetic' || i.cls === 'insulin') || V.labs.some(l => l.test === 'hba1c' && CONFIRMS.includes(l.result)) || /diab|\bDM\b|T2DM|سكر/i.test(V.diagnosis || ''); }
 function suggest(it, V) {
   if (it.unreadable) return { d: 'UNREADABLE', why: 'Item could not be read – ask provider' };
+  const mem = medMemory(it.name);   // the team already decided this medicine is not covered / acute: follow it
+  if (mem) return { d: mem.final, why: (mem.final === 'NOT_COVERED' ? 'Not covered' : 'Acute') + ' – team decision ' + mem.no + (mem.reason ? ': ' + mem.reason : ''), memReason: mem.reason };
   if (it.cls === 'acute') return { d: 'ACUTE', why: 'Acute medicine – separate acute approval' };
   if (it.cls === 'antihypertensive') return { d: 'APPROVED', why: 'Hypertension on doctor diagnosis (Sarwa rule)' };
   if (it.cls === 'neuro') return diabetesShown(V) ? { d: 'APPROVED', why: 'Diabetes shown – neuropathy support (Sarwa rule)' } : { d: 'MORE_INFO', why: 'Diabetes not shown', req: 'hba1c' };
@@ -2073,9 +2281,9 @@ function suggest(it, V) {
 function computeValidation(V) {
   return V.items.map((it, i) => { const c = itemCalc(it, V); const s = suggest(it, V); const final = it.final || s.d; const months = Math.min(+it.months || +V.months || 3, s.maxMonths || 12);
     const fq = it.finalQty !== '' && it.finalQty != null ? +it.finalQty : c.qty;
-    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', final, finalQty: fq, months, from: final === 'APPROVED' ? V.start : '', to: final === 'APPROVED' ? addMonths(V.start, months) : '', overridden: (final !== s.d) || fq !== c.qty }; });
+    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', reason: it.reason || (final === s.d ? s.memReason || '' : ''), final, finalQty: fq, months, from: final === 'APPROVED' ? V.start : '', to: final === 'APPROVED' ? addMonths(V.start, months) : '', overridden: (final !== s.d) || fq !== c.qty }; });
 }
-function valSummary(d) { const r = d.result || []; const c = k => r.filter(x => x.final === k).length; return ['APPROVED', 'MORE_INFO', 'NOT_JUSTIFIED', 'ACUTE', 'UNREADABLE'].filter(k => c(k)).map(k => c(k) + ' ' + DEC[k].en.toLowerCase()).join(', ') || 'no items'; }
+function valSummary(d) { const r = d.result || []; const c = k => r.filter(x => x.final === k).length; return ['APPROVED', 'MORE_INFO', 'NOT_JUSTIFIED', 'NOT_COVERED', 'NOT_COVERED_DX', 'ALTERNATIVE', 'ACUTE', 'UNREADABLE'].filter(k => c(k)).map(k => c(k) + ' ' + DEC[k].en.toLowerCase()).join(', ') || 'no items'; }
 function decisionEmail(t, V, R, lang) {
   const AR = lang === 'AR', ord = AR ? ['أولاً', 'ثانياً', 'ثالثاً', 'رابعاً'] : ['1-', '2-', '3-', '4-']; let k = 0; const H = s => `<p dir="${AR ? 'rtl' : 'ltr'}"><b>${ord[k++]}${AR ? ': ' : ' '}${s}</b></p>`;
   const name = esc(t.memberName || '…'), card = esc(t.member || '…'), dir = AR ? 'rtl' : 'ltr'; const out = [];
@@ -2100,8 +2308,15 @@ function decisionEmail(t, V, R, lang) {
     if (V.noForm) li.push(`<li>${AR ? 'برجاء إعادة إرسال النموذج الطبي الموضح فيه الأدوية بالجرعات اليومية، وذلك للمراجعة وعمل اللازم.' : 'Please resend the medical form showing the medicines with their daily doses.'}</li>`);
     out.push(`<ul dir="${dir}">${li.join('')}</ul>`);
   }
+  // wording as the team writes it: "ZINCTRON 30 Caps: Not Cover Item (zinc supplement)", "غير مغطى تأمينياً تحت التشخيص الموضح"
+  const nc = R.filter(x => x.final === 'NOT_COVERED' || x.final === 'NOT_COVERED_DX');
+  if (nc.length) out.push(H(AR ? 'الأصناف غير المغطاة تأمينياً' : 'Items not covered'), `<ul dir="${dir}">${nc.map(x => { const why = x.reason || x.memReason; return `<li><b>${esc(x.name)}</b>: ${x.final === 'NOT_COVERED_DX' ? (AR ? 'غير مغطى تأمينياً تحت التشخيص الموضح' : 'Not covered under the stated diagnosis' + (V.diagnosis ? ' (' + esc(V.diagnosis) + ')' : '')) : (AR ? 'صنف غير مغطى تأمينياً' : 'Not covered item')}${why ? ' (' + esc(why) + ')' : ''}.</li>`; }).join('')}</ul>`);
+  const alt = R.filter(x => x.final === 'ALTERNATIVE');
+  if (alt.length) out.push(H(AR ? 'أصناف بديلة' : 'Alternative items'), `<p dir="${dir}">${AR ? `الأصناف (${alt.map(x => esc(x.name)).join('، ')}) بديلة لصنف معتمد بنفس المجموعة الدوائية، لذا تمت المتابعة على صنف واحد فقط.` : `${alt.map(x => esc(x.name)).join(', ')}: alternative to an approved item of the same group – only one item is followed.`}</p>`);
   const rej = R.filter(x => x.final === 'NOT_JUSTIFIED' || x.final === 'ACUTE');
+  const acuteNote = R.some(x => x.final === 'ACUTE') ? `<p dir="${dir}">${AR ? 'برجاء تحديد الصيدلية والفرع لصرف الأصناف غير المزمنة.' : 'Please determine the pharmacy and branch to dispense the non-chronic items.'}</p>` : '';
   if (rej.length) out.push(H(AR ? 'الأصناف المرفوضة وسبب الرفض' : 'Rejected items and reason'), `<ul dir="${dir}">${rej.map(x => `<li>${esc(x.name)}: ${x.final === 'ACUTE' ? (AR ? 'يصرف كعلاج حاد (Acute) بموافقة منفصلة من الصيدلية / الفرع.' : 'not a monthly chronic medicine – to be dispensed as an acute prescription with a separate approval from the pharmacy / branch.') : esc(x.reason || (AR ? 'النتيجة المرفقة لا تؤكد الحاجة للعلاج.' : 'the attached result does not confirm the need for this medicine.'))}</li>`).join('')}</ul>`);
+  if (acuteNote) out.push(acuteNote);
   return out.join('');
 }
 async function blobToB64(blob) { return await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = () => rej(new Error('read failed')); r.readAsDataURL(blob); }); }
@@ -2130,12 +2345,12 @@ JSON shape:
  "memberName": "member name or empty",
  "diagnosis": "diagnosis written on the form",
  "labs": [ { "test": one of [${Object.keys(TESTS).join(',')}], "value": "e.g. 8.1 %", "date": "YYYY-MM-DD or empty", "result": one of [high,positive,normal,negative] } ],
- "items": [ { "name": "trade name + strength", "cls": one of [${CLASSES.map(c => c[0]).join(',')}], "dose": number, "unit": one of [${UNITS.map(u => u[0]).join(',')}], "times": number, "per": one of [day,week,month], "decision": one of [APPROVED,MORE_INFO,ACUTE,NOT_JUSTIFIED,UNREADABLE], "reason": "short reason, max 12 words" } ]
+ "items": [ { "name": "trade name + strength", "cls": one of [${CLASSES.map(c => c[0]).join(',')}], "dose": number, "unit": one of [${UNITS.map(u => u[0]).join(',')}], "times": number, "per": one of [day,week,month], "decision": one of [APPROVED,MORE_INFO,ACUTE,NOT_JUSTIFIED,NOT_COVERED,NOT_COVERED_DX,ALTERNATIVE,UNREADABLE], "reason": "short reason, max 12 words – for NOT_COVERED start with 'Not covered –'" } ]
 }
 
 Reading rules: GlobeMed columns like 1x1x90 mean 1 unit, once a day, for 90 days. Arabic doses and Arabic-Indic digits (٣٠ وحدة = 30 units; قرص; مرة يوميا; مرتين; قبل النوم; قرص كل أسبوع). Abbreviations od/bid/tds/tid/qid/hs/nocte/weekly. Insulin written as "30 units" with no frequency = once daily. "X او Y" alternatives are ONE item. Put each medicine on its own line and classify it (cls). If a line cannot be read, set cls "other" and decision "UNREADABLE".
 
-Decision guidance (Sarwa rules, they override guidelines): blood-pressure medicines (beta-blockers, ACE inhibitors, ARBs, calcium-channel blockers, diuretics) = APPROVED on the written diagnosis alone. Vitamin B6/B12 (Milga, Neurovit, Neurobion) and thioctic/alpha-lipoic acid (Thiotacid) = APPROVED when diabetes is shown. Colon/IBS medicines (mebeverine/Duspatalin, Colona, probiotics, simethicone) = APPROVED up to 3 months. Acute medicines (antibiotics, short courses, cold/pain) = ACUTE. A chronic medicine needs a confirming lab or scan no older than 6 months, otherwise MORE_INFO. A normal/negative result, a medicine that does not fit the diagnosis, or a dose above the maximum = NOT_JUSTIFIED.
+Decision guidance (Sarwa rules, they override guidelines): blood-pressure medicines (beta-blockers, ACE inhibitors, ARBs, calcium-channel blockers, diuretics) = APPROVED on the written diagnosis alone. Vitamin B6/B12 (Milga, Neurovit, Neurobion) and thioctic/alpha-lipoic acid (Thiotacid) = APPROVED when diabetes is shown. Colon/IBS medicines (mebeverine/Duspatalin, Colona, probiotics, simethicone) = APPROVED up to 3 months. Acute medicines (antibiotics, short courses, cold/pain) = ACUTE. A chronic medicine needs a confirming lab or scan no older than 6 months, otherwise MORE_INFO. A normal/negative result, a medicine that does not fit the diagnosis, or a dose above the maximum = NOT_JUSTIFIED. Items the policy does not cover at all (food supplements, zinc / multivitamin / mineral products such as Zinctron, cosmetics, slimming, hair and skin care, medical devices) = NOT_COVERED, with a reason that says clearly it is not covered (not 'not justified'), e.g. 'Not cover item – zinc supplement'. A medicine that is covered in general but not for the written diagnosis (e.g. skin creams for seborrhoeic dermatitis) = NOT_COVERED_DX. Two items of the same group that replace each other (e.g. two laxatives) = approve one, the other ALTERNATIVE.
 
 Diagnosis already typed by the assessor (may be empty): "${(diagnosis || '').slice(0, 300).replace(/"/g, "'")}".`;
 }
@@ -2300,8 +2515,10 @@ async function sarwaIcareRunner(APP) {
   try {
     if (document.querySelector('input[name=j_password]')) { say('Sarwa: sign in to i-CARE first, then click &#11088; again.', 1); return; }
     const op = window.opener && !window.opener.closed ? window.opener : null;
-    let ids = [];
-    if (op) ids = await new Promise(res => {
+    // on a member's Administrative Information link, the member is the one in the link (indnbr)
+    const adminWant = /AdministrativeInfo\.cfm/i.test(location.pathname) ? (new URLSearchParams(location.search).get('indnbr') || '').replace(/\D/g, '') : '';
+    let ids = /^\d{6,10}$/.test(adminWant) ? [adminWant] : [];
+    if (op && !ids.length) ids = await new Promise(res => {
       const h = e => { if (e.origin === APP && e.data && Array.isArray(e.data.sarwaIds)) { removeEventListener('message', h); res(e.data.sarwaIds.map(String)); } };
       addEventListener('message', h); try { op.postMessage({ sarwaIcareAsk: 1 }, APP); } catch (e) { }
       setTimeout(() => { removeEventListener('message', h); res([]); }, 1500);
@@ -2440,26 +2657,40 @@ async function icareToken(no, id) {
   if (!data || !data.token) throw new Error((data && data.error) || 'No link from the server');
   return data.token;
 }
-async function openInEdge(pairs) {   // pairs: [[ticketNo, memberId], …]
+// The member's own Administrative Information link, exactly like i-CARE's: AdministrativeInfo.cfm?indnbr=<member>&contnbr=<contract>.
+// (i-CARE shows the patient last searched in its Patient Information on that page; the helper / ⭐ bookmark check the member on
+// the page against indnbr and, if it differs, run i-CARE's search for that member and reload the same link.)
+const icareAdminUrl = (id, contract, hash) => ICARE_URL.replace(/Index\.cfm$/, '') + 'assistance/AdministrativeInfo.cfm?indnbr=' + id + '&contnbr=' + (contract || '') + (hash ? '#sarwa=' + hash : '');
+async function memberContract(t, id) {
+  const c = (t.icare && t.icare.admin && t.icare.admin.individual === id && t.icare.admin.contract) || ((t.eobs || []).find(e => e.policyNo) || {}).policyNo || '';
+  if (c) return String(c).replace(/\D/g, '');
+  try { const h = await loadHistory(id); const r = (h || []).find(x => x.contract); if (r) return String(r.contract).replace(/\D/g, ''); } catch { }
+  return '';
+}
+async function openInEdge(pairs) {   // pairs: [[ticketNo, memberId, contract], …]
   const ids = [], tks = [];
   for (const [no, id] of pairs) { ids.push(id); tks.push(await icareToken(no, id)); }
-  location.href = 'microsoft-edge:' + icareUrl(ids.join(',') + '&tk=' + tks.join(','));
+  const hash = ids.join(',') + '&tk=' + tks.join(',');
+  location.href = 'microsoft-edge:' + (pairs.length === 1 && pairs[0][2] ? icareAdminUrl(ids[0], pairs[0][2], hash) : icareUrl(hash));
 }
-// Open i-CARE always in THIS browser. With the helper here (e.g. Edge) it lands on the member by itself; without it (e.g. Chrome,
-// where the company blocks extensions) one click on ⭐ Sarwa i-CARE in i-CARE lands on the member. Edge is an optional extra.
+// Open i-CARE on the member's Administrative Information link, in THIS browser.
 async function openICare(t, opts) {
   const id = memberNo(t);
   if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
   ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
+  const w = opts && opts.edge ? null : window.open('about:blank', 'icare');   // open inside the click; the address follows the contract lookup
+  const contract = await memberContract(t, id);
   try { navigator.clipboard.writeText(id); } catch { }
   if (opts && opts.edge) {
-    try { await openInEdge([[t.no, id]]); toast('Opening ' + id + ' in Microsoft Edge – the member’s Administrative Information opens there and is saved to ' + t.no + ' here. First time: tick “Always allow” and press Open.'); }
+    try { await openInEdge([[t.no, id, contract]]); toast('Opening ' + id + ' in Microsoft Edge – the member’s Administrative Information opens there and is saved to ' + t.no + ' here. First time: tick “Always allow” and press Open.'); }
     catch (x) { toast('Could not open i-CARE in Edge: ' + x.message); }
     return;
   }
-  window.open(icareUrl(id), 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
-  toast(icareHelper() ? 'Opening ' + id + ' in i-CARE – its Administrative Information opens and is saved to ' + t.no + '.'
-    : 'i-CARE opened for ' + id + ' – click ⭐ Sarwa i-CARE in the bookmarks bar there: it opens this member’s Administrative Information and saves it to ' + t.no + '.');
+  const url = contract ? icareAdminUrl(id, contract, id) : icareUrl(id);
+  if (w && !w.closed) w.location.href = url; else window.open(url, 'icare');
+  toast(!contract ? 'No contract no. on file for ' + id + ' yet – i-CARE opened; ' + (icareHelper() ? 'the helper opens the member.' : 'click ⭐ Sarwa i-CARE there.')
+    : icareHelper() ? 'Administrative Information of ' + id + ' (contract ' + contract + ') – checked and saved to ' + t.no + ' automatically.'
+    : 'Administrative Information of ' + id + ' (contract ' + contract + '). If i-CARE shows another member (it shows the last one searched), click ⭐ Sarwa i-CARE once.');
 }
 // Check every open ticket whose member is not verified yet, in one go.
 async function verifyAllICare() {
@@ -2514,6 +2745,56 @@ function icarePanel(t) {
     (c.limits || []).filter(l => l.limit).map(l => { const p = l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('span', {}, l.level === 'Disease Related Condition' ? 'Chronic (DRC)' : l.level === 'AML' ? 'Annual (AML)' : (l.desc || l.level)), el('b', {}, l.perTransaction ? l.limit.toLocaleString() + ' / visit' : (l.balance != null ? l.balance.toLocaleString() : '—') + ' left')),
       p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
     el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + (c.via === 'bookmark' ? ' (automatic)' : '') + ' · ' + fmtDate(c.at)), btns)];
+}
+/* ---------------- Decision on the request: Approved / Partially approved → closed, Pending (with the reason) → pending,
+   Rejected (with the reason, e.g. item not covered) → closed. Suggested from the medicine validation. ---------------- */
+const DECISIONS = {
+  Approved: { icon: '✓', c: '#1b7344', bg: 'var(--ok-bg)', status: 'Closed', ar: 'معتمد' },
+  'Partially approved': { icon: '◐', c: '#1d5ca8', bg: 'var(--info-bg)', status: 'Closed', ar: 'معتمد جزئياً' },
+  Pending: { icon: '⏸', c: '#8a5200', bg: 'var(--warn-bg)', status: 'Pending', ar: 'معلق' },
+  Rejected: { icon: '✕', c: '#b0281c', bg: 'var(--bad-bg)', status: 'Closed', ar: 'مرفوض' }
+};
+const PENDING_REASONS = ['Missing documents (prescription / lab / scan)', 'Waiting for the provider / branch', 'Waiting for the member', 'Waiting for GlobeMed / i-CARE', 'Under medical review', 'Waiting for the EOB approval (PSP)', 'Other'];
+const REJECT_REASONS = ['Not covered – item excluded by the policy', 'Not medically justified', 'Policy inactive / expired', 'Annual or chronic limit exhausted', 'Duplicate request', 'Other'];
+function suggestedDecision(t) {
+  const r = (t.validation && t.validation.result) || []; if (!r.length) return null;
+  const ok = r.filter(x => x.final === 'APPROVED').length, info = r.filter(x => x.final === 'MORE_INFO' || x.final === 'UNREADABLE').length, nc = r.filter(x => x.final === 'NOT_COVERED').length;
+  if (info) return { d: 'Pending', reason: PENDING_REASONS[0] };
+  if (ok === r.length) return { d: 'Approved' };
+  if (ok) return { d: 'Partially approved', reason: nc ? REJECT_REASONS[0] : '' };
+  return { d: 'Rejected', reason: nc ? REJECT_REASONS[0] : REJECT_REASONS[1] };
+}
+function decisionDialog(t, d, preset) {
+  const needs = d === 'Pending' || d === 'Rejected' || d === 'Partially approved';
+  const list = d === 'Pending' ? PENDING_REASONS : REJECT_REASONS;
+  const reason = el('select', { style: 'width:100%' }, needs ? (d === 'Partially approved' ? [opt('', '— no rejected items —', preset || '')] : []).concat(list.map(x => opt(x, x, preset || list[0]))) : []);
+  const note = el('textarea', { rows: 3, dir: 'auto', style: 'width:100%', placeholder: d === 'Pending' ? 'What exactly is missing / who we are waiting for (shown in the ticket)' : d === 'Rejected' ? 'Short justification, e.g. “Zinctron – zinc supplement, not covered under the chronic benefit”' : 'Optional note' }, t.decision === d ? (t.decisionNote || '') : '');
+  const D = DECISIONS[d];
+  openDialog(D.icon + ' ' + d + ' – ' + t.no, [
+    el('div', { class: 'small muted' }, d === 'Pending' ? 'The ticket becomes Pending (SLA paused) until the reason is cleared.' : 'The ticket will be closed with this decision' + (isPSP(t) && !(t.eobs || []).length ? ' – PSP tickets need the EOB approval first.' : '.')),
+    needs ? el('label', {}, d === 'Pending' ? 'Pending reason' : d === 'Rejected' ? 'Rejection reason' : 'Reason for the rejected items', reason) : null,
+    el('label', {}, 'Note', note)],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', style: 'background:' + D.c + ';border-color:' + D.c, onclick: async e => {
+      if (d === 'Rejected' && !note.value.trim()) { note.focus(); return toast('Write the justification – e.g. which item is not covered and why'); }
+      e.target.disabled = true;
+      try {
+        const ch = { decision: d, _decisionReason: needs ? reason.value : '', _decisionNote: note.value.trim(), _decisionAt: new Date().toISOString(), _decisionBy: me() };
+        if (t.status !== D.status) ch.status = D.status;
+        await emit('update', t.no, ch); closeDialog(); toast(t.no + ': ' + d + (needs && reason.value ? ' – ' + reason.value : ''));
+      } catch (x) { e.target.disabled = false; }
+    } }, 'Save – ' + d)]);
+}
+function decisionPanel(t) {
+  const cur = t.decision && DECISIONS[t.decision] ? t.decision : ''; const sug = suggestedDecision(t);
+  const btn = d => { const D = DECISIONS[d], on = cur === d; return el('button', { class: 'btn sm', type: 'button', title: d + ' – ' + D.ar, 'aria-pressed': on ? 'true' : 'false', style: 'flex:1;justify-content:center;font-weight:600;' + (on ? 'background:' + D.c + ';border-color:' + D.c + ';color:#fff' : 'color:' + D.c), onclick: () => decisionDialog(t, d, d === cur ? t.decisionReason : (sug && sug.d === d ? sug.reason : '')) }, D.icon + ' ' + (d === 'Partially approved' ? 'Partial' : d)); };
+  return [el('h3', {}, 'Decision'), el('div', { class: 'slabox', style: 'display:grid;gap:8px' },
+    el('div', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' }, Object.keys(DECISIONS).map(btn)),
+    cur ? el('div', { class: 'small', style: 'border-left:3px solid ' + DECISIONS[cur].c + ';padding-left:8px' },
+      el('b', { style: 'color:' + DECISIONS[cur].c }, DECISIONS[cur].icon + ' ' + cur), t.decisionReason ? ' – ' + t.decisionReason : '',
+      t.decisionNote ? el('div', { dir: 'auto', style: 'margin-top:2px' }, t.decisionNote) : null,
+      el('div', { class: 'muted' }, (t.decisionBy || '') + (t.decisionAt ? ' · ' + fmtDate(t.decisionAt) : '')))
+      : sug ? el('div', { class: 'small muted' }, 'Suggested from the validation: ', el('a', { href: '#', onclick: e => { e.preventDefault(); decisionDialog(t, sug.d, sug.reason); } }, DECISIONS[sug.d].icon + ' ' + sug.d + (sug.reason ? ' – ' + sug.reason : '')))
+      : el('div', { class: 'small muted' }, 'Approved and Rejected close the ticket; Pending keeps it open with the reason.'))];
 }
 /* ---------------- Patient info (i-CARE / GlobeMed files) + WhatsApp / SMS to the member ---------------- */
 const phoneLocal = s => { let d = normDigits(String(s || '')).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
@@ -2845,6 +3126,17 @@ async function loadHistory(member) {
   if (error) throw new Error(error.message);
   HIST.set(member, data || []); return data || [];
 }
+// Team memory: medicines the agents decided are NOT COVERED (or acute) in saved validations – suggested again with their reason.
+let MEDMEM = null, MEDMEM_N = -1;
+function medMemory(name) {
+  if (!name || typeof STORE === 'undefined') return null;
+  if (MEDMEM_N !== STORE.events.size) {
+    MEDMEM = new Map(); MEDMEM_N = STORE.events.size;
+    const evs = [...STORE.events.values()].filter(e => e.type === 'validation').sort((a, b) => a.ts < b.ts ? -1 : 1);
+    for (const e of evs) for (const x of (e.d.result || [])) { const k = medKey(x.name).slice(0, 2).join(' '); if (!k) continue; if (x.final === 'NOT_COVERED' || (x.final === 'ACUTE' && x.overridden)) MEDMEM.set(k, { final: x.final, reason: x.reason || '', by: e.by, no: e.t, at: e.ts }); else if (x.final === 'APPROVED') MEDMEM.delete(k); }
+  }
+  const k = medKey(name).slice(0, 2).join(' '); return (k && MEDMEM.get(k)) || null;
+}
 const medKey = s => normDigits(String(s || '')).toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !/^\d+$/.test(w) && !/^(TAB|TABS|CAP|CAPS|MG|SACHETS?|AMP|AMPOULE|SYRUP|PEN|VIAL|INJ|SPRAY|CREAM|DROPS?|PLUS|FORTE|THE)$/.test(w));
 function histMatch(name, rows) {
   const k = medKey(name); if (!k.length || !rows || !rows.length) return null;
@@ -3023,6 +3315,8 @@ function validationDialog(no) {
   const save = async (toReply) => {
     const R = computeValidation(V); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
+    const noWhy = R.filter(x => (x.final === 'NOT_COVERED' || x.final === 'NOT_JUSTIFIED') && !String(x.reason || '').trim());
+    if (noWhy.length) return toast('Write the reason to the provider for item ' + noWhy.map(x => x.n).join(', ') + ' – e.g. "Zinctron: zinc supplement, not covered by the policy"');
     const notOk = V.items.map((x, i) => (x.name || x.cls) && !x.confirmed ? i + 1 : 0).filter(Boolean);
     if (notOk.length && !confirm(`Item ${notOk.join(', ')} not confirmed yet (name & dose checked against the form).\n\nSave anyway?`)) return;
     await emit('validation', no, { ...V, member: histMember, result: R.map(x => ({ n: x.n, name: x.name, cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
@@ -3190,7 +3484,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16o';
+const APP_VERSION = '2026-11-17a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

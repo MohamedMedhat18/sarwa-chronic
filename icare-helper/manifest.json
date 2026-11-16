@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Sarwa Chronic – i-CARE helper",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArVSWYE87bh0IlJONXLZolBRt0OdO9E5UHNZ01RqXAfa4RqwStnNz2ToVKFmLnmua2xxLC1YeoGebAA2RuUkv3n3fiqnfomuX6cm71FY/40Da6bs5k/TaStvW68u4a85YZlJLZdL7/IRgBKgirBzZvkfmAnL+8Ggj/mqydRSPdOSYPIp+ZxGAqUEk9sXLiaAHQ6rq5go5EgSA3z7bw3ko6n/8ZXvspVw8J2Rp5HUzUReFTwZXFKmz4fShZx4gBrnrWYQRLZph9AvnAL2iJ8Vo1g8RtbCSaM89Giv2ApM8dbVsmlQ6Q/kpiqK1TKM4nYTzMBZatDuJyNObawXpxPPX/QIDAQAB",
   "description": "Open i-CARE from a Sarwa Chronic ticket goes straight to that member's Administrative Information and saves the details to the ticket.",
   "content_scripts": [
