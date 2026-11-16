@@ -638,36 +638,31 @@ const DEFAULTS = {
     EN: '<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>We have received your request regarding: {{ticket.subject}}<br>It has been registered under ticket No. <b>{{ticket.no}}</b>.<br>The request will be reviewed and we will reply as soon as possible.</p>'
   },
   rules: [],
-  // email-safe signature (tables + inline styles: Outlook, Gmail, mobile); images are served by the app's site
+  // Client-facing sign-off: the Medical Approval Team (no personal names). Email-safe (tables + inline styles) for Outlook, Gmail and
+  // mobile; one font, Sarwa green + gray, one thin gold rule; the logo is served by the app's site.
   signature: {
-    AR: '<div dir="rtl" style="font-family:Arial,Tahoma,sans-serif;color:#1f2a2a">'
-      + '<p dir="rtl" style="margin:0 0 4px">وتفضلوا بقبول فائق الاحترام والتقدير،</p>'
-      + '<table dir="rtl" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-top:10px"><tr>'
-      + '<td style="padding:0 0 0 14px;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="62" height="80" alt="Sarwa Life" style="display:block;border:0"></td>'
-      + '<td style="border-right:3px solid #c8a05a;padding:2px 14px 2px 0;vertical-align:middle;line-height:1.5">'
-      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">{{agent.name}}</div>'
-      + '<div style="font-size:12px;color:#5b6b6b">إدارة الموافقات الطبية – Medical Approvals</div>'
-      + '<div style="font-size:12px;font-weight:bold;color:#1f2a2a">شركة ثروة لايف للتأمين · Sarwa Life Insurance S.A.E</div>'
-      + '<div style="font-size:11px;color:#5b6b6b;padding-top:4px">📍 15 شارع قصر النيل، وسط البلد، القاهرة &nbsp;|&nbsp; ☎ <b style="color:#1d5c52">15185</b></div>'
-      + '<div style="font-size:11px;color:#5b6b6b">🌐 <a href="https://www.sarwa.insurance/sarwa-life" style="color:#1d5c52;text-decoration:none">www.sarwa.insurance/sarwa-life</a> &nbsp;|&nbsp; ✉ <a href="mailto:Chronic@sarwa.life" style="color:#1d5c52;text-decoration:none">Chronic@sarwa.life</a></div>'
-      + '</td>'
-      + '<td style="padding:0 14px 0 0;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/award-2022.png" width="54" height="59" alt="Best Digital Transformation FinTech Company 2022" style="display:block;border:0"></td>'
-      + '</tr></table>'
-      + '<p dir="rtl" style="margin:10px 0 0;font-size:10px;color:#8a9696">للمتابعة يرجى ذكر رقم الطلب <b>{{ticket.no}}</b> في أي مراسلات لاحقة.</p></div>',
-    EN: '<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2a2a">'
-      + '<p style="margin:0 0 4px">Kind regards,</p>'
-      + '<table cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin-top:10px"><tr>'
-      + '<td style="padding:0 14px 0 0;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="62" height="80" alt="Sarwa Life" style="display:block;border:0"></td>'
-      + '<td style="border-left:3px solid #c8a05a;padding:2px 0 2px 14px;vertical-align:middle;line-height:1.5">'
-      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">{{agent.name}}</div>'
-      + '<div style="font-size:12px;color:#5b6b6b">Medical Approvals Department</div>'
-      + '<div style="font-size:12px;font-weight:bold;color:#1f2a2a">Sarwa Life Insurance S.A.E</div>'
-      + '<div style="font-size:11px;color:#5b6b6b;padding-top:4px">📍 15 Kasr El Nile Street, Downtown, Cairo, Egypt &nbsp;|&nbsp; ☎ <b style="color:#1d5c52">15185</b></div>'
-      + '<div style="font-size:11px;color:#5b6b6b">🌐 <a href="https://www.sarwa.insurance/sarwa-life" style="color:#1d5c52;text-decoration:none">www.sarwa.insurance/sarwa-life</a> &nbsp;|&nbsp; ✉ <a href="mailto:Chronic@sarwa.life" style="color:#1d5c52;text-decoration:none">Chronic@sarwa.life</a></div>'
-      + '</td>'
-      + '<td style="padding:0 0 0 14px;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/award-2022.png" width="54" height="59" alt="Best Digital Transformation FinTech Company 2022" style="display:block;border:0"></td>'
-      + '</tr></table>'
-      + '<p style="margin:10px 0 0;font-size:10px;color:#8a9696">For follow-up, please quote request No. <b>{{ticket.no}}</b> in any further correspondence.</p></div>'
+    AR: '<div dir="rtl" style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.55;color:#2b3333">'
+      + '<p dir="rtl" style="margin:0 0 16px">وتفضلوا بقبول فائق الاحترام والتقدير،</p>'
+      + '<table dir="rtl" role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse"><tr>'
+      + '<td style="padding:0 0 0 14px;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="46" height="59" alt="Sarwa Life" style="display:block;border:0;outline:none"></td>'
+      + '<td style="border-right:2px solid #c8a05a;padding:1px 14px 1px 0;vertical-align:middle">'
+      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">فريق الموافقات الطبية</div>'
+      + '<div style="font-size:12.5px;color:#2b3333">شركة ثروة لايف للتأمين</div>'
+      + '<div style="font-size:11.5px;color:#76807f;padding-top:6px">الخط الساخن <span style="color:#1d5c52;font-weight:bold">15185</span>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="mailto:Chronic@sarwa.life" style="color:#76807f;text-decoration:none">Chronic@sarwa.life</a>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="https://www.sarwa.insurance/sarwa-life" style="color:#76807f;text-decoration:none">sarwa.insurance/sarwa-life</a></div>'
+      + '<div style="font-size:11.5px;color:#76807f">15 شارع قصر النيل، وسط البلد، القاهرة</div>'
+      + '</td></tr></table>'
+      + '<p dir="rtl" style="margin:16px 0 0;font-size:11px;color:#9aa3a3">رقم الطلب للمتابعة: {{ticket.no}}</p></div>',
+    EN: '<div style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:1.55;color:#2b3333">'
+      + '<p style="margin:0 0 16px">Kind regards,</p>'
+      + '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse"><tr>'
+      + '<td style="padding:0 14px 0 0;vertical-align:middle"><img src="https://mohamedmedhat18.github.io/sarwa-chronic/brand/sarwa-life-logo.png" width="46" height="59" alt="Sarwa Life" style="display:block;border:0;outline:none"></td>'
+      + '<td style="border-left:2px solid #c8a05a;padding:1px 0 1px 14px;vertical-align:middle">'
+      + '<div style="font-size:14px;font-weight:bold;color:#1d5c52">Medical Approval Team</div>'
+      + '<div style="font-size:12.5px;color:#2b3333">Sarwa Life Insurance S.A.E</div>'
+      + '<div style="font-size:11.5px;color:#76807f;padding-top:6px">Hotline <span style="color:#1d5c52;font-weight:bold">15185</span>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="mailto:Chronic@sarwa.life" style="color:#76807f;text-decoration:none">Chronic@sarwa.life</a>&nbsp;&nbsp;|&nbsp;&nbsp;<a href="https://www.sarwa.insurance/sarwa-life" style="color:#76807f;text-decoration:none">sarwa.insurance/sarwa-life</a></div>'
+      + '<div style="font-size:11.5px;color:#76807f">15 Kasr El Nile Street, Downtown, Cairo, Egypt</div>'
+      + '</td></tr></table>'
+      + '<p style="margin:16px 0 0;font-size:11px;color:#9aa3a3">Request reference for follow-up: {{ticket.no}}</p></div>'
   },
   canned: [
     { title: 'Missing documents (AR)', html: '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">بالإشارة إلى طلب الموافقة على الأدوية الشهرية المقدم للعضو / {{member.name}} – رقم الكارت {{member.no}} (رقم التذكرة {{ticket.no}})، نحيط سيادتكم علماً بأنه بعد المراجعة الطبية تم اتخاذ القرار التالي:</p><p dir="rtl"><b>المتطلبات الناقصة</b><br>برجاء التكرم بإرسال ما يلي لاستكمال المراجعة:</p><ul dir="rtl"><li>…</li></ul>' },
@@ -2983,10 +2978,30 @@ function medField(it, onPick) {
   return wrap;
 }
 /* ---------------- Drug eye: the handwritten line of each medicine, cut from the original form ---------------- */
-const IMG_CACHE = new Map();
+const IMG_CACHE = new Map(), PDF_CACHE = new Map();
+// a PDF attachment, opened once with pdf.js
+function pdfDoc(path) {
+  if (PDF_CACHE.has(path)) return PDF_CACHE.get(path);
+  const p = (async () => {
+    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+    const pdfjs = window.pdfjsLib; pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const buf = await (await fetch(await fileUrl(path))).arrayBuffer();
+    return pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
+  })();
+  PDF_CACHE.set(path, p); p.catch(() => PDF_CACHE.delete(path)); return p;
+}
+// an image to draw: a picture attachment, or one page of a PDF ("<path>#p=<page>", rendered sharp enough to read handwriting)
 function loadImg(path) {
   if (IMG_CACHE.has(path)) return IMG_CACHE.get(path);
-  const p = fileUrl(path).then(u => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image')); im.src = u; }));
+  const pg = String(path).match(/^(.*)#p=(\d+)$/);
+  const p = pg ? (async () => {
+    const doc = await pdfDoc(pg[1]); const page = await doc.getPage(Math.min(+pg[2], doc.numPages));
+    const base = page.getViewport({ scale: 1 }); const vp = page.getViewport({ scale: Math.min(3, Math.max(1.5, 2200 / base.width)) });
+    const cv = document.createElement('canvas'); cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+    const ctx = cv.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, cv.width, cv.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    return await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('pdf page')); im.src = cv.toDataURL('image/jpeg', 0.9); });
+  })() : fileUrl(path).then(u => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error('image')); im.src = u; }));
   IMG_CACHE.set(path, p); p.catch(() => IMG_CACHE.delete(path)); return p;
 }
 // Snap a rough box to the table row it sits in. Phone photos of forms have faint, slightly tilted ruled
@@ -3080,12 +3095,18 @@ function cropCanvas(src, maxW = 680) {
 function eyeDialog(src, title, onBox, files) {
   const d = $('#dlg2'); const stage = el('div', { class: 'stage' });
   const imgs = (files || []).filter(f => /^image\//.test(f.mime || '')); const pdfs = (files || []).filter(f => f.mime === 'application/pdf');
-  if (src && src.path && !imgs.some(f => f.path === src.path)) imgs.unshift({ path: src.path, name: 'Form' });
+  if (src && src.path && !imgs.some(f => f.path === src.path)) imgs.unshift({ path: src.path, name: /#p=\d+$/.test(src.path) ? 'PDF page ' + src.path.split('#p=')[1] : 'Form' });
   let cur = src && src.path ? src.path : (imgs[0] || {}).path; let zoom = 1;
+  // PDFs: every page (up to 8 per file) becomes a page you can view and mark, like a photo
+  if (pdfs.length) (async () => {
+    for (const f of pdfs) { try { const doc = await pdfDoc(f.path); for (let i = 1; i <= Math.min(doc.numPages, 8); i++) { const key = f.path + '#p=' + i; if (!imgs.some(x => x.path === key)) imgs.push({ path: key, name: String(f.name || 'PDF').replace(/\.pdf$/i, '') + ' · p' + i, pdf: true }); } } catch (e) { toast('Could not open ' + (f.name || 'the PDF') + ': ' + e.message); } }
+    if (!cur) { cur = (imgs[0] || {}).path; if (cur) show(); }
+    drawTabs();
+  })();
   const tabs = el('div', { class: 'row', style: 'gap:6px' });
   const hint = el('div', { class: 'small muted' });
   const drawTabs = () => tabs.replaceChildren(
-    ...imgs.map((f, i) => el('button', { class: 'btn sm' + (f.path === cur ? ' primary' : ''), type: 'button', title: f.name, onclick: () => { cur = f.path; drawTabs(); show(); } }, '🖼 ' + (i + 1) + (f.name ? ' · ' + String(f.name).slice(0, 22) : ''))),
+    ...imgs.map((f, i) => el('button', { class: 'btn sm' + (f.path === cur ? ' primary' : ''), type: 'button', title: f.name, onclick: () => { cur = f.path; drawTabs(); show(); } }, (f.pdf ? '📄 ' : '🖼 ') + (f.pdf ? '' : (i + 1) + ' · ') + String(f.name || '').slice(0, 24))),
     ...pdfs.map(f => el('button', { class: 'btn sm', type: 'button', title: 'Opens in a new tab', onclick: async () => { try { window.open(await fileUrl(f.path), '_blank'); } catch (e) { toast(e.message); } } }, '📄 ' + String(f.name || 'PDF').slice(0, 24) + ' ↗')),
     el('span', { style: 'flex:1' }),
     el('button', { class: 'btn sm', type: 'button', title: 'Zoom out', onclick: () => { zoom = Math.max(0.5, zoom / 1.25); show(); } }, '−'),
@@ -3095,8 +3116,9 @@ function eyeDialog(src, title, onBox, files) {
     el('div', { class: 'df' }, el('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Close')));
   if (!d.open) d.showModal();
   drawTabs();
-  if (!cur) { stage.replaceChildren(el('div', { class: 'empty', style: 'color:#ddd' }, pdfs.length ? 'This ticket only has PDF files – open them with the buttons above.' : 'No pictures on this ticket.')); return; }
+  if (!cur) { stage.replaceChildren(el('div', { class: 'empty', style: 'color:#ddd' }, pdfs.length ? 'Opening the PDF…' : 'No pictures on this ticket.')); if (!pdfs.length) return; }
   function show() {
+    if (!cur) return;
     const cv = el('canvas'); stage.replaceChildren(cv);
     const onThis = src && src.path === cur && src.box;
     hint.textContent = onThis ? 'Yellow = where this medicine is written. Wrong place? Drag a new box around the right line.' : 'Find the medicine and drag a box around its line – it then shows under the item (drug eye) and teaches the AI.';
@@ -3484,7 +3506,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-17a';
+const APP_VERSION = '2026-11-17b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
