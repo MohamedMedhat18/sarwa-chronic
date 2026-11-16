@@ -2412,15 +2412,19 @@ function icareDialog(no, prefill) {
   ta.focus();
 }
 // Open i-CARE for this ticket's member: the ⭐ bookmark (clicked on the i-CARE page) then checks this member and saves the result here.
+// The "Sarwa i-CARE helper" (a small Chrome extension, folder icare-helper/) runs i-CARE's own Patient Information search for the
+// member named after #sarwa= and opens that member's Administrative Information; the ⭐ bookmark does the same on a click.
+const icareHelper = () => document.documentElement.dataset.sarwaIcareHelper || '';
 function openICare(t) {
   const id = memberNo(t);
   if (!/^\d{6,10}$/.test(id)) { window.open(ICARE_URL, 'icare'); return toast('No member card no. on this ticket yet – search the member in i-CARE Patient Information.'); }
   ICARE_JOB = { ids: [id], nos: { [id]: t.no }, at: Date.now() };
   try { navigator.clipboard.writeText(id); } catch { }
-  window.open(ICARE_URL + '#sarwa=' + id, 'icare');   // the part after # never reaches i-CARE's server; the bookmark reads it
-  toast('i-CARE opened for ' + id + '. On the i-CARE page click ⭐ Sarwa i-CARE – the member’s details and mobile are saved to ' + t.no + '.');
+  window.open(ICARE_URL + '#sarwa=' + id, 'icare');   // the part after # never reaches i-CARE's server; the helper / bookmark reads it
+  toast(icareHelper() ? 'Opening ' + id + ' in i-CARE – its Administrative Information opens and is saved to ' + t.no + '.'
+    : 'i-CARE opened for ' + id + '. Install the Sarwa i-CARE helper (i-CARE panel › How it works) so this opens the member directly – or click ⭐ Sarwa i-CARE there.');
 }
-// Check every open ticket whose member is not verified yet, in one click of the bookmark.
+// Check every open ticket whose member is not verified yet, in one go.
 function verifyAllICare() {
   const list = [...DB.tickets.values()].filter(t => !['Closed', 'Resolved'].includes(t.status) && !t.mergedInto && /^\d{6,10}$/.test(memberNo(t)) && !t.icare);
   const nos = {}; for (const t of list) { const id = memberNo(t); if (!nos[id]) nos[id] = t.no; }
@@ -2428,12 +2432,16 @@ function verifyAllICare() {
   if (!ids.length) return toast('Every open ticket with a member number is already checked in i-CARE.');
   ICARE_JOB = { ids, nos, at: Date.now() };
   window.open(ICARE_URL + '#sarwa=' + ids.join(','), 'icare');
-  toast('i-CARE opened for ' + ids.length + ' member(s). On the i-CARE page click ⭐ Sarwa i-CARE – each result is saved to its ticket.');
+  toast(icareHelper() ? 'Checking ' + ids.length + ' member(s) in i-CARE – each result is saved to its ticket.' : 'i-CARE opened for ' + ids.length + ' member(s). Click ⭐ Sarwa i-CARE there – each result is saved to its ticket.');
 }
 function icareSetupHint() {
-  return el('details', { class: 'small muted' }, el('summary', {}, 'How the automatic i-CARE check works'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
-    el('div', {}, 'Once: drag this button to the Chrome bookmarks bar (Ctrl+Shift+B shows the bar):'), el('div', {}, icareBookmarkLink()),
-    el('div', {}, 'Each time: press 🔎 Open i-CARE, then click ⭐ Sarwa i-CARE on the i-CARE page. It searches this member inside i-CARE with your own sign-in (exactly like Patient Information) and saves the Administrative Info and the member’s mobile here. Remaining limits: open them from the green box in i-CARE and paste them with 📋.')));
+  if (icareHelper()) return el('div', { class: 'small', style: 'color:#2f8a4f' }, '✓ i-CARE helper installed – Open i-CARE goes straight to the member’s Administrative Information and saves it here.');
+  return el('details', { class: 'small muted' }, el('summary', {}, 'Make Open i-CARE open the member directly (one-time setup, 1 minute)'), el('div', { style: 'display:grid;gap:6px;margin-top:6px' },
+    el('div', {}, el('b', {}, 'Install the Sarwa i-CARE helper in Chrome (once per PC):')),
+    el('div', {}, '1) ', el('a', { href: 'sarwa-icare-helper.zip', download: 'sarwa-icare-helper.zip' }, 'Download the helper'), ' and unzip it (right-click › Extract All) into a folder you keep, e.g. Documents.'),
+    el('div', {}, '2) Open chrome://extensions, turn on “Developer mode” (top right), press “Load unpacked” and choose the unzipped folder.'),
+    el('div', {}, '3) Reload this page. Open i-CARE then lands on the member’s Administrative Information and saves the details and mobile here – no clicks in i-CARE.'),
+    el('div', { style: 'margin-top:4px' }, 'No extensions allowed? Drag this button to the bookmarks bar and click it on the i-CARE page instead: '), el('div', {}, icareBookmarkLink())));
 }
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -3129,7 +3137,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-16j';
+const APP_VERSION = '2026-11-16k';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

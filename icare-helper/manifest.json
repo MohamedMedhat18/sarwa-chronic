@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Sarwa Chronic – i-CARE helper",
+  "version": "1.0.0",
+  "description": "Open i-CARE from a Sarwa Chronic ticket goes straight to that member's Administrative Information and saves the details to the ticket.",
+  "content_scripts": [
+    {
+      "matches": ["https://i-care.globemedegypt.com/*", "https://i-care.globemedegypt.com:8034/*"],
+      "js": ["icare.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://mohamedmedhat18.github.io/sarwa-chronic/*", "http://localhost/*", "http://localhost:8765/*"],
+      "js": ["app.js"],
+      "run_at": "document_start"
+    }
+  ]
+}
