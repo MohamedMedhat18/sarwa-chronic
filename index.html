@@ -515,6 +515,9 @@ function splitMultipart(body, boundary) {
 const MIME_EXT = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'text/plain': 'txt', 'text/html': 'html', 'text/calendar': 'ics', 'message/rfc822': 'eml' };
 const EXT_MIME = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', txt: 'text/plain', eml: 'message/rfc822', msg: 'application/vnd.ms-outlook' };
 const mimeFromName = n => EXT_MIME[extOf(n)] || 'application/octet-stream';
+// the real type of an attachment: some mail programs label pictures 'application/octet-stream' (e.g. CHR-000129's .jpeg files) –
+// then the file name decides, so the AI reader, validation and Show item still treat them as pictures / PDFs
+const attMime = a => { const m = String((a && a.mime) || '').toLowerCase(); return m && !/^application\/(octet-stream|x-?unknown|unknown|download|binary|force-download)$/.test(m) ? m : mimeFromName((a && (a.name || a.path)) || ''); };
 function walkPart(bin, ctx, depth) {
   const { headers, body } = splitMsg(bin); const ct = parseParams(headers['content-type'] || 'text/plain'); const type = ct.value || 'text/plain';
   if (type.startsWith('multipart/')) { const b = ct.params.boundary; if (b) for (const p of splitMultipart(body, b)) walkPart(p, ctx, depth); return; }
@@ -1038,7 +1041,7 @@ async function saveAtts(no, list) {
   for (const a of list) {
     const path = `${HD}/files/${no}/${rand(5)}_${safeName(a.name)}`;
     await FS.write(path, new Blob([a.bytes], { type: a.mime || 'application/octet-stream' }));
-    out.push({ name: a.name, mime: a.mime, size: a.bytes.length, path, cls: a.cls, why: a.why, inline: !!a.inline, via: a.via || '' });
+    out.push({ name: a.name, mime: attMime(a), size: a.bytes.length, path, cls: a.cls, why: a.why, inline: !!a.inline, via: a.via || '' });
   }
   return out;
 }
@@ -1445,7 +1448,7 @@ const blobUrls = new Map();
 async function fileUrl(path) { if (blobUrls.has(path)) return blobUrls.get(path); const f = await FS.file(path); const u = URL.createObjectURL(f); blobUrls.set(path, u); return u; }
 function attChip(a) {
   const ext = (extOf(a.name) || 'file').toUpperCase(); const th = el('div', { class: 'th', title: 'Open' }, ext);
-  const isImg = a.mime && a.mime.startsWith('image/') && a.cls !== 'unreadable';
+  const isImg = attMime(a).startsWith('image/') && a.cls !== 'unreadable';
   const open = async () => { try { window.open(await fileUrl(a.path), '_blank', 'noopener'); } catch (e) { toast('File not available yet (OneDrive still syncing?)'); } };
   th.onclick = open;
   if (isImg) fileUrl(a.path).then(u => th.replaceChildren(el('img', { src: u, alt: a.name, loading: 'lazy' }))).catch(() => { });
@@ -3344,14 +3347,20 @@ function validationDialog(no) {
     }
   }, 3000);
   const requested = () => { const tk = DB.tickets.get(no) || {}; return tk.aiRequested && (!RD || tk.aiRequested > RD.at); };
+  // readable attachments (images / PDFs, also those mislabelled as octet-stream) – so the screen never stays silent when they exist
+  const nReadable = () => { const s = new Set(); for (const m of ((DB.tickets.get(no) || t).msgs || [])) for (const a of (m.atts || [])) if (a.path && a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(attMime(a))) s.add(a.path); return s.size; };
+  const noItems = () => !!RD && (!!RD.error || !RD.data || !(RD.data.items || []).length);
+  const readerWarn = () => !requested() && nReadable() > 0 && noItems();
   const readerNote = () => requested() ? 'Sent to Claude – the reading appears here by itself within about 10 minutes (keep working meanwhile).'
-    : !RD ? 'Not read yet – Claude reads new prescriptions automatically every 10 minutes.'
+    : !RD ? (nReadable() ? 'Attachment found (' + nReadable() + ' file(s)) – waiting for Claude to read it (automatic, every 10 minutes). You can enter the items manually meanwhile.' : 'No readable attachment (picture or PDF) on this ticket – enter the items manually.')
+    : noItems() && nReadable() ? '⚠ Attachment found but items could not be extracted' + (RD.error ? ' – Claude (' + rel(RD.at) + '): ' + RD.error : ' (Claude read it ' + rel(RD.at) + ', 0 items)') + '. Enter the items manually below, or press “Read again”.'
     : RD.error ? 'Claude AI reader (' + rel(RD.at) + '): ' + RD.error
     : (prefilled ? 'Pre-filled by Claude AI reader ' : 'Read by Claude AI reader ') + rel(RD.at) + ' – ' + ((RD.data.items || []).length) + ' item(s), ' + ((RD.data.labs || []).length) + ' lab(s)' + (RD.data.member ? ' · card on form: ' + RD.data.member : '') + (RD.notes ? ' · ' + RD.notes : '') + '. Check every line before sending.';
   function aiBar() {
     aiStatusEl = el('span', { class: 'small', style: 'overflow-wrap:anywhere;flex:1;text-align:right', dir: 'auto' }, readerNote());
     const useBtn = RD && RD.data && !prefilled ? el('button', { class: 'btn sm', type: 'button', onclick: () => { if (!confirm('Replace the table with the AI reading?')) return; V.labs = []; V.items = [{ name: '', cls: '' }]; const n = fillFromAi(RD.data); prefilled = true; draw(); aiStatus('AI reading applied: ' + n + ' item(s). Check every line.'); } }, 'Use AI reading') : null;
-    return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;background:var(--accent-soft);border-radius:8px;padding:6px 10px' },
+    if (readerWarn()) aiStatusEl.style.cssText += ';color:var(--danger,#b42318);font-weight:600';
+    return el('div', { class: 'row', style: 'justify-content:space-between;gap:10px;border-radius:8px;padding:6px 10px;background:' + (readerWarn() ? 'var(--warn-soft,#fff4e5);border:1px solid #f0b46a' : 'var(--accent-soft)') },
       el('div', { class: 'row' }, el('span', { class: 'pill', style: 'background:var(--accent);color:#fff' }, '✨ Claude AI'), useBtn,
         el('button', { class: 'btn sm', type: 'button', onclick: readNow, title: 'Ask Claude to read this ticket now' }, RD ? 'Read again' : 'Read now'),
         el('span', { class: 'small muted' }, 'AI fills the table, the assessor decides.')),
@@ -3368,7 +3377,7 @@ function validationDialog(no) {
   }
   async function runAI(ev) {
     const tk = DB.tickets.get(no); const atts = [];
-    for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) atts.push({ path: a.path, mime: a.mime });
+    for (const m of tk.msgs) for (const a of (m.atts || [])) if (a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(attMime(a))) atts.push({ path: a.path, mime: attMime(a) });
     if (!atts.length) { toast('No readable images or PDFs on this ticket'); return; }
     const btn = ev && ev.target; if (btn) btn.disabled = true;
     aiStatus('Reading ' + Math.min(atts.length, 12) + ' file(s) with AI… (up to a minute)', true);
@@ -3389,7 +3398,7 @@ function validationDialog(no) {
   }
   if (histMember) getHist(histMember);
   const ticketFiles = []; const seenF = new Set();
-  for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seenF.has(a.path) && a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(a.mime || '')) { seenF.add(a.path); ticketFiles.push({ path: a.path, name: a.name, mime: a.mime }); }
+  for (const m of t.msgs) for (const a of (m.atts || [])) if (a.path && !seenF.has(a.path) && a.cls === 'readable' && /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(attMime(a))) { seenF.add(a.path); ticketFiles.push({ path: a.path, name: a.name, mime: attMime(a) }); }
   function eyeRow(it, i) {
     // never show a picture of another ticket: take the repaired one from the latest AI reading (same item), else none
     if (it.src && !srcOwned(t, it.src)) { const a = ((t.aiRead && t.aiRead.data && t.aiRead.data.items) || []).find(x => x.name === (it.aiOrig ? it.aiOrig.name : it.name) && x.src && srcOwned(t, x.src)); it.src = a ? { ...a.src } : null; }
@@ -3643,7 +3652,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-17d';
+const APP_VERSION = '2026-11-17e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
