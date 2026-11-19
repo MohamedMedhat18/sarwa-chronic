@@ -2391,6 +2391,12 @@ function suggest(it, V) {
   if (it.unreadable) return { d: 'UNREADABLE', why: 'Item could not be read – ask provider' };
   const mem = medMemory(it.name);   // the team already decided this medicine is not covered / acute: follow it
   if (mem) return { d: mem.final, why: (mem.final === 'NOT_COVERED' ? 'Not covered' : 'Acute') + ' – team decision ' + mem.no + (mem.reason ? ': ' + mem.reason : ''), memReason: mem.reason };
+  // confirmed team rules (review 19 Nov 2026) that differ from the general rules below
+  if (it.name) {
+    const n = String(it.name).toUpperCase(), ctx = ruleContext({ subject: '' }, { diagnosis: V.diagnosis, labs: V.labs, items: V.items });
+    const R = TEAM_RULES.find(r => ['R10', 'R17', 'R8', 'R9', 'R14', 'R7', 'R11', 'R5c'].includes(r.id) && (() => { try { return r.test(n, ctx, it); } catch { return false; } })());
+    if (R) return { d: R.final, why: R.wording + ' – team rule ' + R.id + ' (e.g. ' + R.past.slice(0, 2).join(', ') + ')', memReason: R.final === 'NOT_COVERED' || R.final === 'NOT_COVERED_DX' ? R.wording : undefined };
+  }
   if (it.cls === 'acute') return { d: 'ACUTE', why: 'Acute medicine – separate acute approval' };
   if (it.cls === 'antihypertensive') return { d: 'APPROVED', why: 'Hypertension on doctor diagnosis (Sarwa rule)' };
   if (it.cls === 'neuro') return diabetesShown(V) ? { d: 'APPROVED', why: 'Diabetes shown – neuropathy support (Sarwa rule)' } : { d: 'MORE_INFO', why: 'Diabetes not shown', req: 'hba1c' };
@@ -2882,13 +2888,105 @@ const DECISIONS = {
 };
 const PENDING_REASONS = ['Missing documents (prescription / lab / scan)', 'Waiting for the provider / branch', 'Waiting for the member', 'Waiting for GlobeMed / i-CARE', 'Under medical review', 'Waiting for the EOB approval (PSP)', 'Other'];
 const REJECT_REASONS = ['Not covered – item excluded by the policy', 'Not medically justified', 'Policy inactive / expired', 'Annual or chronic limit exhausted', 'Duplicate request', 'Other'];
+// ticket decision from the item results: from the saved validation, or – before validation – a preliminary one from
+// the AI reading with the confirmed team rules applied. Acute items do not reject anything (dispensed separately, R21).
 function suggestedDecision(t) {
-  const r = (t.validation && t.validation.result) || []; if (!r.length) return null;
-  const ok = r.filter(x => x.final === 'APPROVED').length, info = r.filter(x => x.final === 'MORE_INFO' || x.final === 'UNREADABLE').length, nc = r.filter(x => x.final === 'NOT_COVERED').length;
-  if (info) return { d: 'Pending', reason: PENDING_REASONS[0] };
-  if (ok === r.length) return { d: 'Approved' };
-  if (ok) return { d: 'Partially approved', reason: nc ? REJECT_REASONS[0] : '' };
-  return { d: 'Rejected', reason: nc ? REJECT_REASONS[0] : REJECT_REASONS[1] };
+  const val = (t.validation && t.validation.result) || [];
+  let finals, prelim = false;
+  if (val.length) finals = val.map(x => x.final);
+  else {
+    const chk = typeof teamRuleCheck === 'function' ? teamRuleCheck(t) : null; if (!chk || !chk.lines.length) return null;
+    finals = chk.lines.map(l => l.expect || l.saved || 'MORE_INFO'); prelim = true;
+  }
+  const chronic = finals.filter(f => f !== 'ACUTE');
+  const ok = chronic.filter(f => f === 'APPROVED').length, info = chronic.filter(f => f === 'MORE_INFO' || f === 'UNREADABLE').length, nc = chronic.filter(f => f === 'NOT_COVERED' || f === 'NOT_COVERED_DX').length;
+  const acute = finals.length - chronic.length;
+  const base = info ? { d: 'Pending', reason: PENDING_REASONS[0] }
+    : !chronic.length ? null   // only acute items: the team's ticket decision for this case is not settled (not suggested)
+    : ok === chronic.length ? { d: 'Approved' }
+    : ok ? { d: 'Partially approved', reason: nc ? REJECT_REASONS[0] : REJECT_REASONS[1] }
+    : { d: 'Rejected', reason: nc ? REJECT_REASONS[0] : REJECT_REASONS[1] };
+  return base ? { ...base, prelim, acute } : null;
+}
+/* ---- Team rules learned from the history (19 Nov 2026 review – CONFIRMED rules only; "needs confirmation" ones are not applied).
+   Each rule: which items it covers, the outcome the team gives, the wording, and the past tickets behind it. ---- */
+const RX = {
+  ibs: /\b(COLOVERIN|COLOVATIL|SPASMO|SPASULANCE|SPASCOLON|NEO ?CARBON|ALVERIN\w*|DUSPATALIN|MEBEVERINE|COLONA|GAST-?REG|TRIMEBUTINE)/,
+  acute: /\b(ARCOXIA|CELEBREX|MOVXIR|BRUFEN|CATAFLAM|VOLTAREN|MEDEXAFLAM|SIRDALUD|FAST FREEZE|FROST|FREEZE|SULFAX|FLUIMUCIL|ACETYLCYSTEINE|TELFAST|AUGMENTIN|E-?MOX|ORNIDAZ\w*|PANADOL|FLUCA|ANTINAL|FLAGYL)/,
+  notCovered: /\b(ZINC\w*|SELEN\w*|MAGNESIUM|MELATONIN|CENTRUM|MULTI ?VIT\w*|ANTI-?OXIDANT|NEROTONEX|ALLZYME|SANSO ZYME|SHAMPOO|CERVATOLKA)/,
+  eyeLube: /\b(SYSTANE|BLINK|POLYFRESH|TWIT-?TEAR|TEARS|AQUALARM|HYALO\w*|REFRESH|TEARFRESH)/,
+  bp: /\b(TAREG|CO-TAREG|EXFORGE|ERASTAPEX|CONCOR|NEVILOB|NEBILET|SELOKEN\w*|COVERAM|COVERSYL|COSIMPREL|TRITACE|NORVASC|ALKAPRESS|BLOKATENS|ATACAND|CAPOTEN|EXAMIDE|LASILACTONE|INDERAL|BETACORE|CARDURA|ZESTORIL|NATRILIX|MICARDIS|DIOVAN|COZAAR)/,
+  vitB: /\b(MILGA|THIOTACID|B12|METHYLTECHNO|BSWIFT|DELTAVIT|NEUROVIT|NEUROBION|BETOLVEX|DEPOVIT|MULTI BIOPLEX)/,
+  statin: /\b(ZYROVAZET|ATOR|ATORVA\w*|CRESTOR|CRESTOLIP|LIPITOR|ATOREZA|CHOLEROSE|LIPANTHYL|ATOZET|LAROSUZET|ROSU\w*|JUSTCHOLE)/,
+  cardiac: /\b(PLAVIX|CLOPEX|ASPIRIN|ASPOCID|JUSPRIN|COMPLAVIN|VASTAREL|NITRO\w*|EZACARD)/,
+  ppi: /\b(CONTROLOC|PANTOLOC|NEXIUM|PANTOPRAZ\w*|OMEPRAZ\w*|ESOMEPRAZ\w*|LANSOPRAZ\w*|DOWNOPRAZOL|FULPRAZAL|EZOGAST|BEPRA)/,
+  protectNeeded: /\b(PLAVIX|CLOPEX|ASPIRIN|ASPOCID|JUSPRIN|COMPLAVIN|ELIQUIS|XARELTO|RIVARO\w*|MAREVAN|VAXATO|PRADAXA|SOLUPRED|PREDNI\w*|EPICOPRED|METHABIOGEN|MEDROL)/,
+  omega: /\b(OMEGA|ICOSALIP|DEGREASIAN|OMACOR)/,
+  iron: /\b(SIDERAL|FERRO\w*|HAEMOJET|IRON)/,
+  tadalafil: /\b(TADALAFIL|DIAMONRECTA|CIALIS)/
+};
+// names that are clearly another class (hand-typed classes are sometimes wrong, e.g. Galvus Met saved as a BP medicine)
+const OTHER_CLASS = new RegExp([RX.vitB, RX.statin, RX.ppi, RX.omega, RX.iron, RX.cardiac, /\b(GALVUS|GLUCO\w*|JANU\w*|FORXIGA|EMPA\w*|GLI\w*|DIAMICRON|AMARYL|FOLIC|MAREVAN|TRILESS)/].map(r => r.source).join('|'));
+const TEAM_RULES = [
+  { id: 'R10', final: 'NOT_COVERED', label: 'Supplements are not covered', wording: 'Not cover item – supplement', ar: 'غير مغطى تأمينياً', past: ['CHR-000101', 'CHR-000214', 'CHR-000225', 'CHR-000186'], test: (n) => RX.notCovered.test(n) },
+  { id: 'R17', final: 'NOT_COVERED_DX', label: 'Tadalafil for the prostate is not covered', wording: 'Not covered under the stated diagnosis', ar: 'غير مغطى تحت التشخيص الموضح', past: ['CHR-000257'], test: (n, c) => RX.tadalafil.test(n) && /prostat|BPH|LUTS|بروستا/i.test(c.dx) },
+  { id: 'R8', final: 'ACUTE', label: 'IBS / colon antispasmodics are not followed monthly', wording: 'Not followed on a monthly basis – dispensed as acute', ar: 'لا يتم المتابعة عليه بشكل شهري', past: ['CHR-000011', 'CHR-000038', 'CHR-000091', 'CHR-000115', 'CHR-000148', 'CHR-000202'], test: (n) => RX.ibs.test(n) },
+  { id: 'R9', final: 'ACUTE', label: 'Short course / NSAID / antibiotic / topical pain = acute', wording: 'Dispensed as acute with a separate approval from the pharmacy / branch', ar: 'يصرف كعلاج حاد بموافقة منفصلة من الصيدلية / الفرع', past: ['CHR-000021', 'CHR-000031', 'CHR-000082', 'CHR-000130', 'CHR-000141', 'CHR-000235'], test: (n) => RX.acute.test(n) },
+  { id: 'R14', final: 'APPROVED', label: 'Lubricant eye drops for dry eye', wording: 'Lubricant for dry eye – continuous', past: ['CHR-000182', 'CHR-000214', 'CHR-000221', 'CHR-000231', 'CHR-000256'], test: (n) => RX.eyeLube.test(n) },
+  { id: 'R2', final: 'APPROVED', label: 'Blood-pressure medicine on the HTN diagnosis alone', wording: 'BP medicine, HTN in the diagnosis', past: ['CHR-000013', 'CHR-000103', 'CHR-000114', 'CHR-000207', 'CHR-000248'], test: (n, c, x) => (RX.bp.test(n) || (x.cls === 'antihypertensive' && !OTHER_CLASS.test(n))) && c.htn },
+  { id: 'R3', final: 'APPROVED', label: 'Antidiabetic with a high HbA1c (≤ 6 months)', wording: 'HbA1c high confirms diabetes', past: ['CHR-000026', 'CHR-000110', 'CHR-000111', 'CHR-000202', 'CHR-000247'], test: (n, c, x) => (x.cls === 'antidiabetic' || x.cls === 'insulin') && c.a1cHigh },
+  { id: 'R4', final: 'APPROVED', label: 'Vitamin B / thioctic with diabetes shown', wording: 'Vitamin B with diabetes shown', past: ['CHR-000019', 'CHR-000110', 'CHR-000113', 'CHR-000202', 'CHR-000247'], test: (n, c, x) => (RX.vitB.test(n) || x.cls === 'neuro') && c.diabetes },
+  { id: 'R5', final: 'APPROVED', label: 'Lipid-lowering with an abnormal lipid profile', wording: 'Lipid profile high', past: ['CHR-000026', 'CHR-000087', 'CHR-000114', 'CHR-000202', 'CHR-000205'], test: (n, c, x) => (RX.statin.test(n) || x.cls === 'statin') && !RX.omega.test(n) && c.lipidHigh },
+  { id: 'R5c', final: 'APPROVED', label: 'Statin with IHD / CAD / after PCI', wording: 'Coronary disease shown', past: ['CHR-000089', 'CHR-000176', 'CHR-000108'], test: (n, c, x) => (RX.statin.test(n) || x.cls === 'statin') && !RX.omega.test(n) && c.ihd },
+  { id: 'R6', final: 'APPROVED', label: 'Antiplatelet / anti-anginal with angiography, CT coronary, stress ECG or echo', wording: 'Coronary disease confirmed', past: ['CHR-000013', 'CHR-000088', 'CHR-000089', 'CHR-000127', 'CHR-000176'], test: (n, c, x) => (RX.cardiac.test(n) || x.cls === 'cardiac') && c.heartProof },
+  { id: 'R7', final: 'APPROVED', label: 'PPI as gastro-protection with an antiplatelet, anticoagulant or steroid', wording: 'PPI gastro-protection', past: ['CHR-000013', 'CHR-000088', 'CHR-000099', 'CHR-000122', 'CHR-000176'], test: (n, c) => RX.ppi.test(n) && c.needsProtection },
+  { id: 'R11', final: 'APPROVED', label: 'Omega-3 with dyslipidemia / high triglycerides', wording: 'Omega 3 with high TG / dyslipidemia', past: ['CHR-000087', 'CHR-000115', 'CHR-000129', 'CHR-000148', 'CHR-000188'], test: (n, c) => RX.omega.test(n) && (c.lipidHigh || c.dyslip) },
+  { id: 'R12', final: 'APPROVED', label: 'Iron with low iron / ferritin / Hb', wording: 'Iron deficiency shown on the lab', past: ['CHR-000053', 'CHR-000175'], test: (n, c, x) => (RX.iron.test(n) || x.cls === 'iron') && c.ironLow }
+];
+const FINAL_LABEL = { APPROVED: 'Approved', ACUTE: 'Acute', NOT_COVERED: 'Not covered', NOT_COVERED_DX: 'Not covered (diagnosis)', NOT_JUSTIFIED: 'Not justified', MORE_INFO: 'More info', UNREADABLE: 'Unreadable', ALTERNATIVE: 'Alternative' };
+// the evidence a rule looks at: diagnosis words + the labs saved in the validation (or read by the AI)
+function ruleContext(t, src) {
+  const dx = String((src && src.diagnosis) || '') + ' ' + String(t.subject || '');
+  const labs = (src && src.labs) || []; const recent = l => !l.date || (Date.now() - Date.parse(l.date)) < 183 * DAY;
+  const hit = (test, ok) => labs.some(l => l.test === test && ok.test(String(l.result || '')) && recent(l));
+  const names = ((src && (src.result || src.items)) || []).map(x => String(x.name || '').toUpperCase()).join(' | ');
+  const items = (src && (src.result || src.items)) || [];
+  const a1cHigh = hit('hba1c', /high|positive/);
+  return {
+    dx, a1cHigh, lipidHigh: labs.some(l => l.test === 'lipid' && /high|positive/.test(String(l.result || ''))),
+    htn: /\bHTN\b|hypertens|I10|ضغط/i.test(dx),
+    dyslip: /dyslip|lipid|cholest|TG|triglycer|دهون/i.test(dx),
+    diabetes: a1cHigh || /\bDM\b|diabet|T2DM|E1[01]|سكر/i.test(dx) || items.some(x => x.cls === 'antidiabetic' || x.cls === 'insulin'),
+    ihd: /\bIHD\b|\bCAD\b|coronary|PCI|angina|stent|قصور بالشرايين/i.test(dx),
+    heartProof: labs.some(l => l.test === 'echo' && /positive|high/.test(String(l.result || ''))) || /angiograph|CT coronary|catheter|PCI|stent/i.test(dx),
+    needsProtection: RX.protectNeeded.test(names),
+    ironLow: labs.some(l => l.test === 'cbc' && /positive|high/.test(String(l.result || '')) && recent(l))
+  };
+}
+// same medicine in other tickets (validations saved by the team): ticket + the team's decision
+let SIMIDX = null, SIMIDX_N = -1;
+function similarPast(name, exceptNo) {
+  if (typeof STORE === 'undefined') return [];
+  if (SIMIDX_N !== STORE.events.size) {
+    SIMIDX = new Map(); SIMIDX_N = STORE.events.size; const last = new Map();
+    for (const e of STORE.events.values()) if (e.type === 'validation' && e.t && (!last.has(e.t) || last.get(e.t).ts < e.ts)) last.set(e.t, e);
+    for (const e of last.values()) for (const x of (e.d.result || [])) { const k = medKey(x.name).slice(0, 2).join(' '); if (!k || !x.final) continue; if (!SIMIDX.has(k)) SIMIDX.set(k, []); SIMIDX.get(k).push({ no: e.t, final: x.final }); }
+  }
+  const k = medKey(name).slice(0, 2).join(' '); return ((k && SIMIDX.get(k)) || []).filter(x => x.no !== exceptNo).sort((a, b) => a.no < b.no ? 1 : -1);
+}
+// per item: the confirmed team rule that applies (first match wins: not covered > acute > approve), and whether the saved decision differs
+function teamRuleCheck(t) {
+  const src = t.validation && (t.validation.result || []).length ? t.validation : (t.aiRead && t.aiRead.data) || null;
+  if (!src) return null;
+  const items = (src.result || src.items || []).filter(x => x && x.name); if (!items.length) return null;
+  const c = ruleContext(t, src); const fromVal = !!(t.validation && (t.validation.result || []).length);
+  const lines = items.map(x => {
+    const n = String(x.name).toUpperCase(); const r = TEAM_RULES.find(R => { try { return R.test(n, c, x); } catch { return false; } });
+    const saved = fromVal ? x.final : (x.decision || '');
+    const sim = similarPast(x.name, t.no).slice(0, 4);
+    return { name: x.name, saved, rule: r || null, expect: r ? r.final : '', differs: !!(r && saved && saved !== r.final && !(r.final === 'APPROVED' && saved === 'APPROVED')), sim };
+  });
+  return { fromVal, lines };
 }
 function decisionDialog(t, d, preset) {
   const needs = d === 'Pending' || d === 'Rejected' || d === 'Partially approved';
@@ -2925,9 +3023,33 @@ function decisionPanel(t) {
         t.decisionNote ? el('div', { class: 'small', dir: 'auto', style: 'color:var(--muted)' }, '“' + t.decisionNote + '”') : null,
         el('div', { class: 'small muted' }, (t.decisionBy || '') + (t.decisionAt ? ' · ' + fmtDate(t.decisionAt) : '')))
       : sug ? el('div', { class: 'decsug' },
-          el('div', { style: 'min-width:0' }, el('div', { class: 'small muted' }, 'Suggested from the validation'), el('div', { class: 'small', style: 'font-weight:600;color:' + DECISIONS[sug.d].c }, DECISIONS[sug.d].icon + ' ' + sug.d), sug.reason ? el('div', { class: 'small muted', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: sug.reason }, sug.reason) : null),
+          el('div', { style: 'min-width:0' }, el('div', { class: 'small muted' }, sug.prelim ? 'Preliminary – AI reading + team rules (validate first)' : 'Suggested from the validation'), el('div', { class: 'small', style: 'font-weight:600;color:' + DECISIONS[sug.d].c }, DECISIONS[sug.d].icon + ' ' + sug.d), sug.reason ? el('div', { class: 'small muted', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: sug.reason }, sug.reason) : null),
           el('button', { class: 'btn sm', type: 'button', onclick: () => decisionDialog(t, sug.d, sug.reason) }, 'Apply'))
-      : el('div', { class: 'small muted' }, 'Approved, Partial and Rejected close the ticket. Pending keeps it open with its reason.'))];
+      : el('div', { class: 'small muted' }, 'Approved, Partial and Rejected close the ticket. Pending keeps it open with its reason.'),
+    teamRulesBox(t, cur, sug))];
+}
+// "Why": item by item, the confirmed team rule that applies, where the saved decision differs from team practice,
+// and the same medicine in past tickets. Only a hint – nothing is changed or sent.
+function teamRulesBox(t, cur, sug) {
+  const chk = teamRuleCheck(t); if (!chk || !chk.lines.length) return null;
+  const tag = f => el('span', { class: 'pill', style: 'font-size:11px;padding:0 6px;background:var(--surface-2)' }, FINAL_LABEL[f] || f || '—');
+  const link = no => el('a', { href: '#/t/' + no, style: 'font-size:11.5px' }, no.replace('CHR-000', '#'));
+  const diff = chk.lines.filter(l => l.differs);
+  // (saved "Approved" while an item was rejected is question I-1 of the review – not confirmed yet, so not flagged)
+  const mism = false;
+  const rows = chk.lines.map(l => el('div', { style: 'display:grid;gap:2px;padding:5px 0;border-top:1px solid var(--line)' },
+    el('div', { class: 'row', style: 'justify-content:space-between;gap:6px;flex-wrap:nowrap' }, el('span', { class: 'small', dir: 'auto', style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap', title: l.name }, l.name), tag(l.saved || l.expect)),
+    l.rule ? el('div', { class: 'small', style: 'color:' + (l.differs ? '#8a5200' : 'var(--muted)') },
+      (l.differs ? '⚠ Team practice: ' + (FINAL_LABEL[l.rule.final] || l.rule.final) + ' – ' : l.rule.id + ': ') + l.rule.label + (l.differs ? ' (' + l.rule.id + ')' : ''),
+      el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' }, el('span', { class: 'muted', style: 'font-size:11.5px' }, 'e.g.'), l.rule.past.filter(no => no !== t.no).slice(0, 4).map(link))) : null,
+    l.sim.length ? el('div', { class: 'row small muted', style: 'gap:6px;flex-wrap:wrap' }, el('span', { style: 'font-size:11.5px' }, 'Same medicine before:'), l.sim.map(s => el('span', { style: 'font-size:11.5px' }, link(s.no), ' ' + (FINAL_LABEL[s.final] || s.final)))) : null));
+  const open = diff.length > 0 || mism;
+  return el('details', { class: 'small', style: 'margin-top:8px', open: open ? '' : null },
+    el('summary', { style: 'cursor:pointer' }, 'Why – team rules' + (diff.length ? ' · ⚠ ' + diff.length + ' differ' : '') + (mism ? ' · decision differs' : '')),
+    mism ? el('div', { class: 'small', style: 'color:#8a5200;margin:4px 0' }, '⚠ Saved as ' + cur + ', but the items give ' + sug.d + (sug.reason ? ' (' + sug.reason + ')' : '') + '.') : null,
+    sug && sug.acute ? el('div', { class: 'small muted', style: 'margin:4px 0' }, sug.acute + ' acute item(s): ask the pharmacy and branch for the non-chronic items (R21).') : null,
+    rows,
+    el('div', { class: 'small muted', style: 'margin-top:4px' }, 'Confirmed team rules only (review of 19 Nov 2026). A hint – the agent decides; nothing is sent automatically.'));
 }
 /* ---------------- Patient info (i-CARE / GlobeMed files) + WhatsApp / SMS to the member ---------------- */
 const phoneLocal = s => { let d = normDigits(String(s || '')).replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
@@ -3482,7 +3604,7 @@ function validationDialog(no) {
         V.items.some(x => (x.name || x.cls) && !x.confirmed) ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Confirm every item after you checked them all', onclick: () => { for (const x of V.items) if ((x.name || x.cls) && !x.confirmed) { x.confirmed = true; x.confirmedBy = me(); x.confirmedAt = new Date().toISOString(); } draw(); } }, 'Confirm all') : null),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
       el('b', {}, 'Suggested decisions (Sarwa rules)'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
-      el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; colon/IBS up to 3 months then labs; acute medicines need a separate acute approval. Decisions are suggestions – the assessor decides.'));
+      el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; IBS antispasmodics, NSAIDs and short courses are acute (separate approval); supplements (zinc, selenium, magnesium, melatonin, multivitamins) are not covered; lubricant eye drops for dry eye are approved; a PPI with an antiplatelet / anticoagulant / steroid is gastro-protection. Decisions are suggestions – the assessor decides.'));
     recalc();
   }
   draw();
@@ -3658,7 +3780,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-19a';
+const APP_VERSION = '2026-11-19b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
