@@ -789,7 +789,8 @@ function applyEv(S, e) {
         no: d.no, seq: d.seq || 0, source: d.source || 'email', subject: d.subject || '(no subject)', requester: d.requester || {}, member: d.member || '', memberName: d.memberName || '', lang: d.lang || 'AR',
         status: d.status || 'Open', priority: d.priority || 'Medium', type: d.type || '', group: d.group || '', agent: d.agent || '', tags: d.tags || [],
         created, createdBy: e.by, updated: e.ts, msgs: [], timeline: [{ ts: e.ts, by: e.by, text: 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : '') }],
-        history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || []
+        history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: d.status === 'Closed' ? created : null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || [],
+        historical: !!d.historical   // handled in Outlook before it reached the helpdesk (Outlook "Done" folder): closed, no SLA
       });
       S.maxSeq = Math.max(S.maxSeq, d.seq || 0);
       if (d.fromKey) { S.processed.add(d.fromKey); S.ignored.delete(d.fromKey); }
@@ -801,8 +802,8 @@ function applyEv(S, e) {
       threadKeys(S, t.no, d);
       const at = d.date || e.ts; t.msgs.push({ kind: 'in', id: e.id, at, by: d.fromName || d.fromEmail, ...d });
       if (!t.lastIn || at > t.lastIn) t.lastIn = at; t.updated = e.ts;
-      if (!d.initial && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (provider replied)');
-      if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: (d.internal ? 'Sarwa colleague wrote' : 'Provider replied') + (d.threadBy ? ' (joined by ' + d.threadBy + ')' : '') });
+      if (!d.initial && !d.historical && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (provider replied)');
+      if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: (d.historical ? 'Historical import (already handled in Outlook): ' : '') + (d.internal ? 'Sarwa colleague wrote' : 'Provider replied') + (d.threadBy ? ' (joined by ' + d.threadBy + ')' : '') });
       break;
     }
     case 'msg.out': {
@@ -943,6 +944,8 @@ function bizBetween(a, b, cal) {
   return tot;
 }
 function slaOf(t) {
+  // historical imports (handled in Outlook before the helpdesk had them): no SLA timers, never late / overdue
+  if (t.historical) return { frDue: 0, resDue: 0, done: true, isPaused: false, frAt: null, resAt: null, frLate: false, resLate: false, overdue: false, dueToday: false, frPending: false, exempt: true };
   const S = DB.settings, cal = S.hours, cfg = S.sla[t.priority] || S.sla.Medium || { first: 4, resolve: 16 }, now = Date.now();
   const created = Date.parse(t.created); let paused = 0;
   for (let i = 0; i < t.history.length; i++) if (S.paused.includes(t.history[i].status)) { const a = Date.parse(t.history[i].ts), b = i + 1 < t.history.length ? Date.parse(t.history[i + 1].ts) : now; paused += bizBetween(a, b, cal); }
@@ -968,7 +971,8 @@ async function runImporter() {
   if (importing || !DB || !STORE.connected) return; importing = true;
   try {
     for (let round = 0; round < 20; round++) {
-      const { data, error } = await SB.rpc('claim_mail2', { n: 5 });
+      // claim_mail3 also hands out historical emails (Outlook "Done" folder) – older app versions use claim_mail2, which leaves them alone
+      const { data, error } = await SB.rpc('claim_mail3', { n: 5 });
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
       if (await loadEvents()) DB = fold();   // see what other devices did just now (duplicates, replies)
@@ -976,7 +980,8 @@ async function runImporter() {
         const row = data[i];
         setSync('busy', `Importing email ${i + 1} of ${data.length}…`);
         try {
-          if (!DB.processed.has(row.path)) await importFile(row.path, { receivedAt: row.received_at, dir: row.direction || 'in', meta: row.meta || {} });
+          const meta = row.meta || {}, historical = meta.folder === 'Done' || meta.historical === true, re = historical && meta.reimport === true;
+          if (!DB.processed.has(row.path) || re) await importFile(row.path, { receivedAt: row.received_at, dir: row.direction || 'in', meta, historical, force: re });
           await SB.from('mail_inbox').update({ status: 'done', error: null }).eq('id', row.id);
         } catch (e) {
           console.error(e);
@@ -1113,20 +1118,21 @@ async function importFile(name, opts) {
   }
   if (th) {
     const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
-    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || '') }); await autoEOB(th.t.no, counted, d.atts);
+    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || ''), historical: !!opts.historical }); await autoEOB(th.t.no, counted, d.atts);
     return;
   }
-  if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force) {
+  if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force && !opts.historical) {
     await emit('email.ignored', null, { key: name, file: name, mid, why: atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
   }
   const G = DB.settings.general;
   const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: senderGroupOf(email.fromEmail) || G.defaultGroup, agent: '', tags: [] };
-  const fields = applyRules(base, email, counted.length > 0);
+  // historical import (already handled in Outlook, "Done" folder): closed straight away, tagged, no rules / auto-assign / auto-reply / SLA
+  const fields = opts.historical ? { ...base, status: 'Closed', tags: ['Historical Import'], ruleNames: [] } : applyRules(base, email, counted.length > 0);
   const { seq, no } = await nextNo();
-  await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '' });
-  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || '';
+  await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '', historical: !!opts.historical });
+  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || ''; if (opts.historical) d.historical = true;
   await emit('msg.in', no, d); await autoEOB(no, counted, d.atts);
-  await maybeAutoAck(no, email);
+  if (!opts.historical) await maybeAutoAck(no, email);
 }
 /* Automatic acknowledgement: tells the sender the ticket number right away (sent by Outlook like any reply) */
 function ackEligible(email, A) {
@@ -1813,7 +1819,7 @@ function dashboard() {
     const now = Date.now(); const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (range - 1));
     const from = start.getTime(), prevFrom = from - range * DAYMS;
     const inR = (x, a = from, b = now + 1) => { const v = x ? Date.parse(x) : NaN; return v >= a && v < b; };
-    const T = [...DB.tickets.values()].filter(t => !t.mergedInto);
+    const T = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical);   // historical imports: not in volumes / SLA
     const open = T.filter(openT), sl = new Map(T.map(t => [t.no, slaOf(t)]));
     const created = T.filter(t => inR(t.created)), createdPrev = T.filter(t => inR(t.created, prevFrom, from));
     const closed = T.filter(t => !openT(t) && inR(t.resolvedAt)), closedPrev = T.filter(t => !openT(t) && inR(t.resolvedAt, prevFrom, from));
@@ -2010,7 +2016,7 @@ function reportsView() {
   let lastRows = [];
   function draw() {
     const a = new Date(from.value + 'T00:00:00').getTime(), b = new Date(to.value + 'T23:59:59').getTime(); const cal = DB.settings.hours;
-    const T = [...DB.tickets.values()].filter(t => !t.mergedInto);
+    const T = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical);   // historical imports are not the team's helpdesk work
     const inR = x => x && Date.parse(x) >= a && Date.parse(x) <= b;
     const groups = new Map(); const add = (k, t) => { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); };
     T.forEach(t => { if (inR(t.created) || inR(t.resolvedAt)) { add('All agents', t); add(t.agent || 'Unassigned', t); } });
@@ -3652,7 +3658,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-17e';
+const APP_VERSION = '2026-11-19a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
