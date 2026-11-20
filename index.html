@@ -3975,8 +3975,9 @@ function validationDialog(no) {
       P.level ? el('span', { class: 'pill ' + CONF[P.level][1], title: P.n + ' past case(s); ' + Math.round(P.share * 100) + '% agree' }, CONF[P.level][0] + (P.level !== 'mixed' ? ' · ' + P.n : '')) : null,
       P.tickets.length ? el('div', { class: 'small' }, P.tickets.slice(0, 3).map(s => [el('a', { href: '#/t/' + s.no, onclick: () => closeDialog() }, s.no.replace('CHR-000', '#')), ' '])) : null,
       code ? el('div', { class: 'small muted' }, 'GlobeMed: ' + (code.members || 0).toLocaleString() + ' members on file') : null) : el('span', { class: 'small muted' }, '—');
-    return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'),
-      el('td', { class: 'n', title: code ? (code.exact ? 'Exact GlobeMed name' : 'Closest GlobeMed name: ' + code.med_desc) : 'Not found in the GlobeMed list' }, code ? code.med_code + (code.exact ? '' : ' ≈') : '—'),
+    return el('tr', {}, el('td', { class: 'n' }, x.n),
+      el('td', { class: 'n', style: 'white-space:nowrap', title: code ? (code.exact ? 'Exact GlobeMed name' : 'Closest GlobeMed name: ' + code.med_desc) : 'Not found in the GlobeMed list' }, code ? code.med_code + (code.exact ? '' : ' ≈') : '—'),
+      el('td', { dir: 'auto' }, x.name || '—'),
       el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty),
       el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)),
       el('td', {}, past),
@@ -3985,7 +3986,7 @@ function validationDialog(no) {
   function suggestedXlsx() {
     const R = computeValidation(V, CY);
     xlsxDownload('Suggested-decisions-' + no, [{ name: 'Suggested decisions', rows: R.map(x => { const P = pastDecisions(x.name, no); return {
-      '#': x.n, Item: x.name, 'Item code': x.code || '', 'Policy holder': CY.holder, 'Starting day': CY.day || '', 'Units/day': x.upd, 'Qty/month': x.qty,
+      '#': x.n, 'Item code': x.code || '', Item: x.name, 'Policy holder': CY.holder, 'Starting day': CY.day || '', 'Units/day': x.upd, 'Qty/month': x.qty,
       Suggestion: (DEC[x.sug] || {}).en || '', 'Rule / reason': x.why, 'Final decision': (DEC[x.final] || {}).en || '',
       'Past team decisions': Object.entries(P.cnt).map(([f, k]) => k + '× ' + ((DEC[f] || {}).en || f)).join(', '), 'Past cases': P.n, Confidence: P.level ? CONF[P.level][0] : '',
       'GlobeMed members on file': P.code ? P.code.members : '', From: dmy(x.from), To: dmy(x.to), Note: x.nextWhy || '' }; }) }]).catch(e => toast(e.message));
@@ -4014,7 +4015,7 @@ function validationDialog(no) {
         V.items.some(x => (x.name || x.cls) && !x.confirmed) ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Confirm every item after you checked them all', onclick: () => { for (const x of V.items) if ((x.name || x.cls) && !x.confirmed) { x.confirmed = true; x.confirmedBy = me(); x.confirmedAt = new Date().toISOString(); } draw(); } }, 'Confirm all') : null),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Suggested decisions (Sarwa rules)'), el('button', { class: 'btn sm', type: 'button', onclick: suggestedXlsx }, '⬇ Excel')),
-      el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Item code', 'Units/day', 'Qty/month', 'Suggestion', 'Past decisions', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
+      el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item code', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Past decisions', 'Approval'].map(h => el('th', { style: h === 'Item code' ? 'white-space:nowrap' : '' }, h)))), resultBox)),
       el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; IBS antispasmodics, NSAIDs and short courses are acute (separate approval); supplements (zinc, selenium, magnesium, melatonin, multivitamins) are not covered; lubricant eye drops for dry eye are approved; a PPI with an antiplatelet / anticoagulant / steroid is gastro-protection. Decisions are suggestions – the assessor decides.'));
     recalc();
   }
@@ -4191,7 +4192,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-20c';
+const APP_VERSION = '2026-11-20d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
