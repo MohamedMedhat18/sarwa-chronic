@@ -84,7 +84,10 @@ textarea{resize:vertical}
 /* tickets list */
 .lt{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100%}
 /* ---- views sidebar ---- */
-.fpane{border-right:1px solid var(--border);background:var(--surface);padding:12px 10px 28px;position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;font-size:13.5px}
+/* the folder pane scrolls on its own and always fits the visible area under the top bar (it used to be 100vh tall, so the last
+   entries – Closed, All tickets – were hidden below the window) */
+.view{container-type:size}
+.fpane{border-right:1px solid var(--border);background:var(--surface);padding:12px 10px 28px;position:sticky;top:0;align-self:start;max-height:calc(100vh - 57px);max-height:100cqh;overflow-y:auto;overscroll-behavior:contain;font-size:13.5px;box-sizing:border-box}
 .fpane h4{margin:16px 8px 6px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
 .fpane h4:first-child{margin-top:4px}
 .fpane .sub a{padding-left:24px;font-size:12.5px}
@@ -4043,7 +4046,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-20a';
+const APP_VERSION = '2026-11-20b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
