@@ -1893,6 +1893,7 @@ function bars(rows, max) { const m = max || Math.max(1, ...rows.map(r => r[1]));
 function dashboard() {
   const root = el('div', { class: 'pad dash' });
   let range = +lsGet('hd-dash-range', '7') || 7;
+  let holderF = lsGet('hd-dash-holder', '');
   const NS = 'http://www.w3.org/2000/svg';
   const svgEl = (tag, attrs, kids) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v); for (const c of [].concat(kids || [])) if (c) n.append(c); return n; };
   const tip = (node, text) => { node.append(svgEl('title', {}, [document.createTextNode(text)])); return node; };
@@ -1942,7 +1943,12 @@ function dashboard() {
     const now = Date.now(); const start = new Date(); start.setHours(0, 0, 0, 0); start.setDate(start.getDate() - (range - 1));
     const from = start.getTime(), prevFrom = from - range * DAYMS;
     const inR = (x, a = from, b = now + 1) => { const v = x ? Date.parse(x) : NaN; return v >= a && v < b; };
-    const T = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical);   // historical imports: not in volumes / SLA
+    const T0 = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical);   // historical imports: not in volumes / SLA
+    // policy holder of every ticket (member card → GlobeMed files); loaded once in the background, then the page redraws
+    const unknown = T0.map(memberNo).filter(m => /^\d{6,12}$/.test(m) && !HOLDERS.memberOf.has(m));
+    if (unknown.length && !dashboard.loadingHolders) { dashboard.loadingHolders = true; Promise.all([loadMemberHolders(unknown), loadHolderDays(), loadMedCat()]).then(() => { if (root.isConnected) draw(); }).catch(e => console.warn('holders', e)).finally(() => { dashboard.loadingHolders = false; }); }
+    else if (!HOLDERS.days.size && !dashboard.loadingHolders) { dashboard.loadingHolders = true; Promise.all([loadHolderDays(), loadMedCat()]).then(() => { if (root.isConnected) draw(); }).catch(() => { }).finally(() => { dashboard.loadingHolders = false; }); }
+    const T = holderF ? T0.filter(t => holderOf(t) === holderF) : T0;
     const open = T.filter(openT), sl = new Map(T.map(t => [t.no, slaOf(t)]));
     const created = T.filter(t => inR(t.created)), createdPrev = T.filter(t => inR(t.created, prevFrom, from));
     const closed = T.filter(t => !openT(t) && inR(t.resolvedAt)), closedPrev = T.filter(t => !openT(t) && inR(t.resolvedAt, prevFrom, from));
@@ -1984,11 +1990,39 @@ function dashboard() {
     const withMember = open.filter(t => /^\d{6,10}$/.test(memberNo(t))), icared = withMember.filter(t => t.icare).length;
     // live feed
     const feed = [...STORE.events.values()].filter(e => e.t && !['view', 'icare.raw', 'out.status', 'email.ignored'].includes(e.type)).sort((a, b) => a.ts < b.ts ? 1 : -1).slice(0, 14);
+    // per policy holder: starting day, members, requests and decisions in the period, top item codes
+    const HB = new Map(); const hb = h => { if (!HB.has(h)) HB.set(h, { members: new Set(), req: 0, open: 0, dec: { Approved: 0, 'Partially approved': 0, Pending: 0, Rejected: 0 }, codes: {} }); return HB.get(h); };
+    T0.forEach(t => {
+      const h = holderOf(t) || '— unknown —'; const x = hb(h); if (memberNo(t)) x.members.add(memberNo(t)); if (inR(t.created)) x.req++; if (openT(t)) x.open++;
+      if (t.decision && inR(t.decisionAt || t.updated) && x.dec[t.decision] != null) x.dec[t.decision]++;
+      if (t.validation && inR(t.validation.at)) for (const r of t.validation.result || []) { const c = r.code || (medCode(r.name) || {}).med_code || ''; const k = c ? c + ' ' + String(r.name || '').split(' ').slice(0, 2).join(' ') : String(r.name || '').split(' ').slice(0, 2).join(' '); if (k.trim()) x.codes[k] = (x.codes[k] || 0) + 1; }
+    });
+    const hRows = [...HB.entries()].filter(([, x]) => x.req || x.open).sort((a, b) => (b[1].req + b[1].open) - (a[1].req + a[1].open));
+    const holderOpts = [...HB.entries()].filter(([h]) => h !== '— unknown —').sort((a, b) => a[0].localeCompare(b[0]));
+    const rate = (x, k) => { const s = Object.values(x.dec).reduce((a, b) => a + b, 0); return s ? Math.round(x.dec[k] / s * 100) + '%' : '—'; };
+    function itemRulesXlsx() {   // Item code → what the team decided before (latest validation of every ticket), with confidence
+      const by = new Map();
+      for (const t of DB.tickets.values()) { if (!t.validation) continue; for (const r of t.validation.result || []) { if (!r.name || !r.final) continue; const mc = medCode(r.name); const k = r.code || (mc && mc.med_code) || 'name:' + medNorm(r.name).split(' ').slice(0, 2).join(' ');
+        if (!by.has(k)) by.set(k, { code: r.code || (mc && mc.med_code) || '', name: (mc && mc.med_desc) || r.name, members: mc ? mc.members : '', cnt: {}, tickets: [], holders: new Set() });
+        const g = by.get(k); g.cnt[r.final] = (g.cnt[r.final] || 0) + 1; g.tickets.push(t.no); if (holderOf(t)) g.holders.add(holderOf(t)); } }
+      const rows = [...by.values()].map(g => { const n = Object.values(g.cnt).reduce((a, b) => a + b, 0), top = Object.entries(g.cnt).sort((a, b) => b[1] - a[1])[0], share = top[1] / n;
+        const level = share < 0.7 && n >= 2 ? 'Mixed – refer to medical team' : n >= 5 && share >= 0.8 ? 'High' : n >= 2 ? 'Medium' : 'Low';
+        return { 'Item code': g.code, Item: g.name, 'Suggested decision': level.startsWith('Mixed') ? 'Refer to medical team' : ((DEC[top[0]] || {}).en || top[0]), 'Past cases': n, 'Agreement %': Math.round(share * 100), Confidence: level,
+          ...Object.fromEntries(Object.keys(DEC).map(k => [DEC[k].en, g.cnt[k] || 0])), 'GlobeMed members on file': g.members, 'Policy holders': [...g.holders].join(', '), Tickets: [...new Set(g.tickets)].join(' ') }; })
+        .sort((a, b) => b['Past cases'] - a['Past cases']);
+      xlsxDownload('Item-code-rules', [{ name: 'Item code rules', rows }]).catch(e => toast(e.message));
+    }
+    function holdersXlsx() {
+      xlsxDownload('Policy-holders', [{ name: 'Policy holders', rows: hRows.map(([h, x]) => { const hd = holderDay(h) || {}; return { 'Policy holder': h, 'Starting day': hd.day || '', 'Day set by': hd.manual ? 'Team' : hd.day ? 'GlobeMed files' : '', 'Share on that day %': hd.share != null ? Math.round(hd.share * 100) : '', 'Members (tickets)': x.members.size, 'Members (GlobeMed)': hd.members || '', Requests: x.req, Open: x.open, 'Approved %': rate(x, 'Approved'), 'Partial %': rate(x, 'Partially approved'), 'Pending %': rate(x, 'Pending'), 'Rejected %': rate(x, 'Rejected'), 'Top item codes': Object.entries(x.codes).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => k + ' (' + v + ')').join('; ') }; }) }]).catch(e => toast(e.message));
+    }
     const RANGES = [[1, 'Today'], [7, '7 days'], [30, '30 days'], [90, '90 days']];
     root.replaceChildren(
       el('div', { class: 'dhead' },
         el('div', {}, el('h2', {}, 'Chronic desk overview'), el('div', { class: 'small muted' }, el('span', { class: 'live-dot' }), ' Live · ' + TEAM.filter(p => p.active).length + ' team members · updated ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))),
-        el('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, RANGES.map(([v, l]) => el('button', { type: 'button', class: range === v ? 'on' : '', 'aria-pressed': range === v ? 'true' : 'false', onclick: () => { range = v; lsSet('hd-dash-range', String(v)); draw(); } }, l)))),
+        el('div', { class: 'row', style: 'gap:8px' },
+          el('select', { 'aria-label': 'Policy holder', style: 'max-width:240px', onchange: e => { holderF = e.target.value; lsSet('hd-dash-holder', holderF); draw(); } }, opt('', 'All policy holders', holderF), holderOpts.map(([h, x]) => opt(h, h + ' (' + (x.req + x.open) + ')', holderF))),
+          el('div', { class: 'seg', role: 'group', 'aria-label': 'Period' }, RANGES.map(([v, l]) => el('button', { type: 'button', class: range === v ? 'on' : '', 'aria-pressed': range === v ? 'true' : 'false', onclick: () => { range = v; lsSet('hd-dash-range', String(v)); draw(); } }, l))))),
+      holderF ? el('div', { class: 'small', style: 'margin:-4px 0 10px' }, '🏢 Showing ', el('b', {}, holderF), (() => { const hd = holderDay(holderF); return hd ? ' · starting day ' + hd.day + (hd.manual ? ' (set by the team)' : hd.share != null ? ' (' + Math.round(hd.share * 100) + '% of members)' : '') + ' · current cycle from ' + dmy(cycleStart(hd.day)) : ''; })(), ' · ', el('a', { href: '#', onclick: e => { e.preventDefault(); holderF = ''; lsSet('hd-dash-holder', ''); draw(); } }, 'show all')) : null,
       el('div', { class: 'kpis' },
         kpi({ label: 'Open now', value: open.length, href: '#/tickets?view=open', spark: spark(backlog, 'var(--accent)') }),
         kpi({ label: 'Overdue', value: overdue.length, href: '#/tickets?view=overdue', tone: overdue.length ? 'bad' : 'ok' }),
@@ -2014,6 +2048,15 @@ function dashboard() {
             el('tbody', {}, [...agents.entries()].sort((a, b) => (b[1].open + b[1].closed) - (a[1].open + a[1].closed)).map(([n, a]) => el('tr', {},
               el('td', {}, el('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, avatar(n, true), n, DB.avail && Object.values(DB.avail).length ? null : null)),
               el('td', { class: 'n' }, el('a', { href: n === 'Unassigned' ? '#/tickets?view=unassigned' : '#/tickets?view=open' }, a.open)), el('td', { class: 'n', style: a.overdue ? 'color:var(--bad);font-weight:600' : '' }, a.overdue), el('td', { class: 'n' }, a.closed), el('td', { class: 'n' }, a.replies), el('td', { class: 'n' }, dur(median(a.fr))))))))),
+        el('section', { class: 'panel span2' }, el('div', { class: 'phead' }, el('h3', {}, 'Policy holders'), el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm', type: 'button', onclick: holdersXlsx }, '⬇ Holders'), el('button', { class: 'btn sm', type: 'button', title: 'Every item code with the decisions the team took before, the confidence, and split decisions for the medical team', onclick: itemRulesXlsx }, '⬇ Item code rules'))),
+          hRows.length ? el('div', { class: 'tw', style: 'max-height:340px;overflow:auto' }, el('table', { class: 't dt' }, el('thead', {}, el('tr', {}, ['Policy holder', 'Start day', 'Members', 'Requests', 'Open', 'Approved', 'Partial', 'Pending', 'Rejected', 'Top item codes'].map((h, i) => el('th', { class: i && i < 9 ? 'n' : '' }, h)))),
+            el('tbody', {}, hRows.slice(0, 40).map(([h, x]) => { const hd = holderDay(h); return el('tr', {},
+              el('td', { dir: 'auto' }, h === '— unknown —' ? el('span', { class: 'muted' }, h) : el('a', { href: '#', onclick: e => { e.preventDefault(); holderF = h; lsSet('hd-dash-holder', h); draw(); } }, h)),
+              el('td', { class: 'n', title: hd ? (hd.manual ? 'Set by the team' : Math.round((hd.share || 0) * 100) + '% of ' + (hd.members || 0) + ' members start on this day') : '' }, hd ? hd.day + (hd.manual ? ' ✎' : hd.share < 0.6 ? ' ?' : '') : '—'),
+              el('td', { class: 'n' }, x.members.size), el('td', { class: 'n' }, x.req), el('td', { class: 'n' }, x.open),
+              el('td', { class: 'n' }, rate(x, 'Approved')), el('td', { class: 'n' }, rate(x, 'Partially approved')), el('td', { class: 'n' }, rate(x, 'Pending')), el('td', { class: 'n' }, rate(x, 'Rejected')),
+              el('td', { class: 'small' }, Object.entries(x.codes).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => k + ' (' + v + ')').join(' · ') || '—')); })))) : el('div', { class: 'small muted' }, dashboard.loadingHolders ? 'Loading policy holders…' : 'No requests in the period.'),
+          el('div', { class: 'small muted', style: 'margin-top:6px' }, 'Holder from the member card (GlobeMed files). Start day = the day most of the holder\'s members start on (✎ = set by the team, ? = less than 60% agree). Rates = decisions in the period.')),
         el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Open tickets by age')), stacked(buckets.map(([l, f, c]) => ({ l, v: open.filter(f).length, c, href: '#/tickets?view=open' })), open.length),
           el('div', { class: 'small muted', style: 'margin:14px 0 6px' }, 'Coverage of open tickets'),
           hbars([['AI read the prescription', aiRead, '#/tickets?view=open', 'var(--accent)', withFiles.length ? pct(aiRead, withFiles.length) + '% of ' + withFiles.length : ''], ['Checked in i-CARE', icared, '#/tickets?view=unverified', '#2f6fb0', withMember.length ? pct(icared, withMember.length) + '% of ' + withMember.length : ''], ['First response on time', frOk, '#/tickets?view=all', '#2f8a4f', fr.length ? pct(frOk, fr.length) + '% of ' + fr.length : '']])),
@@ -2533,10 +2576,66 @@ function suggest(it, V) {
   if (l.result === 'normal' || l.result === 'negative') return { d: 'NOT_JUSTIFIED', why: TESTS[test].en + val + ' ' + l.result + ' – does not confirm' };
   return { d: 'MORE_INFO', why: 'Set the result of ' + TESTS[test].en, req: test };
 }
-function computeValidation(V) {
+// CY (optional): { hist, day } – the member's GlobeMed history and the holder's starting day. An item already dispensed in the
+// current cycle starts in the next cycle (team rule R19: "starting next month, this month's dose was already dispensed").
+function computeValidation(V, CY) {
   return V.items.map((it, i) => { const c = itemCalc(it, V); const s = suggest(it, V); const final = it.final || s.d; const months = Math.min(+it.months || +V.months || 3, s.maxMonths || 12);
     const fq = it.finalQty !== '' && it.finalQty != null ? +it.finalQty : c.qty;
-    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', reason: it.reason || (final === s.d ? s.memReason || '' : ''), final, finalQty: fq, months, from: final === 'APPROVED' ? V.start : '', to: final === 'APPROVED' ? addMonths(V.start, months) : '', overridden: (final !== s.d) || fq !== c.qty }; });
+    let from = V.start, nextWhy = '';
+    if (final === 'APPROVED' && CY && CY.hist && it.name) { const m = histMatch(it.name, CY.hist); if (m && m.last_dist && m.last_dist >= V.start) { from = nextCycleStart(V.start, CY.day || +V.start.slice(8, 10)); nextWhy = 'dispensed ' + dmy(m.last_dist) + ' in this cycle → starts next cycle'; } }
+    const code = medCode(it.name);
+    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', reason: it.reason || (final === s.d ? s.memReason || '' : ''), final, finalQty: fq, months, from: final === 'APPROVED' ? from : '', to: final === 'APPROVED' ? addMonths(from, months) : '', nextWhy, code: code ? code.med_code : '', overridden: (final !== s.d) || fq !== c.qty }; });
+}
+/* ---------------- Policy holders: starting (dispensing) day + member → holder ----------------
+   Each holder's members are dispensed on the same day of the month (e.g. day 1). A new member / added medicine starts on that
+   day in the CURRENT cycle – not on the contract start: contract from January, request in November, day 1 → 01/11/2026.
+   Current cycle = the latest holder day on or before the request date (day 29–31 → last day of short months). */
+const HOLDERS = { days: new Map(), memberOf: new Map(), loading: null, at: 0 };
+const daysIn = (y, m) => new Date(y, m + 1, 0).getDate();
+const isoOf = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
+function cycleStart(day, refIso) {
+  const r = refIso ? new Date(refIso + 'T00:00:00') : new Date(); let y = r.getFullYear(), m = r.getMonth();
+  if (r.getDate() < Math.min(day, daysIn(y, m))) { m--; if (m < 0) { m = 11; y--; } }
+  return isoOf(y, m, Math.min(day, daysIn(y, m)));
+}
+function nextCycleStart(iso, day) { const d = new Date(iso + 'T00:00:00'); let y = d.getFullYear(), m = d.getMonth() + 1; if (m > 11) { m = 0; y++; } return isoOf(y, m, Math.min(day, daysIn(y, m))); }
+function loadHolderDays(force) {
+  if (!force && HOLDERS.days.size && Date.now() - HOLDERS.at < 30 * 60000) return Promise.resolve(HOLDERS.days);
+  return HOLDERS.loading || (HOLDERS.loading = (async () => {
+    const m = new Map();
+    for (let from = 0; from < 20000; from += 1000) { const { data, error } = await SB.from('holder_days').select('policy_holder,start_day,members,share,second_day,second_share').range(from, from + 999); if (error) throw error; for (const r of data) m.set(r.policy_holder, r); if (data.length < 1000) break; }
+    HOLDERS.days = m; HOLDERS.at = Date.now(); return m;
+  })().finally(() => { HOLDERS.loading = null; }));
+}
+async function loadMemberHolders(members) {
+  const need = [...new Set(members.filter(x => /^\d{6,12}$/.test(x) && !HOLDERS.memberOf.has(x)))];
+  for (let i = 0; i < need.length; i += 150) {
+    const { data, error } = await SB.from('member_holders').select('member,policy_holder').in('member', need.slice(i, i + 150)); if (error) throw error;
+    for (const x of need.slice(i, i + 150)) HOLDERS.memberOf.set(x, '');
+    for (const r of data || []) HOLDERS.memberOf.set(r.member, r.policy_holder || '');
+  }
+}
+const holderOf = t => HOLDERS.memberOf.get(memberNo(t)) || (t.icare && t.icare.admin && t.icare.admin.holder) || '';
+// the holder's day: the team's manual setting wins, else the day most of its members start on (GlobeMed files)
+function holderDay(holder) {
+  const o = ((DB && DB.settings.holderDays) || {})[holder]; if (o) return { day: +o, manual: true };
+  const r = HOLDERS.days.get(holder); return r ? { day: r.start_day, share: +r.share, members: r.members, second: r.second_day, manual: false } : null;
+}
+async function setHolderDay(holder, day) { const v = { ...((DB.settings.holderDays) || {}) }; if (day) v[holder] = +day; else delete v[holder]; await emit('settings', null, { section: 'holderDays', value: v }); }
+// item code (GlobeMed Medicine CODE) of a medicine name – exact name from the GlobeMed list, else the closest match
+function medCode(name) {
+  if (!name || !MEDCAT.list) return null; const k = medNorm(name);
+  const exact = MEDCAT.list.find(m => m.key === k); if (exact) return { ...exact, exact: true };
+  const s = medSearch(name, 1)[0]; return s && s.score > 0.72 ? { ...s, exact: false } : null;
+}
+// what was decided before for this medicine: the team's saved validations (same medicine) and how many members GlobeMed has it
+// on file for. Confidence from the number of cases and how much they agree; split decisions go to the medical team.
+function pastDecisions(name, exceptNo) {
+  const past = similarPast(name, exceptNo); const cnt = {}; for (const p of past) cnt[p.final] = (cnt[p.final] || 0) + 1;
+  const n = past.length, top = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]; const share = top ? top[1] / n : 0;
+  const level = !n ? '' : share < 0.7 && n >= 2 ? 'mixed' : n >= 5 && share >= 0.8 ? 'high' : n >= 2 ? 'medium' : 'low';
+  const code = medCode(name);
+  return { n, cnt, top: top ? top[0] : '', share, level, code, tickets: past.slice(0, 6) };
 }
 function valSummary(d) { const r = d.result || []; const c = k => r.filter(x => x.final === k).length; return ['APPROVED', 'MORE_INFO', 'NOT_JUSTIFIED', 'NOT_COVERED', 'NOT_COVERED_DX', 'ALTERNATIVE', 'ACUTE', 'UNREADABLE'].filter(k => c(k)).map(k => c(k) + ' ' + DEC[k].en.toLowerCase()).join(', ') || 'no items'; }
 function decisionEmail(t, V, R, lang) {
@@ -2546,7 +2645,7 @@ function decisionEmail(t, V, R, lang) {
     : `<p><b>Dear Esteemed Partner,</b><br>Greetings,</p><p>Regarding the submitted request for monthly medication approval for member ${name} – card No. ${card} (ticket No. ${t.no}), please note that after the medical review the decision is as follows:</p>`);
   const appr = R.filter(x => x.final === 'APPROVED');
   if (appr.length) {
-    const from = dmy(V.start), to = dmy(appr.map(x => x.to).sort().pop());
+    const from = dmy(appr.map(x => x.from || V.start).sort()[0]), to = dmy(appr.map(x => x.to).sort().pop());
     out.push(H(AR ? 'الأدوية المعتمدة' : 'Approved medications'), `<p dir="${dir}">${AR ? `يمكن صرف الأدوية التالية بدءاً من ${from} وحتى ${to} وفقاً للجدول التالي:` : `You can dispense the following medications from ${from} until ${to} as per the table below:`}</p>`);
     const unitAr = u => (UNITS.find(x => x[0] === u) || [u, u])[1];
     const dose = x => AR ? `${x.dose} ${unitAr(x.unit)} × ${x.times} ${PERIOD_AR[x.per] || ''}` : `${x.dose} ${x.unit} × ${x.times} per ${x.per}`;
@@ -3450,7 +3549,7 @@ function loadMedCat() {
   if (MEDCAT.list) return Promise.resolve(MEDCAT.list);
   return MEDCAT.loading || (MEDCAT.loading = (async () => {
     const out = [];
-    for (let from = 0; from < 20000; from += 1000) { const { data, error } = await SB.from('med_catalog').select('med_desc,members,daily,diseases').order('members', { ascending: false }).range(from, from + 999); if (error) throw error; out.push(...data); if (data.length < 1000) break; }
+    for (let from = 0; from < 20000; from += 1000) { const { data, error } = await SB.from('med_catalog').select('med_code,med_desc,members,daily,diseases').order('members', { ascending: false }).range(from, from + 999); if (error) throw error; out.push(...data); if (data.length < 1000) break; }
     for (const m of out) { m.key = medNorm(m.med_desc); m.tri = tri(m.key.split(' ').slice(0, 2).join(' ')); }
     MEDCAT.list = out; return out;
   })().catch(e => { MEDCAT.loading = null; throw e; }));
@@ -3845,12 +3944,57 @@ function validationDialog(no) {
           el('td', {}, V.items.some(it => histMatch(it.name, [r])) ? el('span', { class: 'small muted' }, 'in request') : el('button', { class: 'btn sm', type: 'button', title: 'Add this medicine to the request (continuation)', onclick: () => { if (V.items.length === 1 && !V.items[0].name && !V.items[0].cls) V.items = []; V.items.push({ name: r.med_desc, cls: '', dose: +r.daily || 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '', fromHistory: true }); draw(); } }, '+ Add'))))))),
       el('div', { class: 'small muted', style: 'margin-top:4px' }, 'From the monthly GlobeMed chronic files (Chronic Validations › All chronic Sarwa). Green = coverage still running.'));
   }
-  function recalc() { const R = computeValidation(V); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
-  function resRow(x) { return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'), el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty), el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)), el('td', { class: 'n' }, x.final === 'APPROVED' ? dmy(x.from) + ' → ' + dmy(x.to) : '—')); }
+  /* the member's policy holder → its starting day → the start of the current cycle (Start is set to it for a new validation) */
+  const CY = { hist: null, day: 0, holder: '' }; let autoStart = t.validation ? null : V.start;
+  function applyCycle() {
+    CY.hist = hist; CY.holder = (hist && hist[0] && hist[0].policy_holder) || holderOf(t) || '';
+    const hd = CY.holder ? holderDay(CY.holder) : null; CY.day = hd ? hd.day : 0;
+    if (hd && autoStart !== null && V.start === autoStart) { const cs = cycleStart(hd.day); V.start = cs; autoStart = cs; }
+  }
+  loadHolderDays().then(() => { applyCycle(); if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
+  function cycleLine() {
+    applyCycle(); if (!CY.holder) return el('div', { class: 'small muted' }, '🏢 Policy holder unknown – enter the card number to load the member history.');
+    const hd = holderDay(CY.holder); const cs = hd ? cycleStart(hd.day) : '';
+    const exp = t.icare && t.icare.admin && dmyDate(t.icare.admin.expiry), st = t.icare && t.icare.admin && dmyDate(t.icare.admin.start);
+    const ended = exp && exp < new Date(new Date().toDateString()), notYet = st && st > new Date();
+    return el('div', { class: 'small', style: 'display:grid;gap:3px' },
+      el('div', { dir: 'auto' }, '🏢 ', el('b', {}, CY.holder), hd ? ' · starting day ' : ' · no starting day on file', hd ? el('b', {}, String(hd.day)) : null,
+        hd ? el('span', { class: 'muted' }, hd.manual ? ' (set by the team)' : ' (' + Math.round(hd.share * 100) + '% of ' + (hd.members || 0).toLocaleString() + ' members' + (hd.second && hd.share < 0.8 ? ', also day ' + hd.second : '') + ')') : null),
+      hd ? el('div', { class: 'row', style: 'gap:6px' }, 'Current cycle starts ', el('b', {}, dmy(cs)),
+        V.start !== cs ? el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = cs; autoStart = cs; draw(); } }, 'Use ' + dmy(cs)) : el('span', { class: 'pill p-ok' }, '✓ Start'),
+        el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the starting day of this holder for the whole team', onclick: async () => { const v = prompt('Starting day of ' + CY.holder + ' (1–31). Empty = use the day from the GlobeMed files:', hd.manual ? hd.day : ''); if (v === null) return; const d = parseInt(v, 10); if (v.trim() && !(d >= 1 && d <= 31)) return toast('Day must be 1–31'); await setHolderDay(CY.holder, v.trim() ? d : 0); autoStart = V.start; applyCycle(); draw(); toast('Starting day saved for ' + CY.holder); } }, 'Change day')) : null,
+      ended ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract ended ' + t.icare.admin.expiry + ' (i-CARE) – no new approval without a renewal.') : null,
+      notYet ? el('div', { style: 'color:#8a5200;font-weight:600' }, '⚠ Contract starts ' + t.icare.admin.start + ' (i-CARE) – the treatment cannot start before it.') : null);
+  }
+  function recalc() { const R = computeValidation(V, CY); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
+  const CONF = { high: ['High', 'p-ok'], medium: ['Medium', 'p-due'], low: ['Low', 'p-muted'], mixed: ['Mixed – refer to medical team', 'p-over'] };
+  function resRow(x) {
+    const P = x.name ? pastDecisions(x.name, no) : null; const code = P && P.code;
+    const past = P && (P.n || code) ? el('div', { style: 'display:grid;gap:2px' },
+      P.n ? el('div', { class: 'small' }, Object.entries(P.cnt).sort((a, b) => b[1] - a[1]).map(([f, k]) => k + '× ' + ((DEC[f] || {}).en || f)).join(' · ')) : el('div', { class: 'small muted' }, 'No team decision yet'),
+      P.level ? el('span', { class: 'pill ' + CONF[P.level][1], title: P.n + ' past case(s); ' + Math.round(P.share * 100) + '% agree' }, CONF[P.level][0] + (P.level !== 'mixed' ? ' · ' + P.n : '')) : null,
+      P.tickets.length ? el('div', { class: 'small' }, P.tickets.slice(0, 3).map(s => [el('a', { href: '#/t/' + s.no, onclick: () => closeDialog() }, s.no.replace('CHR-000', '#')), ' '])) : null,
+      code ? el('div', { class: 'small muted' }, 'GlobeMed: ' + (code.members || 0).toLocaleString() + ' members on file') : null) : el('span', { class: 'small muted' }, '—');
+    return el('tr', {}, el('td', { class: 'n' }, x.n), el('td', { dir: 'auto' }, x.name || '—'),
+      el('td', { class: 'n', title: code ? (code.exact ? 'Exact GlobeMed name' : 'Closest GlobeMed name: ' + code.med_desc) : 'Not found in the GlobeMed list' }, code ? code.med_code + (code.exact ? '' : ' ≈') : '—'),
+      el('td', { class: 'n' }, x.upd), el('td', { class: 'n' }, x.qty),
+      el('td', {}, x.sug ? el('span', { class: 'pill ' + DEC[x.sug].c }, DEC[x.sug].en) : el('span', { class: 'pill p-muted' }, 'Decide'), el('div', { class: 'small muted' }, x.why)),
+      el('td', {}, past),
+      el('td', { class: 'n' }, x.final === 'APPROVED' ? [dmy(x.from) + ' → ' + dmy(x.to), x.nextWhy ? el('div', { class: 'small', style: 'color:#8a5200' }, x.nextWhy) : null] : '—'));
+  }
+  function suggestedXlsx() {
+    const R = computeValidation(V, CY);
+    xlsxDownload('Suggested-decisions-' + no, [{ name: 'Suggested decisions', rows: R.map(x => { const P = pastDecisions(x.name, no); return {
+      '#': x.n, Item: x.name, 'Item code': x.code || '', 'Policy holder': CY.holder, 'Starting day': CY.day || '', 'Units/day': x.upd, 'Qty/month': x.qty,
+      Suggestion: (DEC[x.sug] || {}).en || '', 'Rule / reason': x.why, 'Final decision': (DEC[x.final] || {}).en || '',
+      'Past team decisions': Object.entries(P.cnt).map(([f, k]) => k + '× ' + ((DEC[f] || {}).en || f)).join(', '), 'Past cases': P.n, Confidence: P.level ? CONF[P.level][0] : '',
+      'GlobeMed members on file': P.code ? P.code.members : '', From: dmy(x.from), To: dmy(x.to), Note: x.nextWhy || '' }; }) }]).catch(e => toast(e.message));
+  }
   function draw() {
     const caseRow = el('div', { class: 'g2' },
       el('label', {}, 'Diagnosis written on the form', el('textarea', { rows: 2, dir: 'auto', oninput: e => { V.diagnosis = e.target.value; recalc(); } }, V.diagnosis)),
       el('div', { style: 'display:grid;gap:6px' }, el('div', { class: 'row' }, el('label', {}, 'Start ', inp(V, 'start', { type: 'date' })), el('label', {}, 'Months ', inp(V, 'months', { type: 'number', min: 1, max: 12, style: 'width:64px' })), el('label', {}, 'Days/month ', inp(V, 'daysPerMonth', { type: 'number', min: 28, max: 31, style: 'width:64px' }))),
+        cycleLine(),
         el('label', { class: 'row' }, inp(V, 'mismatch', { type: 'checkbox', checked: V.mismatch }), 'Member card / name does not match'),
         el('label', { class: 'row' }, inp(V, 'noForm', { type: 'checkbox', checked: V.noForm }), 'No claim form / prescription attached')));
     const labs = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Lab / scan', 'Result value', 'Date', 'Interpretation', ''].map(h => el('th', {}, h)))),
@@ -3869,19 +4013,20 @@ function validationDialog(no) {
       el('div', { class: 'row', style: 'justify-content:space-between' }, el('div', { class: 'row', style: 'gap:14px' }, el('b', {}, 'Requested items'), (() => { const real = V.items.filter(x => x.name || x.cls); const ok = real.filter(x => x.confirmed).length; return real.length ? el('span', { class: 'progress', title: 'Items checked against the form' }, el('span', { class: 'bar2' }, el('i', { style: 'width:' + Math.round(ok / real.length * 100) + '%' })), (ok === real.length ? '✓ ' : '') + ok + ' / ' + real.length + ' confirmed') : null; })(),
         V.items.some(x => (x.name || x.cls) && !x.confirmed) ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Confirm every item after you checked them all', onclick: () => { for (const x of V.items) if ((x.name || x.cls) && !x.confirmed) { x.confirmed = true; x.confirmedBy = me(); x.confirmedAt = new Date().toISOString(); } draw(); } }, 'Confirm all') : null),
         el('button', { class: 'btn sm', type: 'button', onclick: () => { V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' }); draw(); } }, '+ Add item')), items,
-      el('b', {}, 'Suggested decisions (Sarwa rules)'), el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Units/day', 'Qty/month', 'Suggestion', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
+      el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Suggested decisions (Sarwa rules)'), el('button', { class: 'btn sm', type: 'button', onclick: suggestedXlsx }, '⬇ Excel')),
+      el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['#', 'Item', 'Item code', 'Units/day', 'Qty/month', 'Suggestion', 'Past decisions', 'Approval'].map(h => el('th', {}, h)))), resultBox)),
       el('p', { class: 'small muted', style: 'margin:0' }, 'Rules: lab/scan must confirm the condition and be ≤ 6 months old; blood-pressure medicines on diagnosis alone; vitamin B / thioctic acid when diabetes is shown; IBS antispasmodics, NSAIDs and short courses are acute (separate approval); supplements (zinc, selenium, magnesium, melatonin, multivitamins) are not covered; lubricant eye drops for dry eye are approved; a PPI with an antiplatelet / anticoagulant / steroid is gastro-protection. Decisions are suggestions – the assessor decides.'));
     recalc();
   }
   draw();
   const save = async (toReply) => {
-    const R = computeValidation(V); const missingCls = R.filter(x => !x.final);
+    const R = computeValidation(V, CY); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
     const noWhy = R.filter(x => (x.final === 'NOT_COVERED' || x.final === 'NOT_JUSTIFIED') && !String(x.reason || '').trim());
     if (noWhy.length) return toast('Write the reason to the provider for item ' + noWhy.map(x => x.n).join(', ') + ' – e.g. "Zinctron: zinc supplement, not covered by the policy"');
     const notOk = V.items.map((x, i) => (x.name || x.cls) && !x.confirmed ? i + 1 : 0).filter(Boolean);
     if (notOk.length && !confirm(`Item ${notOk.join(', ')} not confirmed yet (name & dose checked against the form).\n\nSave anyway?`)) return;
-    await emit('validation', no, { ...V, member: histMember, result: R.map(x => ({ n: x.n, name: x.name, cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
+    await emit('validation', no, { ...V, member: histMember, holder: CY.holder || '', startDay: CY.day || '', result: R.map(x => ({ n: x.n, name: x.name, code: x.code || '', cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
     // teach the AI reader: what it read vs. what the assessor confirmed / corrected
     const learn = [];
     V.items.forEach((it, i) => {
@@ -4046,7 +4191,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-20b';
+const APP_VERSION = '2026-11-20c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
