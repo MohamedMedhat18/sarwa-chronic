@@ -68,8 +68,18 @@ async function blockedOn(f) {
   const html = (await f.content()).toLowerCase();
   return /captcha|recaptcha|hcaptcha/.test(html) ? 'captcha' : /one[- ]time|otp|authenticator|verification code|two[- ]factor/.test(html) ? 'second factor' : '';
 }
+// seen on the live portal (21 Nov 2026): after a while APEX shows "Your session has ended" with a "Sign In Again" button
+async function sessionEnded(page) {
+  const box = page.getByText('Your session has ended', { exact: false });
+  if (!(await box.count().catch(() => 0)) || !(await box.first().isVisible().catch(() => false))) return false;
+  log('portal session ended - signing in again');
+  await page.getByRole('button', { name: /sign in again/i }).first().click().catch(() => { });
+  await page.waitForLoadState('domcontentloaded').catch(() => { }); await page.waitForTimeout(2500);
+  return true;
+}
 async function ensureLoggedIn(page) {
-  if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0)) return;
+  if (await sessionEnded(page)) await page.goto(LOGIN, { waitUntil: 'domcontentloaded' }).catch(() => { });
+  if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) && !(await sessionEnded(page))) return;
   if (await page.locator('#my_ir').count().catch(() => 0)) return;
   if (!(await frameWith(page, 'input[type=password]'))) await page.goto(LOGIN, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2000);
@@ -279,6 +289,12 @@ function confirmed(job, entry, row, sent) {
   return { result: 'sent', portal: { status_code: STATUS[sName] ?? null, status_name: sName, timeline_id: tid, last_update: iso(entry['Creation Date']) || new Date().toISOString(),
     delivered: row['Broker Mail'] ? { channel: 'email', to: row['Broker Mail'] } : { channel: 'whatsapp', to: row['Creation User'] }, text: sent ? sent.text.slice(0, 2000) : undefined } };
 }
+// Portal history row (every status) - same shape as the one-time import of 21 Nov 2026
+const ddmmyyyy = (s) => { const m = String(s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : null; };
+const histRow = (r, statusName) => ({ request_id: r['Request Id'], individual_number: r['Individual Number'] || r._indiv || '', individual_name: r['Individual Name'] || '',
+  policy_holder: r['Policy Holder Name'] || r['Policy Holder'] || '', contract_no: r['Contract No'] || r['Contract no'] || '', channel: r['Cr Type'] || '', creation_user: r['Creation User'] || '',
+  broker: r['Broker'] || '', broker_mail: r['Broker Mail'] || '', status_name: statusName || r['Chronic Status Name'] || '', status_code: STATUS[statusName || r['Chronic Status Name']] ?? null,
+  chronic_date: ddmmyyyy(r['Chronic Date']), creation_date: iso(r['Creation Date']) || null, assign_to: r['Assign To'] || '' });
 const canWrite = (job) => DRY ? 'DRY_RUN is on' : !ALLOW.has(String(job.request_id)) ? `request ${job.request_id} is not in LIVE_WRITE_ALLOW` : '';
 
 // ---------------- one cycle ----------------
@@ -304,6 +320,7 @@ async function cycle(page, full) {
     log('ingest', JSON.stringify({ seen: requests.length, created: r.created, updated: r.updated, same: r.same, errors: r.errors }));
     if (!(r.errors || []).length) { for (const x of requests) { const s = st(x.req.request_id); s.tl = x.fp; s.files = [...new Set([...s.files, ...x.req.attachments.map((a) => a.id)])]; } saveState(); }
   }
+  for (let i = 0; i < rows.length; i += 1000) await call('bridge_history', { rows: rows.slice(i, i + 1000).map((r) => histRow(r)) }).catch((e) => log('history:', e.message));
   const rec = await call('bridge_reconcile', { open_request_ids: rows.filter((r) => !FINAL.has(STATUS[r['Chronic Status Name']])).map((r) => r['Request Id']) });
   log('reconcile', JSON.stringify({ shown_on_report: shown, read: rows.length, missing: rec.missing_tickets, closed_elsewhere: rec.closed_on_portal_still_open_here }));
   // OUT
@@ -321,6 +338,8 @@ async function cycle(page, full) {
     let res;
     try { res = await submitReply(page, claimed); } catch (e) { res = e instanceof Blocked ? { result: 'error', error: e.message } : { result: 'retry', error: String(e.message || e).slice(0, 300) }; }
     await call('bridge_job_result', { id: claimed.id, ...res }); log('job', claimed.id, res.result, res.error || '');
+    const hrow = rows.find((r) => r['Request Id'] === String(claimed.request_id));
+    if (res.result === 'sent' && hrow) await call('bridge_history', { rows: [histRow(hrow, res.portal?.status_name)] }).catch(() => { });
     await pause(4000, 7000);
   }
   await call('bridge_health', { ok: true, loggedIn: true, pageOk: true, pc: env.COMPUTERNAME || '' });

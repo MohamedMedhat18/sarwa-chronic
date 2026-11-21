@@ -9,6 +9,16 @@ Chrome on the Outlook PC (signed in to the portal)  <--  bridge.mjs  -->  Supaba
   fills Reply, then re-reads the Timeline                 bridge_reconcile / bridge_health / bridge_config (kill switch)
 ```
 
+## Live status (21 Nov 2026)
+
+- Live Sarwa Chronic (Supabase `dqjkmhorcusaynbmjcxx`): portal tables, `portal` function and Settings > Portal =
+  **browser** mode are deployed. Until the bridge PC runs, replies queued in Sarwa Chronic wait in "Waiting for portal".
+- **Portal history**: every Chronic Attach request (all statuses) was imported once into `portal_history` (searchable in
+  Portal > History and on each ticket's member panel). Open requests (Pending, Partially Approved Pending, Reopened,
+  Assigned, Processing) were imported as tickets with their timeline and broker files. The bridge keeps both current: every request it reads on the
+  report is upserted into `portal_history`, and a confirmed reply updates that request's status there too.
+- The token used for that one-time import is replaced the moment an admin presses **New bridge token** (step 3 below).
+
 ## One-time setup (you do these; nothing here needs IT)
 
 1. Install **Node.js LTS** and make sure **Google Chrome** is installed (the bridge uses your installed Chrome).

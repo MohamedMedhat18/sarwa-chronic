@@ -1831,7 +1831,7 @@ function ticketView(r) {
         fwdTo.value = ''; toast('Forward queued – Outlook sends it within a minute');
       } else if (isPortal(t)) {   // portal request: a message through the portal (WhatsApp / broker email); status after the portal confirms
         if (after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
-        await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} });
+        if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} }) === 'dry') { sendBtn.disabled = false; return; }   // preview only; the editor keeps the text
         toast('Message sent to the portal – it goes out to ' + portalRecipient(t) + ' when the portal confirms');
       } else {
         const to = toIn.value.trim(); if (!/@/.test(to)) { toast('Enter the provider email in "To".'); toIn.focus(); sendBtn.disabled = false; return; }
@@ -3198,7 +3198,7 @@ let PORTAL_TICK = 0, PORTAL_OFF = false;
 async function portalTick(force) {
   if (!DB || !STORE.connected || !ME) return; const now = Date.now();
   if (!force && now - PORTAL_TICK < (PORTAL_OFF ? 10 : 2) * 60000) return; PORTAL_TICK = now;
-  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); } catch (e) { console.warn('portal tick', e); }
+  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); portalSetDry(r); } catch (e) { console.warn('portal tick', e); }
 }
 // The portal's OWN reply templates, read from its Reply form (page 168) on 21 Nov 2026. Choosing Language + Status there
 // fills the message with these; our text goes into the #comment# slot (Approved has no slot: a note goes above the closing).
@@ -3236,10 +3236,39 @@ function portalPreview(t, status, core) {
   if (T.includes('#comment#')) return T.replace('#comment#', core || '');
   if (!core) return T; const L = T.split('\n'); L.splice(L.length - 1, 0, core, ''); return L.join('\n');
 }
+// DRY RUN (Settings › Portal, admin): decisions and messages on portal tickets are only PREVIEWED – nothing is queued,
+// nothing reaches the portal, the member or the broker, and the ticket does not change. Safe until the server says otherwise.
+let PORTAL_DRY = true;
+const portalSetDry = r => { if (r && typeof r.dryRun === 'boolean') PORTAL_DRY = r.dryRun; };
+function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
+  const p = t.portal || {}; const code = PORTAL_STATUS_OF[decision] ?? null;
+  const cur = +p.statusCode; const formCode = code != null ? code : ([3, 5, 6, 7, 8].includes(cur) ? cur : 3);
+  const NAME = { 3: 'Pending', 5: 'Approved', 6: 'Partially Approved Pending', 7: 'Partially Approved Rejected', 8: 'Rejected' };
+  const full = portalPreview(t, formCode, text || '');
+  const effect = decision === 'Message' ? 'Status unchanged (' + (p.statusName || '—') + '). The ticket keeps its status' + (ticketUpdate.status ? ' – would become ' + ticketUpdate.status : '') + '.'
+    : PORTAL_FINAL.includes(formCode) ? 'Final: the portal request becomes ' + NAME[formCode] + '; the ticket closes after the portal confirms in its Request Timeline.'
+    : 'Not final: the portal request stays Pending; the ticket goes to Pending – ' + (ticketUpdate.pendingReason || 'reason') + ' after the portal confirms; the member’s answer reopens it (customer_response).';
+  const row = (k, v) => el('tr', {}, el('td', { class: 'muted', style: 'white-space:nowrap;vertical-align:top;padding-right:10px' }, k), el('td', { dir: 'auto', style: 'overflow-wrap:anywhere' }, v));
+  openDialog('Dry run – nothing was sent · ' + t.no + ' · portal #' + (p.requestId || ''), [el('div', { style: 'display:grid;gap:10px' },
+    el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, 'Dry run is on (Settings › Portal). This is exactly what would be submitted on the portal’s Reply form (page 168). Nothing was queued or saved; the ticket did not change.'),
+    el('table', { class: 'tbl small' }, el('tbody', {},
+      row('Portal request', '#' + (p.requestId || '') + ' · now ' + (p.statusName || '—')),
+      row('Delivered by the portal to', portalRecipient(t)),
+      row('Decision', decision), row('P168_STATUS', formCode + ' – ' + NAME[formCode] + (code == null ? ' (message only: current status kept)' : '')),
+      row('P168_LANGUAGE', t.lang === 'EN' ? 'EN' : 'AR'),
+      row('Attachments (upload box)', files.length ? files.map(f => f.name + ' · ' + (f.type || '?') + ' · ' + Math.max(1, Math.round((f.size || 0) / 1024)) + ' KB').join('\n') : 'none'),
+      row('Ticket effect', effect))),
+    el('div', {}, el('div', { class: 'small muted' }, 'P168_COMMENT – the full message the requester receives:'),
+      el('div', { dir: 'auto', style: 'white-space:pre-wrap;font-size:12.5px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:260px;overflow:auto' }, full)))],
+    [el('button', { class: 'btn', type: 'button', onclick: () => { try { navigator.clipboard.writeText(full); toast('Copied'); } catch { } } }, 'Copy text'), el('button', { class: 'btn primary', type: 'button', onclick: closeDialog }, 'Close')], 'min(720px,96vw)');
+  console.info('[portal dry run]', { ticket: t.no, request: p.requestId, decision, status: formCode, lang: t.lang === 'EN' ? 'EN' : 'AR', files: files.map(f => f.name), comment: full });
+  return 'dry';
+}
 // queue one decision / message for the portal (the only way a portal ticket answers the requester)
 async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {} }) {
   if (!isPortal(t)) throw new Error('Not a portal request');
   if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
+  if (PORTAL_DRY) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   const html = textToHtml(text || '');
@@ -3296,11 +3325,12 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
       try {
         if (internal()) { await emit('update', t.no, { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec }); closeDialog(); toast(t.no + ': Pending – ' + reason.value + ' (internal)'); return; }
         const ticketUpdate = d === 'Pending' ? { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec } : { ...dec, status: D.status };
-        await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate });
+        const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate });
+        if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
         closeDialog(); toast(t.no + ': ' + d + ' sent to the portal – the ticket updates when the portal confirms');
         if (opts.after) opts.after();
       } catch (x) { e.target.disabled = false; toast(x.message); }
-    } }, d === 'Pending' ? 'Send – Pending' : 'Send – ' + d)]);
+    } }, (PORTAL_DRY && !internal() ? 'Preview (dry run) – ' : 'Send – ') + d)]);
   (d === 'Approved' ? msg : reason).focus();
 }
 // sidebar: the portal request (key data for the decision) and where the answer is
@@ -3327,6 +3357,8 @@ function portalAdmin() {
   const isAdm = ME && ME.role === 'admin'; const box = el('div', { style: 'display:grid;gap:10px' }, el('p', { class: 'small muted' }, 'Checking the connection…')); const logBox = el('div');
   const inp = (v, attrs = {}) => el('input', { type: 'text', value: v || '', style: 'width:100%', dir: 'ltr', ...attrs });
   const draw = s => {
+    portalSetDry(s);
+    const dry = el('input', { type: 'checkbox', checked: s.dryRun !== false });
     const mode = el('select', {}, [['off', 'Off (kill switch)'], ['browser', 'Portal screens via the Outlook bridge PC (no IT)'], ['mock', 'Mock portal – TEST requests only'], ['live', 'Live portal API (ORDS – needs IT)']].map(([v, l]) => opt(v, l, s.mode)));
     const base = inp(s.baseUrl && s.mode === 'live' ? s.baseUrl : '', { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/chronic/v1' }), tok = inp(s.tokenUrl, { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/oauth/token' });
     const cid = inp(s.clientId, { autocomplete: 'off' }), sec = inp('', { type: 'password', autocomplete: 'new-password', placeholder: s.hasSecret ? '(saved – type to change)' : 'client secret' });
@@ -3342,12 +3374,14 @@ function portalAdmin() {
         s.mode === 'browser' ? el('div', { class: 'small', style: s.health && s.health.ok === false ? 'color:var(--bad);font-weight:600' : '' }, 'Bridge PC: ' + (!s.health || !s.health.at ? 'no report yet – is the bridge running on the Outlook PC?' : (s.health.ok ? '✓ signed in, page OK' : '⚠ ' + (s.health.error || 'problem')) + ' · ' + rel(s.health.at) + (s.health.pc ? ' · ' + s.health.pc : ''))) : null,
         el('div', { class: 'small' }, 'Linked requests: ' + (s.linked || 0) + ' · last check: ' + (s.lastRun ? fmtDate(s.lastRun) + ' (' + rel(s.lastRun) + ')' : 'never') + (s.lastOk ? ' · last OK ' + rel(s.lastOk) : '')),
         el('div', { class: 'small' }, 'Queue: ' + (q.queued || 0) + ' waiting · ' + (q.sending || 0) + ' sending · ', el('b', { style: (q.dead || q.error || q.conflict) ? 'color:var(--bad)' : '' }, ((q.dead || 0) + (q.error || 0) + (q.conflict || 0)) + ' failed'), ' (', el('a', { href: '#/tickets?view=portalfail' }, 'Sync failed queue'), ')'),
+        s.dryRun !== false ? el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, 'Dry run is ON: decisions and messages on portal tickets are previewed only – nothing is queued or sent.') : null,
         s.lastError ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Last error: ' + s.lastError) : null),
       isAdm ? [el('label', { class: 'blk' }, 'Connection', mode), liveBox,
+        el('label', { class: 'row', style: 'gap:8px;align-items:center' }, dry, el('span', {}, el('b', {}, 'Dry run'), ' – preview portal replies only (nothing queued, nothing sent, the ticket does not change)')),
         el('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, el('label', { class: 'blk' }, 'Check every (minutes)', every), el('label', { class: 'blk', style: 'flex:1;min-width:220px' }, 'Group for new portal tickets', grp)),
         el('label', { class: 'blk' }, 'Start with requests changed after (first run only)', since), el('label', { class: 'blk' }, 'Alert emails', alert),
         el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
-          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim() }, () => 'Portal connection saved') }, 'Save'),
+          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim(), dryRun: dry.checked }, () => 'Portal connection saved' + (dry.checked ? ' – dry run ON' : ' – dry run OFF')) }, 'Save'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'test_connection' }, r => r.browser ? 'Bridge PC last report: ' + (r.health && r.health.at ? (r.health.ok ? 'OK ' : 'problem – ' + (r.health.error || '')) + rel(r.health.at) : 'none yet') : 'Signed in to the portal ✓ (' + r.sample + ' request(s) in the last day)') }, 'Test connection'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'sync_now' }, r => r.browser ? 'In this mode the Outlook bridge PC syncs every few minutes' : 'Synced: ' + ((r.in && r.in.created) || 0) + ' new, ' + ((r.in && r.in.updated) || 0) + ' updated, ' + ((r.out && r.out.sent) || 0) + ' decision(s) sent') }, 'Sync now'),
           // token for the Outlook bridge PC (portal bridge): shown ONCE, only its hash is kept; a new one replaces the old one
@@ -3488,8 +3522,7 @@ async function sendPendingMail(t, kind, list, opts = {}) {
   if (isPortal(t)) {   // portal request: the request / reminder goes through the portal (WhatsApp / broker email), status unchanged
     const txt = portalText(t, kind === 'reminder' ? 'reminder' : 'Pending', { list: list || ('- ' + pendingReasonOf(t)) });
     const ticketUpdate = kind === 'reminder' ? { _remindersSent: (t.remindersSent || 0) + 1, _lastReminderAt: new Date().toISOString() } : {};
-    await queuePortal(t, { decision: 'Message', text: txt, missing: String(list || '').split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), ticketUpdate });
-    return;
+    return await queuePortal(t, { decision: 'Message', text: txt, missing: String(list || '').split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), ticketUpdate });
   }
   const lang = t.lang === 'EN' ? 'EN' : 'AR'; const R = replyAllOf(t);
   if (!R.to) throw new Error('No customer email on this ticket');
@@ -3520,7 +3553,7 @@ function pendingDialog(t, preset, opts = {}) {
       if (mail && !list.value.trim() && reason.value === 'Missing documents') { list.focus(); return toast('List what is missing – it goes into the email'); }
       e.target.disabled = true;
       try {
-        if (mail) await sendPendingMail(t, 'request', list.value.trim());
+        if (mail && (await sendPendingMail(t, 'request', list.value.trim())) === 'dry') return;   // portal dry run: preview only
         await emit('update', t.no, { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(),
           ...(opts.decision ? { decision: 'Pending', _decisionReason: reason.value, _decisionNote: note.value.trim(), _decisionAt: new Date().toISOString(), _decisionBy: me() } : {}) });
         closeDialog(); toast(t.no + ': Pending – ' + reason.value + (mail ? ' · request emailed (Reply All)' : ''));
@@ -3653,7 +3686,7 @@ function cyclePanel(t) {
 function reminderDialog(t) {
   const R = replyAllOf(t); const list = el('textarea', { rows: 4, dir: 'auto', style: 'width:100%' }, missingFromValidation(t) || ('- ' + pendingReasonOf(t)));
   openDialog('🔔 Reminder – ' + t.no, [el('div', { class: 'small' }, 'Reply All to ', el('b', {}, R.to || '—'), R.cc ? ' + ' + R.cc.split(';').length + ' in copy' : ''), el('label', {}, 'Still missing (one per line)', list)],
-    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try { await sendPendingMail(t, 'reminder', list.value.trim()); closeDialog(); toast('Reminder queued (Reply All)'); } catch (x) { e.target.disabled = false; toast(x.message); } } }, 'Send reminder')]);
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try { if ((await sendPendingMail(t, 'reminder', list.value.trim())) === 'dry') return; closeDialog(); toast('Reminder queued (Reply All)'); } catch (x) { e.target.disabled = false; toast(x.message); } } }, 'Send reminder')]);
 }
 // runs on every signed-in device (every 30 s): pending tickets past the last stage are closed (no email), and the assigned
 // agent is told about new customer responses
