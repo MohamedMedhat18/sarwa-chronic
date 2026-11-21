@@ -1993,12 +1993,12 @@ function dashboard() {
     // per policy holder: starting day, members, requests and decisions in the period, top item codes
     const HB = new Map(); const hb = h => { if (!HB.has(h)) HB.set(h, { members: new Set(), req: 0, open: 0, dec: { Approved: 0, 'Partially approved': 0, Pending: 0, Rejected: 0 }, codes: {} }); return HB.get(h); };
     T0.forEach(t => {
-      const h = holderOf(t) || '— unknown —'; const x = hb(h); if (memberNo(t)) x.members.add(memberNo(t)); if (inR(t.created)) x.req++; if (openT(t)) x.open++;
+      const h = holderOf(t) || 'Others'; const x = hb(h); if (memberNo(t)) x.members.add(memberNo(t)); if (inR(t.created)) x.req++; if (openT(t)) x.open++;
       if (t.decision && inR(t.decisionAt || t.updated) && x.dec[t.decision] != null) x.dec[t.decision]++;
       if (t.validation && inR(t.validation.at)) for (const r of t.validation.result || []) { const c = r.code || (medCode(r.name) || {}).med_code || ''; const k = c ? c + ' ' + String(r.name || '').split(' ').slice(0, 2).join(' ') : String(r.name || '').split(' ').slice(0, 2).join(' '); if (k.trim()) x.codes[k] = (x.codes[k] || 0) + 1; }
     });
     const hRows = [...HB.entries()].filter(([, x]) => x.req || x.open).sort((a, b) => (b[1].req + b[1].open) - (a[1].req + a[1].open));
-    const holderOpts = [...HB.entries()].filter(([h]) => h !== '— unknown —').sort((a, b) => a[0].localeCompare(b[0]));
+    const holderOpts = [...HB.entries()].filter(([h]) => h !== 'Others').sort((a, b) => a[0].localeCompare(b[0]));
     const rate = (x, k) => { const s = Object.values(x.dec).reduce((a, b) => a + b, 0); return s ? Math.round(x.dec[k] / s * 100) + '%' : '—'; };
     function itemRulesXlsx() {   // Item code → what the team decided before (latest validation of every ticket), with confidence
       const by = new Map();
@@ -2048,19 +2048,21 @@ function dashboard() {
             el('tbody', {}, [...agents.entries()].sort((a, b) => (b[1].open + b[1].closed) - (a[1].open + a[1].closed)).map(([n, a]) => el('tr', {},
               el('td', {}, el('span', { class: 'row', style: 'gap:8px;flex-wrap:nowrap' }, avatar(n, true), n, DB.avail && Object.values(DB.avail).length ? null : null)),
               el('td', { class: 'n' }, el('a', { href: n === 'Unassigned' ? '#/tickets?view=unassigned' : '#/tickets?view=open' }, a.open)), el('td', { class: 'n', style: a.overdue ? 'color:var(--bad);font-weight:600' : '' }, a.overdue), el('td', { class: 'n' }, a.closed), el('td', { class: 'n' }, a.replies), el('td', { class: 'n' }, dur(median(a.fr))))))))),
-        el('section', { class: 'panel span2' }, el('div', { class: 'phead' }, el('h3', {}, 'Policy holders'), el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm', type: 'button', onclick: holdersXlsx }, '⬇ Holders'), el('button', { class: 'btn sm', type: 'button', title: 'Every item code with the decisions the team took before, the confidence, and split decisions for the medical team', onclick: itemRulesXlsx }, '⬇ Item code rules'))),
-          hRows.length ? el('div', { class: 'tw', style: 'max-height:340px;overflow:auto' }, el('table', { class: 't dt' }, el('thead', {}, el('tr', {}, ['Policy holder', 'Start day', 'Members', 'Requests', 'Open', 'Approved', 'Partial', 'Pending', 'Rejected', 'Top item codes'].map((h, i) => el('th', { class: i && i < 9 ? 'n' : '' }, h)))),
-            el('tbody', {}, hRows.slice(0, 40).map(([h, x]) => { const hd = holderDay(h); return el('tr', {},
-              el('td', { dir: 'auto' }, h === '— unknown —' ? el('span', { class: 'muted' }, h) : el('a', { href: '#', onclick: e => { e.preventDefault(); holderF = h; lsSet('hd-dash-holder', h); draw(); } }, h)),
-              el('td', { class: 'n', title: hd ? (hd.manual ? 'Set by the team' : Math.round((hd.share || 0) * 100) + '% of ' + (hd.members || 0) + ' members start on this day') : '' }, hd ? hd.day + (hd.manual ? ' ✎' : hd.share < 0.6 ? ' ?' : '') : '—'),
-              el('td', { class: 'n' }, x.members.size), el('td', { class: 'n' }, x.req), el('td', { class: 'n' }, x.open),
-              el('td', { class: 'n' }, rate(x, 'Approved')), el('td', { class: 'n' }, rate(x, 'Partially approved')), el('td', { class: 'n' }, rate(x, 'Pending')), el('td', { class: 'n' }, rate(x, 'Rejected')),
-              el('td', { class: 'small' }, Object.entries(x.codes).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => k + ' (' + v + ')').join(' · ') || '—')); })))) : el('div', { class: 'small muted' }, dashboard.loadingHolders ? 'Loading policy holders…' : 'No requests in the period.'),
-          el('div', { class: 'small muted', style: 'margin-top:6px' }, 'Holder from the member card (GlobeMed files). Start day = the day most of the holder\'s members start on (✎ = set by the team, ? = less than 60% agree). Rates = decisions in the period.')),
+        // Policy holders with open requests – same look as "Domains Open Requests"; a bar filters the whole dashboard to that holder
+        (() => {
+          const rows = hRows.filter(([, x]) => x.open).sort((a, b) => (a[0] === 'Others') - (b[0] === 'Others') || b[1].open - a[1].open);
+          const top = rows.filter(([h]) => h !== 'Others').slice(0, 8), oth = rows.find(([h]) => h === 'Others');
+          const shown = oth ? [...top, oth] : top;
+          const bars = shown.length ? hbars(shown.map(([h, x]) => { const hd = holderDay(h); return [h, x.open, '#', h === 'Others' ? 'var(--border)' : 'var(--accent)', hd ? 'day ' + hd.day : '']; })) : null;
+          if (bars) [...bars.children].forEach((a, i) => { const h = shown[i][0]; a.title = h + ': ' + shown[i][1].open + ' open' + (h === 'Others' ? ' (member card not found in the GlobeMed files)' : ' – click to show only this holder'); a.onclick = e => { e.preventDefault(); if (h === 'Others') return; holderF = h; lsSet('hd-dash-holder', h); draw(); }; });
+          return el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Policy holders open requests'),
+            el('div', { class: 'row', style: 'gap:4px' }, el('button', { class: 'btn sm ghost', type: 'button', title: 'Every holder: starting day, members, requests, decision rates, top item codes', onclick: holdersXlsx }, '⬇'), el('button', { class: 'btn sm ghost', type: 'button', title: 'Item code rules: every item code with the decisions the team took before, the confidence, and split decisions for the medical team', onclick: itemRulesXlsx }, '⬇ Codes'))),
+            bars || el('div', { class: 'small muted' }, dashboard.loadingHolders ? 'Loading policy holders…' : 'Nothing open.'));
+        })(),
         el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Open tickets by age')), stacked(buckets.map(([l, f, c]) => ({ l, v: open.filter(f).length, c, href: '#/tickets?view=open' })), open.length),
           el('div', { class: 'small muted', style: 'margin:14px 0 6px' }, 'Coverage of open tickets'),
           hbars([['AI read the prescription', aiRead, '#/tickets?view=open', 'var(--accent)', withFiles.length ? pct(aiRead, withFiles.length) + '% of ' + withFiles.length : ''], ['Checked in i-CARE', icared, '#/tickets?view=unverified', '#2f6fb0', withMember.length ? pct(icared, withMember.length) + '% of ' + withMember.length : ''], ['First response on time', frOk, '#/tickets?view=all', '#2f8a4f', fr.length ? pct(frOk, fr.length) + '% of ' + fr.length : '']])),
-        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Providers with open requests')),
+        el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Domains Open Requests')),
           Object.keys(prov).length ? hbars(Object.entries(prov).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([d, v]) => [d, v, '#/tickets?view=open&q=' + encodeURIComponent(d)])) : el('div', { class: 'small muted' }, 'Nothing open.')),
         el('section', { class: 'panel' }, el('div', { class: 'phead' }, el('h3', {}, 'Items most often not covered / rejected')),
           Object.keys(items).length ? hbars(Object.entries(items).sort((a, b) => b[1].n - a[1].n).slice(0, 8).map(([k, x]) => [k, x.n, '', x.d === 'NOT_JUSTIFIED' ? '#d0662b' : 'var(--bad)', DEC[x.d] ? DEC[x.d].en : x.d])) : el('div', { class: 'small muted' }, 'No rejected items in the period.')),
@@ -4192,7 +4194,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-20d';
+const APP_VERSION = '2026-11-21a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
