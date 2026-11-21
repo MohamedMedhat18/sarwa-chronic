@@ -42,7 +42,7 @@ mkdirSync(join(DATA, 'previews'), { recursive: true });
 const MAP = JSON.parse(readFileSync(existsSync(join(DATA, 'reply-map.json')) ? join(DATA, 'reply-map.json') : new URL('./reply-map.json', import.meta.url), 'utf8'));
 const F = MAP.form;
 const STATE_FILE = join(DATA, 'state.json');      // per request: timeline fingerprint, attachment ids already sent, our timeline entries
-const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : {};
+const state = existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8').replace(/^﻿/, '')) : {};   // tolerate a BOM (file edited in PowerShell)
 const saveState = () => writeFileSync(STATE_FILE, JSON.stringify(state, null, 1));
 const st = (id) => (state[id] ||= { tl: '', files: [], mine: [] });
 
@@ -96,9 +96,14 @@ async function ensureLoggedIn(page) {
   if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) && !(await sessionEnded(page))) return;
   if (await page.locator('#my_ir').count().catch(() => 0)) return;
   if (!(await frameWith(page, 'input[type=password]'))) await page.goto(LOGIN, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(2000);
-  if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0)) return;
-  const f = await frameWith(page, 'input[type=password]');
+  // the sign-in page loads inside a frame of the portal home and can take a while: wait for the form or the signed-in menu
+  let f = null;
+  for (let i = 0; i < 40 && !f; i++) {
+    await page.waitForTimeout(500);
+    await leaveLoginFrame(page);
+    if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0)) return;
+    f = await frameWith(page, 'input[type=password]');
+  }
   if (!f) throw new Error('login page not recognised (page structure changed?)');
   const b = await blockedOn(f); if (b) throw new Blocked(`the login page asks for a ${b} - automation stopped`);
   if (!USER || !PASS) throw new Blocked('no portal account on this PC - run Set-PortalCredential.ps1');
@@ -332,7 +337,9 @@ async function cycle(page, full) {
   const cfg = await call('bridge_config');
   if (!cfg.active) { log('link is Off in Settings > Portal - idle'); return; }
   await openChronicAttach(page);
+  await resetReport(page);   // no search / filter left over (an empty report has no column headers)
   const heads = await page.$$eval('#my_ir .a-IRR-header', (h) => h.map((x) => x.textContent.trim()));
+  if (!heads.length && await page.locator('#my_ir .a-IRR-noDataMsg, #my_ir .nodatafound').count().catch(() => 0)) { log('no Pending requests on the portal'); await call('bridge_health', { ok: true, loggedIn: true, pageOk: true, pc: env.COMPUTERNAME || '' }); return; }
   const missing = EXPECTED_HEADERS.filter((h) => !heads.includes(h));
   if (missing.length) { await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'report columns changed: missing ' + missing.join(', '), pc: env.COMPUTERNAME || '' }); return; }
   // IN: timeline every cycle; attachments when the request is new or its timeline changed (or on the hourly full pass)
@@ -374,7 +381,65 @@ async function cycle(page, full) {
     if (res.result === 'sent' && hrow) await call('bridge_history', { rows: [histRow(hrow, res.portal?.status_name)] }).catch(() => { });
     await pause(4000, 7000);
   }
+  // requests that left the list (decided / changed directly on the portal): look each one up and send its current state
+  // in - the server marks the ticket "Changed on the portal" and never overwrites. At most 5 per cycle, each every 30 min.
+  state._lookup ||= {};
+  for (const id of (rec.closed_on_portal_still_open_here || []).filter((x) => /^\d+$/.test(x)).slice(0, 5)) {
+    if (Date.now() - (state._lookup[id] || 0) < 30 * 60000) continue;
+    state._lookup[id] = Date.now(); saveState();
+    try { log('changed on the portal?', id, await lookupRequest(page, id)); }
+    catch (e) { log('lookup failed', id, String(e.message || e).slice(0, 200)); if (e instanceof Blocked) throw e; }
+  }
   await call('bridge_health', { ok: true, loggedIn: true, pageOk: true, pc: env.COMPUTERNAME || '' });
+}
+// find one request with the report's own search over ALL statuses, read it (timeline + files) and send it in.
+// The search and the Status filter are always put back (Pending, no search) afterwards.
+async function lookupRequest(page, id) {
+  await openChronicAttach(page);
+  const idle = async (ms) => { const end = Date.now() + ms; await page.waitForTimeout(1500); while (Date.now() < end) { if (!(await page.locator('.u-Processing, .a-IRR-loading').count().catch(() => 0))) return; await page.waitForTimeout(1000); } };
+  const setStatus = async (v) => { await page.evaluate((x) => apex.item('P165_STATUS').setValue(x), v); await page.locator('#B500203752390221333').click(); await idle(120000); await page.waitForTimeout(1500); };
+  try {
+    await resetReport(page); await idle(60000);   // search first on the small Pending list, then widen to all statuses
+    // the report's own search (Enter in the box does not start it on this page): row text contains <id>
+    const applied = () => page.locator('#my_ir .a-IRR-controls-item', { hasText: String(id) }).count().catch(() => 0);
+    const tries = [
+      async () => { await page.fill('#my_ir_search_field', String(id)); await page.locator('#my_ir_search_button, #my_ir .a-IRR-search-button, #my_ir button:has-text("Go")').first().click({ timeout: 5000 }); },
+      async () => { await page.fill('#my_ir_search_field', String(id)); await page.press('#my_ir_search_field', 'Enter'); },
+      async () => { await page.evaluate((x) => { window.$('#my_ir_search_field').val(x); window.$('#my_ir_ir').interactiveReport('instance')._search('SEARCH'); }, String(id)); },
+    ];
+    for (const t of tries) {
+      await t().catch(() => { });
+      for (let i = 0; i < 20; i++) { await page.waitForTimeout(750); if (!(await page.locator('.u-Processing').count().catch(() => 0)) && await applied()) break; }
+      if (await applied()) break;
+    }
+    await setStatus('');   // All Data, with the search filter kept: only the matching request(s)
+    await page.addScriptTag({ path: READER });
+    const found = await page.evaluate((x) => window.SarwaPortalReader.reportRows().some((r) => r['Request Id'] === String(x)), id);
+    if (!found) return 'not found on the portal ' + JSON.stringify(await page.evaluate((x) => ({ otherReports: [...document.querySelectorAll('.a-IRR, .t-Report, .a-GV')].map((r) => { const reg = r.closest('[id^="R"], [id$="_ir"]') || r; const tab = reg.closest('.t-TabsRegion-items > div, [role=tabpanel]'); return { id: (reg.id || '').slice(0, 40), tab: tab ? (document.querySelector('[aria-controls="' + tab.id + '"]') || {}).textContent?.trim() : '', rows: r.querySelectorAll('tr').length, hasId: r.textContent.includes(x) }; }).slice(0, 8), tabLinks: [...document.querySelectorAll('.t-Tabs a, [role=tab]')].map((a) => a.textContent.trim() + '>' + (a.getAttribute('aria-controls') || a.getAttribute('href') || '').slice(0, 40)).slice(0, 6), status: apex.item('P165_STATUS').getValue(), search: !!document.querySelector('#my_ir_search_field'), filters: [...document.querySelectorAll('#my_ir .a-IRR-controls-item')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()).slice(0, 3), pag: (document.querySelector('#my_ir .a-IRR-pagination') || {}).textContent?.replace(/\s+/g, ' ').trim(), rows: window.SarwaPortalReader.reportRows().length, tabs: [...document.querySelectorAll('a,button')].map((e) => e.textContent.trim()).filter((t) => /^Chronic Attach/.test(t)).slice(0, 4) }), String(id)).catch((e) => ({ err: String(e) })));
+    const s = st(id);
+    const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
+    const res = await call('bridge_ingest', { requests: [r.req] });
+    if (!(res.errors || []).length) { s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
+    const q = r.req;   // full row for the history (every column, so nothing is blanked by the upsert)
+    await call('bridge_history', { rows: [{ request_id: q.request_id, individual_number: q.individual_number, individual_name: q.individual_name, policy_holder: q.policy_holder_name || q.policy_holder, contract_no: q.contract_no, channel: q.channel, creation_user: q.creation_user, broker: q.broker, broker_mail: q.broker_mail, status_name: q.status_name, status_code: q.status_code, chronic_date: q.chronic_date || null, creation_date: q.creation_date || null, assign_to: q.assign_to }] }).catch(() => { });
+    return 'now ' + r.req.status_name + ((res.errors || []).length ? ' - error ' + res.errors[0] : res.updated ? ' - ticket updated' : ' - no change');
+  } finally {
+    await resetReport(page).catch(() => { });
+  }
+}
+// the report back to its normal view: every search / filter removed, Status Filter = Pending
+async function resetReport(page) {
+  for (let i = 0; i < 6; i++) {
+    const n = await page.evaluate(() => { const b = [...document.querySelectorAll('#my_ir button, #my_ir a')].filter((x) => /Remove Filter/i.test(x.getAttribute('title') || x.getAttribute('aria-label') || '')); if (b[0]) b[0].click(); return b.length; }).catch(() => 0);
+    if (!n) break;
+    await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(1500);
+  }
+  await page.fill('#my_ir_search_field', '').catch(() => { });
+  if (await page.evaluate(() => apex.item('P165_STATUS').getValue()).catch(() => '3') !== '3') {
+    await page.evaluate(() => apex.item('P165_STATUS').setValue('3')).catch(() => { });
+    await page.locator('#B500203752390221333').click().catch(() => { });
+    await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500);
+  }
 }
 
 async function main() {
