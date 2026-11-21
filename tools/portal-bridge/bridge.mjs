@@ -36,6 +36,7 @@ const STATUS = { Assigned: 1, Processing: 2, Pending: 3, Closed: 4, Approved: 5,
 const FINAL = new Set([4, 5, 7, 8]);
 const EXPECTED_HEADERS = ['Request Id', 'Individual Name', 'Chronic Status Name', 'Creation User', 'Cr Type', 'Creation Date'];
 const MAX_FILE = 20 * 1048576;
+const READER = new URL('./portal-reader.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');   // in-page reader (no clicks)
 mkdirSync(join(DATA, 'previews'), { recursive: true });
 const MAP = JSON.parse(readFileSync(existsSync(join(DATA, 'reply-map.json')) ? join(DATA, 'reply-map.json') : new URL('./reply-map.json', import.meta.url), 'utf8'));
 const F = MAP.form;
@@ -308,11 +309,13 @@ async function cycle(page, full) {
   // IN: timeline every cycle; attachments when the request is new or its timeline changed (or on the hourly full pass)
   const rows = await readReport(page); const shown = await reportCount(page);
   const requests = [];
+  // read every request with the in-page reader (plain GETs of the signed dialog URLs - no clicks, nothing submitted):
+  // timeline + Broker and Sarwa attachments; files already sent are listed but not downloaded again
+  await page.addScriptTag({ path: READER });
   for (const row of rows) {
     const id = row['Request Id']; const s = st(id);
-    const tl = await readTimeline(page, id); const fp = sha(JSON.stringify(tl));
-    const atts = (full || !s.tl || s.tl !== fp) ? await readAttachments(page, id) : s.files.map((fid) => ({ id: fid }));
-    requests.push({ req: toRequest(row, tl, atts), fp });
+    const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
+    requests.push({ req: r.req, fp: r.tlFingerprint });
     await pause();
   }
   if (requests.length) {

@@ -885,6 +885,7 @@ function applyEv(S, e) {
       if (d.direct) t.portalDirect = { at: e.ts, by: d.by || '', status: d.statusName, comment: d.comment || '' };
       t.timeline.push({ ts: e.ts, by: 'Portal', text: 'Portal status: ' + (d.from ? d.from + ' → ' : '') + d.statusName + (d.direct ? ' (changed on the portal' + (d.by ? ' by ' + d.by : '') + ')' : '') }); t.updated = e.ts; break;
     }
+    case 'portal.rules': { if (!t) return; t.portalRules = { ...d, at: e.ts }; break; }   // arrival checks + suggested decision (server rules engine)
     case 'portal.queued': {   // an agent sent a decision / message: it is on its way to the portal (shown as "Waiting for the portal")
       if (!t) return;
       t.msgs.push({ kind: 'out', portal: true, id: e.id, at: e.ts, by: e.by, state: 'queued', jobId: d.jobId, decision: d.decision, reason: d.reason || '', html: d.html, text: d.text, atts: d.atts || [], to: d.to || '', cc: d.cc || '', channel: d.channel || '' });
@@ -1894,6 +1895,7 @@ function ticketView(r) {
       el('h3', {}, 'Member'),
       patientInfo(t),
       portalPanel(t),
+      portalRulesBox(t),
       portalHistoryBox(t),
       icarePanel(t),
       decisionPanel(t),
@@ -3198,7 +3200,9 @@ let PORTAL_TICK = 0, PORTAL_OFF = false;
 async function portalTick(force) {
   if (!DB || !STORE.connected || !ME) return; const now = Date.now();
   if (!force && now - PORTAL_TICK < (PORTAL_OFF ? 10 : 2) * 60000) return; PORTAL_TICK = now;
-  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); portalSetDry(r); } catch (e) { console.warn('portal tick', e); }
+  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); portalSetDry(r);
+    if (Date.now() - PORTAL_LEVELS_AT > 30 * 60000) portalSetDry(await portalCall({ action: 'status' }));   // automation levels (Settings › Portal)
+  } catch (e) { console.warn('portal tick', e); }
 }
 // The portal's OWN reply templates, read from its Reply form (page 168) on 21 Nov 2026. Choosing Language + Status there
 // fills the message with these; our text goes into the #comment# slot (Approved has no slot: a note goes above the closing).
@@ -3239,7 +3243,8 @@ function portalPreview(t, status, core) {
 // DRY RUN (Settings › Portal, admin): decisions and messages on portal tickets are only PREVIEWED – nothing is queued,
 // nothing reaches the portal, the member or the broker, and the ticket does not change. Safe until the server says otherwise.
 let PORTAL_DRY = true;
-const portalSetDry = r => { if (r && typeof r.dryRun === 'boolean') PORTAL_DRY = r.dryRun; };
+const portalSetDry = r => { if (r && typeof r.dryRun === 'boolean') PORTAL_DRY = r.dryRun; if (r && r.levels && typeof PORTAL_LEVELS !== 'undefined') { PORTAL_LEVELS = { ...PORTAL_LEVELS, ...r.levels }; PORTAL_LEVELS_AT = Date.now(); } };
+let PORTAL_LEVELS_AT = 0;
 function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
   const p = t.portal || {}; const code = PORTAL_STATUS_OF[decision] ?? null;
   const cur = +p.statusCode; const formCode = code != null ? code : ([3, 5, 6, 7, 8].includes(cur) ? cur : 3);
@@ -3361,6 +3366,9 @@ function portalAdmin() {
   const draw = s => {
     portalSetDry(s);
     const dry = el('input', { type: 'checkbox', checked: s.dryRun !== false });
+    const LV = { missing_docs: 'Pending – missing documents', approve: 'Approve', reject: 'Reject', partial: 'Partially approved', duplicate: 'Duplicate request', review: 'Needs review', medical_team: 'Refer to medical team' };
+    const lvNow = { ...PORTAL_LEVELS, ...(s.levels || {}) }; const lvSel = {};
+    const levelSel = Object.entries(LV).map(([k, label]) => { const sel = el('select', { disabled: k === 'medical_team' }, [[1, 'Level 1 – automatic (locked)'], [2, 'Level 2 – one click'], [3, 'Level 3 – manual']].map(([v, l]) => { const o = opt(String(v), l, String(lvNow[k] ?? 3)); if (v === 1) o.disabled = true; return o; })); lvSel[k] = sel; return el('label', { class: 'blk' }, label, sel); });
     const mode = el('select', {}, [['off', 'Off (kill switch)'], ['browser', 'Portal screens via the Outlook bridge PC (no IT)'], ['mock', 'Mock portal – TEST requests only'], ['live', 'Live portal API (ORDS – needs IT)']].map(([v, l]) => opt(v, l, s.mode)));
     const base = inp(s.baseUrl && s.mode === 'live' ? s.baseUrl : '', { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/chronic/v1' }), tok = inp(s.tokenUrl, { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/oauth/token' });
     const cid = inp(s.clientId, { autocomplete: 'off' }), sec = inp('', { type: 'password', autocomplete: 'new-password', placeholder: s.hasSecret ? '(saved – type to change)' : 'client secret' });
@@ -3380,10 +3388,13 @@ function portalAdmin() {
         s.lastError ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Last error: ' + s.lastError) : null),
       isAdm ? [el('label', { class: 'blk' }, 'Connection', mode), liveBox,
         el('label', { class: 'row', style: 'gap:8px;align-items:center' }, dry, el('span', {}, el('b', {}, 'Dry run'), ' – preview portal replies only (nothing queued, nothing sent, the ticket does not change)')),
+        el('div', { class: 'slabox', style: 'display:grid;gap:6px' }, el('b', {}, 'Automation level per decision type'),
+          el('div', { class: 'small muted' }, 'Level 2 = the decision is prepared on the ticket and the agent confirms with one click. Level 3 = manual. Level 1 (fully automatic) stays locked until you approve a rule; Refer to medical team is always manual.'),
+          el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px' }, levelSel)),
         el('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, el('label', { class: 'blk' }, 'Check every (minutes)', every), el('label', { class: 'blk', style: 'flex:1;min-width:220px' }, 'Group for new portal tickets', grp)),
         el('label', { class: 'blk' }, 'Start with requests changed after (first run only)', since), el('label', { class: 'blk' }, 'Alert emails', alert),
         el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
-          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim(), dryRun: dry.checked }, () => 'Portal connection saved' + (dry.checked ? ' – dry run ON' : ' – dry run OFF')) }, 'Save'),
+          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim(), dryRun: dry.checked, levels: Object.fromEntries(Object.entries(lvSel).map(([k, sel]) => [k, +sel.value])) }, () => 'Portal connection saved' + (dry.checked ? ' – dry run ON' : ' – dry run OFF')) }, 'Save'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'test_connection' }, r => r.browser ? 'Bridge PC last report: ' + (r.health && r.health.at ? (r.health.ok ? 'OK ' : 'problem – ' + (r.health.error || '')) + rel(r.health.at) : 'none yet') : 'Signed in to the portal ✓ (' + r.sample + ' request(s) in the last day)') }, 'Test connection'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'sync_now' }, r => r.browser ? 'In this mode the Outlook bridge PC syncs every few minutes' : 'Synced: ' + ((r.in && r.in.created) || 0) + ' new, ' + ((r.in && r.in.updated) || 0) + ' updated, ' + ((r.out && r.out.sent) || 0) + ' decision(s) sent') }, 'Sync now'),
           // token for the Outlook bridge PC (portal bridge): shown ONCE, only its hash is kept; a new one replaces the old one
@@ -3416,6 +3427,36 @@ const PH_STATUS = [[3, 'Pending'], [5, 'Approved'], [6, 'Partially Approved Pend
 const PH_CACHE = new Map();
 const phPill = s => { const n = String(s || ''); const bg = /reject/i.test(n) ? 'var(--bad-bg)' : /^approved$/i.test(n) ? 'var(--ok-bg)' : 'var(--warn-bg)'; return el('span', { class: 'pill', style: 'font-size:11px;padding:0 6px;background:' + bg }, n.replace(/_/g, ' ') || '—'); };
 // member panel: the member's portal requests (any status), newest first
+// Arrival checks (server rules R1-R5) + the item check from the AI reading (team rules) = one Suggested Decision with its
+// automation level: 1 automatic (only rules the admin approved - none yet), 2 prepared for one click, 3 manual.
+let PORTAL_LEVELS = { missing_docs: 2, approve: 2, reject: 2, partial: 3, duplicate: 3, medical_team: 3, review: 3 };
+function portalSuggestion(t) {
+  const r = t.portalRules; const srv = r && r.suggestion;
+  const hasFiles = t.msgs.some(m => m.kind === 'in' && (m.atts || []).some(a => a.path && a.source !== 'Sarwa'));
+  if (srv && srv.kind === 'missing_docs' && !hasFiles) return { d: 'Pending', reason: 'Missing documents', why: 'No prescription or document on the portal', conf: srv.confidence, kind: 'missing_docs' };
+  if (srv && srv.kind === 'duplicate') return { d: null, why: srv.reason, conf: srv.confidence, kind: 'duplicate' };
+  const it = typeof suggestedDecision === 'function' ? suggestedDecision(t) : null;
+  if (it) {
+    const kind = it.d === 'Approved' ? 'approve' : it.d === 'Rejected' ? 'reject' : it.d === 'Partially approved' ? 'partial' : 'missing_docs';
+    return { d: it.d, reason: it.reason || '', why: (it.prelim ? 'Preliminary – from the AI reading and the confirmed team rules' : 'From the saved medicine validation') + (it.acute ? ' · ' + it.acute + ' acute item(s) not counted' : ''), conf: it.prelim ? 0.7 : 0.9, kind };
+  }
+  return { d: null, why: srv ? srv.reason : 'Waiting for the arrival checks', conf: 0, kind: 'review' };
+}
+function portalRulesBox(t) {
+  const r = t.portalRules; if (!r) return null;
+  const s = portalSuggestion(t); const lvl = s.kind === 'medical_team' ? 3 : (PORTAL_LEVELS[s.kind] ?? 3);
+  const col = { ok: '#1b7344', warn: '#9a6a00', fail: 'var(--bad)', info: 'var(--muted)' };
+  const icon = { ok: '✓', warn: '⚠', fail: '✕', info: 'ℹ' };
+  const prep = s.d && lvl <= 2 && openT(t) && isPortal(t) ? el('button', { class: 'btn sm primary', type: 'button', title: 'Opens the decision with the reason and text prepared – you check it and confirm', onclick: () => portalDecisionDialog(t, s.d, s.reason || '') }, 'Prepare ' + s.d + ' (1 click)') : null;
+  return el('div', { class: 'slabox', style: 'display:grid;gap:5px;font-size:12.5px;margin-bottom:10px;border-left:3px solid #6a3fb0' },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Checks on arrival'), el('span', { class: 'small muted' }, rel(r.at))),
+    (r.checks || []).map(c => el('div', { style: 'color:' + (col[c.result] || 'inherit') }, (icon[c.result] || '') + ' ', el('b', {}, c.name), ': ', el('span', { dir: 'auto' }, c.detail))),
+    el('div', { style: 'border-top:1px solid var(--border);padding-top:5px;display:grid;gap:4px' },
+      el('div', {}, el('b', {}, 'Suggested: '), s.d ? s.d + (s.reason ? ' – ' + s.reason : '') : 'Agent review', s.conf ? el('span', { class: 'muted' }, ' · confidence ' + Math.round(s.conf * 100) + '%') : null),
+      el('div', { class: 'small muted', dir: 'auto' }, s.why || ''),
+      el('div', { class: 'small' }, 'Automation: ', el('b', {}, 'Level ' + lvl), lvl === 1 ? ' – automatic (approved rule)' : lvl === 2 ? ' – prepared, one click to confirm' : ' – manual'),
+      prep));
+}
 function portalHistoryBox(t) {
   const m = String(t.member || '').trim(); if (!/^\d{6,10}$/.test(m) || !SB) return null;
   const box = el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px' }, el('div', { class: 'small muted' }, 'Portal history…'));

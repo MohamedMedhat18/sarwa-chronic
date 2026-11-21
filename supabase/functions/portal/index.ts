@@ -153,10 +153,11 @@ async function saveInlineAtts(no: string, list: InlineAtt[]) {
     if (!a.content_base64) { out.push({ name, mime, size: a.size || 0, path: '', cls: 'unreadable', why: 'not downloaded (too large / open it in the portal)', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
     const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0));
     if (bytes.length > MAX_ATT) { out.push({ name, mime, size: bytes.length, path: '', cls: 'unreadable', why: 'larger than 20 MB - open it in the portal', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
-    const path = `${HD}/files/${no}/${rand(5)}_${safe(name)}`;
+    // one path per portal file id: a re-run overwrites the same object instead of storing the file twice
+    const path = `${HD}/files/${no}/p_${safe(String(a.id))}_${safe(name)}`;
     const { error } = await db.storage.from(BUCKET).upload(path, bytes, { contentType: mime, upsert: true });
     if (error) throw new Error('upload ' + name + ': ' + error.message);
-    out.push({ name, mime, size: bytes.length, path, cls: readable(mime) ? 'readable' : 'unreadable', why: readable(mime) ? '' : 'open it in the portal / Word', via: 'portal', portalId: String(a.id), source: a.source || '' });
+    out.push({ name, mime, size: bytes.length, path, cls: readable(mime) ? 'readable' : 'unreadable', why: readable(mime) ? '' : 'open it to view (Word / Excel download)', via: 'portal', portalId: String(a.id), source: a.source || '', ...((a as any).extra_comment ? { note: str((a as any).extra_comment, 300) } : {}) });
   }
   return out;
 }
@@ -392,7 +393,7 @@ async function statusOf(c: Cfg) {
   for (const s of ['queued', 'sending', 'conflict', 'error', 'dead']) { const { count } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).eq('status', s); counts[s] = count || 0; }
   const { count: links } = await db.from('portal_links').select('request_id', { count: 'exact', head: true });
   const health = c.mode === 'browser' ? await getState('health') : null;
-  return { mode: c.mode, dryRun: c.dryRun !== false, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
+  return { mode: c.mode, dryRun: c.dryRun !== false, levels: { ...DEFAULT_LEVELS, ...((c as any).levels || {}) }, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
     clientId: c.mode === 'live' ? c.clientId : '', hasSecret: !!c.clientSecret, intervalMin: c.intervalMin, group: c.group, alertTo: c.alertTo, since: c.since,
     cursor: cur.since || null, lastRun: cur.lastRun || null, lastOk: cur.lastOk || null, lastError: cur.lastError || null, last: cur.last || null, queue: counts, linked: links || 0, health };
 }
@@ -444,17 +445,86 @@ async function bridgeJobResult(b: any) {
   await fail(j, 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));
   return { ok: true, status: 'error' };
 }
-async function bridgeIngest(requests: (Req & { attachments?: InlineAtt[] })[]) {
-  const res = { created: 0, updated: 0, same: 0, skipped: 0, errors: [] as string[] };
+// ---------- arrival checks (rules engine) ----------
+// Each rule gives ok / warn / fail / info with a reason; every rule run is logged (portal_sync_log action rule:<id>).
+// The result is a Suggested Decision with confidence and the automation level that applies to it (Settings > Portal).
+// Item-level checks (item codes vs past decisions, Sarwa rules) run in the app once the AI reader has read the files.
+// Level 1 (fully automatic) is never executed here: it needs the admin's approval per rule and is OFF by default.
+export const DEFAULT_LEVELS: Record<string, number> = { missing_docs: 2, approve: 2, reject: 2, partial: 3, duplicate: 3, medical_team: 3, review: 3 };
+const addMonths = (d: Date, n: number) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
+function cycleOf(startDay: number, at: Date) {   // the member's monthly cycle that contains the request date
+  const dim = (y: number, m: number) => new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  const on = (base: Date) => new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), Math.min(startDay, dim(base.getUTCFullYear(), base.getUTCMonth()))));
+  let start = on(at); if (start > at) start = on(addMonths(at, -1));
+  return { start: start.toISOString().slice(0, 10), next: on(addMonths(start, 1)).toISOString().slice(0, 10) };
+}
+async function runRules(no: string, requestId: string) {
+  const { data: ev } = await db.from('events').select('d').eq('type', 'ticket.create').eq('t', no).maybeSingle();
+  const d: any = ev?.d || {}; const p: any = d.portal || {};
+  const { data: msgs } = await db.from('events').select('d').eq('t', no).eq('type', 'msg.in');
+  const files = (msgs || []).flatMap((m: any) => (m.d?.atts || [])).filter((a: any) => a.path && a.source !== 'Sarwa');
+  const readableFiles = files.filter((a: any) => a.cls === 'readable');
+  const { data: ctx } = await db.rpc('portal_member_context', { p_member: d.member || '', p_ticket: no, p_request: requestId });
+  const cx: any = ctx || {}; const c: any = await config(); const levels = { ...DEFAULT_LEVELS, ...(c.levels || {}) };
+  const checks: { id: string; name: string; result: 'ok' | 'warn' | 'fail' | 'info'; detail: string }[] = [];
+  // R1 documents
+  checks.push(files.length ? { id: 'R1', name: 'Documents present', result: readableFiles.length ? 'ok' : 'warn', detail: files.length + ' file(s) from the portal' + (readableFiles.length < files.length ? ', ' + (files.length - readableFiles.length) + ' not readable by the AI reader (Word / HEIC / other)' : '') }
+    : { id: 'R1', name: 'Documents present', result: 'fail', detail: 'No prescription or document on the portal for this request' });
+  // R2 duplicate request: another open ticket or another open portal request for the same member
+  const openT = (cx.open_tickets || []) as any[]; const openP = ((cx.portal_requests || []) as any[]).filter((r) => [1, 2, 3, 6, 9].includes(+r.status_code));
+  checks.push(openT.length || openP.length ? { id: 'R2', name: 'Duplicate request', result: 'warn', detail: [openT.length ? 'open ticket(s) for this member: ' + openT.map((x) => x.no + ' (' + x.source + ', ' + x.status + ')').join(', ') : '', openP.length ? 'other open portal request(s): ' + openP.map((x) => '#' + x.request_id + ' ' + x.status).join(', ') : ''].filter(Boolean).join(' - ') }
+    : { id: 'R2', name: 'Duplicate request', result: 'ok', detail: 'No other open request for this member' });
+  // R3 recent decisions on the portal for the same member (possible repeat request)
+  const recent = ((cx.portal_requests || []) as any[]).filter((r) => [4, 5, 7, 8].includes(+r.status_code) && Date.parse(r.created) > Date.now() - 30 * 86400000);
+  checks.push(recent.length ? { id: 'R3', name: 'Recent portal decision', result: 'warn', detail: recent.slice(0, 3).map((r) => '#' + r.request_id + ' ' + r.status + ' ' + String(r.created).slice(0, 10)).join(', ') + ' (last 30 days)' }
+    : { id: 'R3', name: 'Recent portal decision', result: 'ok', detail: 'No decided request in the last 30 days' });
+  // R4 Starting Day alignment for the member's policy holder
+  if (p.startDay != null) {
+    const at = new Date(p.createdAt || d.createdAt || Date.now()); const cy = cycleOf(+p.startDay, at);
+    checks.push({ id: 'R4', name: 'Starting Day alignment', result: 'info', detail: `Starting Day ${p.startDay} (${p.startDaySrc || 'holder data'}): request ${at.toISOString().slice(0, 10)} falls in the cycle that starts ${cy.start}; the next cycle starts ${cy.next}. Treatment start = ${cy.start}.` });
+  } else checks.push({ id: 'R4', name: 'Starting Day alignment', result: 'warn', detail: 'Starting Day not found for this policy holder - add it in Policy holders' });
+  // R5 contract / eligibility: needs i-CARE (checked by the agent / the i-CARE helper)
+  checks.push({ id: 'R5', name: 'Contract active / member eligible', result: 'info', detail: 'Check in i-CARE (button on the ticket); not available to the server' });
+  // suggestion
+  let s: { decision: string; reason: string; kind: string; confidence: number };
+  if (!files.length) s = { decision: 'Pending', reason: 'Missing documents', kind: 'missing_docs', confidence: 0.9 };
+  else if (openT.length || openP.length) s = { decision: 'Review', reason: 'Possible duplicate - check ' + [...openT.map((x) => x.no), ...openP.map((x) => '#' + x.request_id)].join(', '), kind: 'duplicate', confidence: 0.6 };
+  else s = { decision: 'Review', reason: 'Items are checked when the AI reader has read the prescription (item codes vs past decisions)', kind: 'review', confidence: 0 };
+  const out = { at: new Date().toISOString(), requestId, checks, suggestion: { ...s, level: levels[s.kind] ?? 3 } };
+  await insertEv('Portal rules', 'portal.rules', no, out);
+  for (const ch of checks) await log({ direction: 'system', action: 'rule:' + ch.id, request_id: requestId, ticket: no, ok: ch.result !== 'fail', detail: { name: ch.name, result: ch.result, detail: ch.detail } });
+  await log({ direction: 'system', action: 'suggestion', request_id: requestId, ticket: no, detail: out.suggestion });
+  return { suggestion: out.suggestion, checks: checks.map((x) => x.id + ':' + x.result) };
+}
+// Backfill: files that were on the portal BEFORE the ticket was made (first import without files) are added as part of the
+// original request - no "customer response", no reopen, no status change. Already stored file ids are skipped.
+async function backfillFiles(q: Req & { attachments?: InlineAtt[] }, link: any) {
+  const id = String(q.request_id), no = link.ticket as string;
+  const known = new Set<string>(link.att_ids || []);
+  const fresh = (q.attachments || []).filter((a) => !known.has(String(a.id)));
+  if (!fresh.length) return { added: 0, files: 0 };
+  const atts = await saveInlineAtts(no, fresh);
+  await insertEv('Portal sync', 'msg.in', no, { key: `portal:${id}:files:${fresh.map((a) => String(a.id)).sort().join(',').slice(0, 120)}`, initial: true, portal: true, backfill: true,
+    channel: q.channel || '', fromName: q.individual_name || q.broker || '', fromEmail: q.broker_mail || '', to: '', cc: '', date: q.creation_date || new Date().toISOString(),
+    subject: `Chronic Attach #${id} - documents on the portal`, text: `Documents of portal request #${id} (Broker attachments: ${fresh.filter((a) => a.source !== 'Sarwa').length}, Sarwa attachments: ${fresh.filter((a) => a.source === 'Sarwa').length}).`, atts });
+  const stored = atts.filter((a: any) => a.path).length;
+  await db.from('portal_links').update({ att_ids: [...new Set([...known, ...fresh.filter((a) => a.content_base64).map((a) => String(a.id))])], synced_at: new Date().toISOString() }).eq('request_id', id);
+  await log({ direction: 'in', action: 'backfill_files', request_id: id, ticket: no, ok: stored === fresh.length, detail: { files: fresh.length, stored }, error: stored === fresh.length ? null : (fresh.length - stored) + ' file(s) not stored' });
+  return { added: stored, files: fresh.length };
+}
+async function bridgeIngest(requests: (Req & { attachments?: InlineAtt[] })[], backfill = false) {
+  const res = { created: 0, updated: 0, same: 0, skipped: 0, files: 0, errors: [] as string[] };
   const c = await config(); const attFn: AttFn = (no, list) => saveInlineAtts(no, list as InlineAtt[]);
   for (const q of requests || []) {
     try {
       const id = String(q.request_id);
-      const { data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle();
+      let { data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle();
+      if (link && backfill) { const b = await backfillFiles(q, link); res.files += b.added; if (b.files) await runRules(link.ticket, id); ({ data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle()); }
       const hash = await reqHash(q);
       if (link && link.last_hash === hash) { await db.from('portal_links').update({ synced_at: new Date().toISOString() }).eq('request_id', id); res.same++; continue; }
       const r = link ? await updateTicket(c, q, link, hash, attFn) : await createTicket(c, q, hash, attFn);
       (res as any)[r]++;
+      if (r === 'created') { const { data: l2 } = await db.from('portal_links').select('ticket').eq('request_id', id).maybeSingle(); if (l2) await runRules(l2.ticket, id); }
     } catch (e) { res.errors.push(String(q.request_id) + ': ' + errMsg(e)); await log({ direction: 'in', action: 'bridge_ingest', request_id: String(q.request_id), ok: false, error: errMsg(e) }); }
   }
   const cur = await getState('cursor');
@@ -560,7 +630,8 @@ Deno.serve(async (req) => {
         case 'bridge_jobs': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgeJobs(+body.limit || 5, body.id ? String(body.id) : undefined) : [] });
         case 'bridge_peek': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgePeek(+body.limit || 5) : [] });
         case 'bridge_job_result': return json(await bridgeJobResult(body));
-        case 'bridge_ingest': return json({ ok: true, ...(await bridgeIngest(body.requests || [])) });
+        case 'bridge_ingest': return json({ ok: true, ...(await bridgeIngest(body.requests || [], body.backfill === true)) });
+        case 'bridge_rules': { const out = []; for (const id of (body.request_ids || []).slice(0, 50)) { const { data: l } = await db.from('portal_links').select('ticket').eq('request_id', String(id)).maybeSingle(); if (l) out.push({ request_id: String(id), ticket: l.ticket, ...(await runRules(l.ticket, String(id))) }); } return json({ ok: true, results: out }); }
         case 'bridge_reconcile': return json({ ok: true, ...(await bridgeReconcile(body.open_request_ids || [])) });
         case 'bridge_history': return json({ ok: true, ...(await bridgeHistory(body.rows || [])) });
         case 'bridge_health': return json(await bridgeHealth(body));
@@ -575,7 +646,10 @@ Deno.serve(async (req) => {
       case 'set_config': {
         const old = (await readSecret('portal')) || {};
         const mode = ['off', 'mock', 'live', 'browser'].includes(body.mode) ? body.mode : old.mode || 'off';
-        const next = { ...old, mode, dryRun: typeof body.dryRun === 'boolean' ? body.dryRun : old.dryRun !== false,
+        // automation level per decision type: 1 automatic (only after the admin approved that rule), 2 prepared + one click, 3 manual
+        const lv = (body.levels && typeof body.levels === 'object') ? Object.fromEntries(Object.keys(DEFAULT_LEVELS).map((k) => [k, [1, 2, 3].includes(+body.levels[k]) ? +body.levels[k] : (old.levels || {})[k] ?? DEFAULT_LEVELS[k]])) : old.levels;
+        if (lv && lv.medical_team !== 3) lv.medical_team = 3;   // Refer to medical team is always manual
+        const next = { ...old, mode, levels: lv, dryRun: typeof body.dryRun === 'boolean' ? body.dryRun : old.dryRun !== false,
           baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : old.baseUrl || '', tokenUrl: typeof body.tokenUrl === 'string' ? body.tokenUrl.trim() : old.tokenUrl || '',
           clientId: typeof body.clientId === 'string' ? body.clientId.trim() : old.clientId || '', clientSecret: body.clientSecret ? String(body.clientSecret) : old.clientSecret || '',
           intervalMin: Math.max(1, Math.min(60, +body.intervalMin || old.intervalMin || 5)), since: typeof body.since === 'string' ? body.since : old.since || '',
@@ -585,9 +659,10 @@ Deno.serve(async (req) => {
         if (mode === 'mock') await mockSetup();
         await writeSecret('portal', next, who.kind === 'user' ? who.id : undefined);
         TOK.v = '';
-        await log({ direction: 'system', action: 'set_config', actor, detail: { mode, baseUrl: next.baseUrl, intervalMin: next.intervalMin } });
+        await log({ direction: 'system', action: 'set_config', actor, detail: { mode, baseUrl: next.baseUrl, intervalMin: next.intervalMin, dryRun: next.dryRun, levels: next.levels } });
         return json({ ok: true, ...(await statusOf(await config())) });
       }
+      case 'rules_run': { const { data: l } = await db.from('portal_links').select('ticket,request_id').eq('ticket', String(body.ticket || '')).maybeSingle(); if (!l) return json({ error: 'Not a portal ticket' }, 400); return json({ ok: true, ...(await runRules(l.ticket, l.request_id)) }); }
       case 'test_connection': {
         if (c.mode === 'off') return json({ error: 'The connection is off' }, 400);
         if (c.mode === 'browser') { const h = await getState('health'); return json({ ok: true, browser: true, health: h, note: 'In browser mode the Outlook bridge PC reaches the portal, not Supabase. Its last health check is shown here.' }); }
