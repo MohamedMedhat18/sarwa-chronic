@@ -1,0 +1,9 @@
+{
+  "name": "chronic-portal-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Sarwa Chronic <-> portal Chronic Attach bridge (runs on the Outlook bridge PC, drives the portal in Chrome)",
+  "scripts": { "once": "node bridge.mjs --once" },
+  "dependencies": { "playwright": "1.48.2" }
+}

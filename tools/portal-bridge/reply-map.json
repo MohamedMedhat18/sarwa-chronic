@@ -1,0 +1,24 @@
+{
+  "_calibrated": "21 Nov 2026 on TEST request 38218 (read only; nothing saved). Actions drawer = page 173, Reply form = page 168 'Chronis Status', Broker Attachments = page 170, Sarwa Attachments = page 166.",
+  "drawer": { "page": "173", "replyButton": "Reply", "brokerAttachmentButton": "Broker Attachment", "sarwaAttachmentButton": "Sarwa Attachment" },
+  "form": {
+    "page": "168",
+    "status": "P168_STATUS",
+    "language": "P168_LANGUAGE",
+    "comment": "P168_COMMENT",
+    "requestIdItem": "P168_CHRONIC_ID",
+    "fileInput": ".dropzone input[type=file], input[type=file]",
+    "saveButton": "Save",
+    "cancelButton": "Cancel"
+  },
+  "_template_note": "Choosing the Language and then the Status makes the portal fill P168_COMMENT with its own template (server-side dynamic action). Our text replaces the #comment# slot; the Approved template has no slot.",
+  "statusValues": { "Pending": "3", "Approved": "5", "Partially approved pending": "6", "Partially approved": "7", "Rejected": "8" },
+  "statusesTheFormAccepts": ["3", "5", "6", "7", "8"],
+  "attachments": {
+    "brokerPage": "170",
+    "sarwaPage": "166",
+    "columns": ["Attached File", "File Name", "Extra Comment", "Creation User", "Creation Date", "Updated User", "Updated  Date"],
+    "downloadLink": "a[href*='get_blob']",
+    "fileIdParam": "k1"
+  }
+}

@@ -807,9 +807,11 @@ function applyEv(S, e) {
       S.tickets.set(d.no, {
         no: d.no, seq: d.seq || 0, source: d.source || 'email', subject: d.subject || '(no subject)', requester: d.requester || {}, member: d.member || '', memberName: d.memberName || '', lang: d.lang || 'AR',
         status: d.status || 'Open', priority: d.priority || 'Medium', type: d.type || '', group: d.group || '', agent: d.agent || '', tags: d.tags || [],
-        created, createdBy: e.by, updated: e.ts, msgs: [], timeline: [{ ts: e.ts, by: e.by, text: 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : '') }],
+        created, createdBy: e.by, updated: e.ts, msgs: [], timeline: [{ ts: e.ts, by: e.by, text: 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : d.source === 'portal' ? ' from the portal (Chronic Attach #' + ((d.portal && d.portal.requestId) || '') + ')' : '') }],
         history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: d.status === 'Closed' ? created : null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || [],
-        historical: !!d.historical   // handled in Outlook before it reached the helpdesk (Outlook "Done" folder): closed, no SLA
+        historical: !!d.historical,   // handled in Outlook before it reached the helpdesk (Outlook "Done" folder): closed, no SLA
+        // portal request (Chronic Attach): request no., channel, policy holder, Starting Day, items – replies go back through the portal
+        portal: d.portal || null, mobile: d.mobile || '', portalSync: null
       });
       S.maxSeq = Math.max(S.maxSeq, d.seq || 0);
       if (d.fromKey) { S.processed.add(d.fromKey); S.ignored.delete(d.fromKey); }
@@ -877,6 +879,29 @@ function applyEv(S, e) {
     case 'validation': if (!t) return; t.validation = { ...d, at: e.ts, by: e.by }; if (!t.valFirstAt) t.valFirstAt = e.ts; t.valCount = (t.valCount || 0) + 1; t.timeline.push({ ts: e.ts, by: e.by, text: 'Validation saved: ' + valSummary(d) }); t.updated = e.ts; break;
     case 'export': for (const no of d.tickets || []) { const x = S.tickets.get(no); if (x) x.exportedAt = e.ts; } break;
     case 'email.ignored': S.processed.add(d.key); if (!d.silent) S.ignored.set(d.key, { ...d, ts: e.ts }); if (d.mid) S.mids.add(String(d.mid).toLowerCase()); break;
+    // ---- portal (Chronic Attach) ----
+    case 'portal.update': {   // the request changed on the portal (status, assignee) – written by the portal sync
+      if (!t) return; t.portal = { ...(t.portal || {}), statusCode: d.statusCode, statusName: d.statusName, lastUpdate: d.lastUpdate || (t.portal || {}).lastUpdate, ...(d.assignTo != null ? { assignTo: d.assignTo } : {}) };
+      if (d.direct) t.portalDirect = { at: e.ts, by: d.by || '', status: d.statusName, comment: d.comment || '' };
+      t.timeline.push({ ts: e.ts, by: 'Portal', text: 'Portal status: ' + (d.from ? d.from + ' → ' : '') + d.statusName + (d.direct ? ' (changed on the portal' + (d.by ? ' by ' + d.by : '') + ')' : '') }); t.updated = e.ts; break;
+    }
+    case 'portal.queued': {   // an agent sent a decision / message: it is on its way to the portal (shown as "Waiting for the portal")
+      if (!t) return;
+      t.msgs.push({ kind: 'out', portal: true, id: e.id, at: e.ts, by: e.by, state: 'queued', jobId: d.jobId, decision: d.decision, reason: d.reason || '', html: d.html, text: d.text, atts: d.atts || [], to: d.to || '', cc: d.cc || '', channel: d.channel || '' });
+      t.portalSync = { jobId: d.jobId, state: 'queued', decision: d.decision, at: e.ts, by: e.by, error: '' }; t.updated = e.ts;
+      t.timeline.push({ ts: e.ts, by: e.by, text: (d.decision === 'Message' ? 'Message' : 'Decision ' + d.decision) + ' sent to the portal – waiting for the portal to confirm' });
+      clearCR(t); break;
+    }
+    case 'portal.status': {   // the portal sync's answer: sent | retrying | conflict | error | dead | requeued | cancelled
+      if (!t) return; const m = t.msgs.find(x => x.kind === 'out' && x.portal && x.jobId === d.jobId);
+      const st = d.status === 'requeued' ? 'queued' : d.status;
+      if (m) { m.state = st; m.error = d.error || ''; if (d.status === 'sent') { m.sentAt = d.sentAt || e.ts; m.delivered = d.delivered || null; } }
+      if (d.status === 'sent') { const at = d.sentAt || e.ts; if (!t.firstResponseAt) t.firstResponseAt = at; if (!t.lastOut || at > t.lastOut) t.lastOut = at; }
+      if (t.portalSync && t.portalSync.jobId === d.jobId) t.portalSync = { ...t.portalSync, state: st, error: d.error || '', at: e.ts, attempt: d.attempt || t.portalSync.attempt || 0, nextTry: d.nextTry || '' };
+      if (d.status === 'sent' && d.statusName) t.portal = { ...(t.portal || {}), statusCode: d.statusCode, statusName: d.statusName };
+      const txt = { sent: 'Portal confirmed' + (d.statusName ? ': ' + d.statusName : '') + (d.delivered ? ' · sent by ' + d.delivered.channel + ' to ' + d.delivered.to : ''), retrying: 'Portal not reachable – trying again ' + (d.nextTry ? fmtDate(d.nextTry) : 'soon'), conflict: 'Portal refused: the request changed on the portal – refresh and send again', error: 'Portal refused the decision: ' + (d.error || ''), dead: 'Portal sync failed after ' + (d.attempts || 5) + ' tries: ' + (d.error || ''), requeued: 'Sent to the portal again', cancelled: 'Portal decision cancelled' }[d.status] || ('Portal: ' + d.status);
+      t.timeline.push({ ts: e.ts, by: e.by, text: txt }); t.updated = e.ts; break;
+    }
   }
 }
 function fold() {
@@ -940,7 +965,7 @@ async function poll() {
   try {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
-    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e));
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); portalTick().catch(() => { });
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -1235,7 +1260,8 @@ function queueOf(t) {
   if (t.group && t.group !== DB.settings.general.defaultGroup) return { kind: 'g', id: t.group, name: t.group, color: '#6a3fb0' };
   return null;
 }
-const lastReplyAt = t => { let x = ''; for (const m of t.msgs) if (m.kind === 'out' && !m.auto && (m.at || '') > x) x = m.at; return x; };
+// a reply through the portal counts only once the portal confirmed it (a ticket never shows "replied" while the portal is still open)
+const lastReplyAt = t => { let x = ''; for (const m of t.msgs) if (m.kind === 'out' && !m.auto && !(m.portal && m.state !== 'sent') && (m.at || '') > x) x = m.at; return x; };
 const needsReply = t => { const r = lastReplyAt(t); return !r || (!!t.lastIn && t.lastIn > r); };
 const VIEW_DEFS = {
   unresolved: { label: 'Unresolved', desc: 'New or not replied yet – not in a team queue', f: t => openT(t) && !t.mergedInto && !queueOf(t) && needsReply(t) },
@@ -1258,6 +1284,10 @@ const VIEW_DEFS = {
   rejected: { label: 'Decision: Rejected', f: t => t.decision === 'Rejected' },
   nodecision: { label: 'Open without a decision', f: t => !t.decision && t.status !== 'Resolved' && t.status !== 'Closed' },
   unverified: { label: 'Open, not checked in i-CARE', f: t => !t.icare && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto },
+  portal: { label: 'Portal – open requests', desc: 'Open tickets from the portal (Chronic Attach)', f: t => isPortal(t) && openT(t) && !t.mergedInto },
+  portalwait: { label: 'Portal – waiting for confirmation', desc: 'A decision is on its way to the portal (not confirmed yet)', f: t => isPortal(t) && !!t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state) },
+  portalfail: { label: 'Portal – sync failed', desc: 'The portal did not take the decision – try again or check the request on the portal', f: t => isPortal(t) && !!t.portalSync && ['conflict', 'error', 'dead'].includes(t.portalSync.state) },
+  portaldirect: { label: 'Portal – changed on the portal', desc: 'Someone decided on the portal directly while the ticket was open here', f: t => isPortal(t) && !!t.portalDirect && openT(t) && !t.mergedInto },
   all: { label: 'All tickets', f: () => true }
 };
 const LIST = { sel: new Set(), shown: 50, last: [], filters: JSON.parse(lsGet('hd-filters', '{}') || '{}') };
@@ -1332,6 +1362,13 @@ function folderPane(view) {
     link('pendall', 'All pending', cnt(t => VIEW_DEFS.pendall.f(t)), { icon: '⏸', title: VIEW_DEFS.pendall.desc }),
     [...PENDING_REASONS, 'Reason not set'].map(r => { const n = cnt(t => pendingReasonOf(t) === r); return r === 'Reason not set' && !n ? null : el('div', { class: 'sub' }, link('pr:' + r, r, n, { dot: r === 'Reason not set' ? 'var(--bad)' : PR_CUSTOMER.includes(r) ? '#c98a00' : '#8a6fb0', title: 'Pending – ' + r })); }),
     link('remind', 'Reminder due', cnt(t => VIEW_DEFS.remind.f(t)), { icon: '🔔', tone: 'warn', title: VIEW_DEFS.remind.desc }),
+    // portal (Chronic Attach): shown once the first portal request arrived
+    T.some(isPortal) ? [el('h4', {}, 'Portal (Chronic Attach)'),
+      link('portal', 'Open requests', cnt(t => VIEW_DEFS.portal.f(t)), { icon: '⇄', title: VIEW_DEFS.portal.desc }),
+      link('portalwait', 'Waiting for portal', cnt(t => VIEW_DEFS.portalwait.f(t)), { icon: '⏳', title: VIEW_DEFS.portalwait.desc }),
+      link('portalfail', 'Sync failed', cnt(t => VIEW_DEFS.portalfail.f(t)), { icon: '⚠', tone: 'bad', title: VIEW_DEFS.portalfail.desc }),
+      link('portaldirect', 'Changed on the portal', cnt(t => VIEW_DEFS.portaldirect.f(t)), { icon: '!', tone: 'warn', title: VIEW_DEFS.portaldirect.desc }),
+      el('a', { href: '#/ph', title: 'Every portal request, old ones included' }, el('span', { class: 'ico', 'aria-hidden': 'true' }, '🗂'), el('span', { class: 'nm' }, 'Portal history'))] : null,
     el('h4', {}, 'Decisions'),
     link('pending', 'Decision: Pending', cnt(t => VIEW_DEFS.pending.f(t)), { dot: '#c98a00' }),
     link('nodecision', 'No decision yet', cnt(t => VIEW_DEFS.nodecision.f(t) && !t.mergedInto), { dot: 'var(--border)' }),
@@ -1553,6 +1590,20 @@ function msgCard(m, t, fromNo) {
       m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
       m.htmlPath ? el('div', { style: 'padding:0 14px 10px 54px' }, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => showOriginal(m) }, 'View original email')) : null);
   }
+  if (m.kind === 'out' && m.portal) {   // decision / message sent back through the portal (its Reply logic delivers it)
+    const st = { queued: ['Waiting for the portal', 'p-due'], sending: ['Sending to the portal…', 'p-due'], retrying: ['Portal not reachable – retrying', 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: ['Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'] }[m.state] || [m.state, 'p-muted'];
+    const failed = ['conflict', 'error', 'dead'].includes(m.state);
+    return el('div', { class: 'msg out', style: 'border-left:3px solid #1d5c52' },
+      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
+        el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill', style: 'background:#e3f1ee;color:#1d5c52' }, '⇄ Portal'), ' ', el('b', {}, m.decision === 'Message' ? 'Message' : m.decision), m.reason ? ' – ' + m.reason : '', ' ', el('span', { class: 'pill ' + st[1], title: m.error || '' }, st[0]), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
+        el('div', { class: 'small muted', dir: 'auto' }, (m.delivered ? 'Delivered by the portal: ' + m.delivered.channel + ' to ' + m.delivered.to + ((m.delivered.cc || []).length ? ' · Cc: ' + m.delivered.cc.join('; ') : '') : 'The portal sends it to ' + portalRecipient(t)) + ' · ' + fmtDate(m.at)),
+        m.error && failed ? el('div', { class: 'small', style: 'color:var(--bad)' }, m.error) : null)),
+      htmlBox(m),
+      visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
+      failed ? el('div', { class: 'row', style: 'padding:0 14px 12px 54px;gap:6px' },
+        el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', m.jobId) }, 'Try again'),
+        el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', m.jobId) }, 'Cancel')) : null);
+  }
   if (m.kind === 'out') {
     const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
     return el('div', { class: 'msg out' },
@@ -1636,6 +1687,9 @@ function describeEv(e) {
     case 'eob.remove': return ['change', 'EOB approval ' + (d.approval || '') + ' removed', ''];
     case 'view': return ['view', 'Opened the ticket', ''];
     case 'icare.raw': return ['change', 'i-CARE details received (Edge helper)', d.ok ? [d.name, d.id, d.mobile].filter(Boolean).join(' · ') : (d.error || '')];
+    case 'portal.update': return ['change', 'Portal status: ' + (d.statusName || ''), [d.from ? 'From: ' + d.from : '', d.direct ? 'Changed on the portal' + (d.by ? ' by ' + d.by : '') : '', d.comment || ''].filter(Boolean).join('\n')];
+    case 'portal.queued': return ['message', (d.decision === 'Message' ? 'Message' : 'Decision ' + d.decision) + ' sent to the portal', [d.reason ? 'Reason: ' + d.reason : '', clip(d.text || stripHtml(d.html))].filter(Boolean).join('\n')];
+    case 'portal.status': return ['message', 'Portal: ' + d.status, [d.statusName ? 'Portal status: ' + d.statusName : '', d.delivered ? 'Sent by ' + d.delivered.channel + ' to ' + d.delivered.to : '', d.error || '', d.nextTry ? 'Next try ' + fmtDate(d.nextTry) : ''].filter(Boolean).join('\n')];
     default: return ['change', e.type, clip(JSON.stringify(d), 200)];
   }
 }
@@ -1744,7 +1798,8 @@ function ticketView(r) {
     sendBtn.textContent = mode === 'reply' ? 'Send' : mode === 'forward' ? 'Forward' : 'Add note';
     const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
-      mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
+      mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
+      : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       mode === 'forward' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), fwdTo), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn),
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
@@ -1774,6 +1829,10 @@ function ticketView(r) {
         await queueReply(t, { to, cc: ccIn.value.trim(), subject: fwdSubject(m), html, files: files.slice(), inline: B.inline, forward: { msg: m, html: quoteOf(m) } });
         if (after) await emit('update', no, after);
         fwdTo.value = ''; toast('Forward queued – Outlook sends it within a minute');
+      } else if (isPortal(t)) {   // portal request: a message through the portal (WhatsApp / broker email); status after the portal confirms
+        if (after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
+        await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} });
+        toast('Message sent to the portal – it goes out to ' + portalRecipient(t) + ' when the portal confirms');
       } else {
         const to = toIn.value.trim(); if (!/@/.test(to)) { toast('Enter the provider email in "To".'); toIn.focus(); sendBtn.disabled = false; return; }
         const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
@@ -1801,7 +1860,10 @@ function ticketView(r) {
         el('button', { class: 'btn sm primary', type: 'button', onclick: () => validationDialog(no) }, t.validation ? '✓ Validation' : 'Validate medicines'),
         el('button', { class: 'btn sm', type: 'button', onclick: () => mergeDialog([no]) }, 'Merge'),
         el('button', { class: 'btn sm', type: 'button', title: 'Every action on this ticket with its details – who did what and when, including who opened it', onclick: () => activityDialog(no) }, '🕘 Activity ', el('span', { class: 'pill p-muted', style: 'font-size:11px;padding:0 6px' }, String([...STORE.events.values()].filter(e => e.t === no).length))),
-        t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: async () => { try { await emit('update', no, { status: 'Closed' }); afterDone(no); } catch { } } }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
+        t.status !== 'Closed' ? el('button', { class: 'btn sm', type: 'button', onclick: async () => {
+          // a portal request stays open on the portal until a decision is sent – closing only here would leave it there
+          if (isPortal(t) && !PORTAL_FINAL.includes(+t.portal.statusCode) && !confirm('Portal request #' + t.portal.requestId + ' is still "' + (t.portal.statusName || 'open') + '" on the portal.\n\nUse the Decision buttons to answer it through the portal. Close this ticket here only (the portal stays open)?')) return;
+          try { await emit('update', no, { status: 'Closed' }); afterDone(no); } catch { } } }, 'Close ticket') : el('button', { class: 'btn sm', type: 'button', onclick: () => emit('update', no, { status: 'Open' }) }, 'Reopen'),
         el('div', { style: 'flex:1' }),
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
       t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
@@ -1831,6 +1893,8 @@ function ticketView(r) {
     side.replaceChildren(
       el('h3', {}, 'Member'),
       patientInfo(t),
+      portalPanel(t),
+      portalHistoryBox(t),
       icarePanel(t),
       decisionPanel(t),
       cyclePanel(t),
@@ -2331,11 +2395,12 @@ function pspReport(from, to) {
 /* ---------------- Admin ---------------- */
 function adminView(r) {
   const sec = r.arg || 'general'; const S = DB.settings;
-  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Team'], ['bridge', 'Outlook bridge'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['messaging', 'WhatsApp & SMS'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data']];
+  const SECS = [['general', 'General'], ['autoack', 'Auto-acknowledgement'], ['ai', 'AI reading'], ['agents', 'Team'], ['bridge', 'Outlook bridge'], ['groups', 'Groups & types'], ['sla', 'Business hours & SLA'], ['canned', 'Canned responses'], ['messaging', 'WhatsApp & SMS'], ['portal', 'Portal (Chronic Attach)'], ['rules', 'Automation rules'], ['signature', 'Email signature'], ['data', 'Data']];
   const panel = el('div', { class: 'panel' });
   const save = async (section, value) => { if (!ME || ME.role !== 'admin') return toast('Only an admin can change team settings'); await emit('settings', null, { section, value }); toast('Saved for the whole team'); };
   const lines = arr => arr.join('\n'); const unlines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
   const b = {
+    portal() { return portalAdmin(); },
     general() {
       const g = clone(S.general);
       const ck = (k, label) => el('label', { class: 'row', style: 'margin-bottom:8px' }, el('input', { type: 'checkbox', checked: !!g[k], onchange: e => g[k] = e.target.checked }), label);
@@ -2524,7 +2589,7 @@ function adminView(r) {
   const root = el('div', { class: 'adm' }, el('nav', { 'aria-label': 'Admin sections' }, SECS.map(([k, l]) => el('a', { href: '#/admin/' + k, class: k === sec ? 'on' : '' }, l))), panel);
   return { el: root, update: null };
 }
-const VIEWS = { tickets: ticketList, t: ticketView, dashboard, ignored: ignoredView, contacts: contactsView, reports: reportsView, admin: adminView };
+const VIEWS = { tickets: ticketList, t: ticketView, dashboard, ignored: ignoredView, contacts: contactsView, reports: reportsView, admin: adminView, ph: portalHistoryView };
 
 /* =====================================================================
    Chronic medication validation (Sarwa rules – from the Chronic Medication Review Module spec)
@@ -3102,6 +3167,264 @@ function icarePanel(t) {
       p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
     el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + (c.via === 'bookmark' ? ' (automatic)' : '') + ' · ' + fmtDate(c.at)), btns)];
 }
+/* =====================================================================
+   Portal (Chronic Attach, Sarwa portal app 2009 / page 165)
+   Requests arrive as tickets by themselves (server function "portal"). The agent answers HERE only: the decision / message
+   is queued for the portal, which runs its own Reply logic (status, Request Timeline, WhatsApp to the member or email to
+   the broker with every Cc). The ticket closes / goes pending only when the portal confirmed.
+   ===================================================================== */
+const isPortal = t => !!(t && t.source === 'portal' && t.portal);
+const PORTAL_FINAL = [4, 5, 7, 8];
+const portalBusy = t => !!(t && t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state));
+function portalRecipient(t) {
+  const p = (t && t.portal) || {};
+  if (p.brokerMail) return 'the broker ' + p.brokerMail + ((p.cc || []).length ? ' + ' + p.cc.length + ' in copy' : '') + ' (email)';
+  if (p.mobile) return 'the member on WhatsApp ' + p.mobile;
+  return 'the requester (by the portal)';
+}
+async function portalCall(body) {
+  const { data, error } = await SB.functions.invoke('portal', { body });
+  if (error) { let msg = error.message; try { const j = await error.context.json(); if (j && j.error) msg = j.error; } catch { } throw new Error(msg); }
+  if (data && data.error) throw new Error(data.error);
+  return data;
+}
+async function portalJobAction(btn, action, id) {
+  if (btn) btn.disabled = true;
+  try { await portalCall({ action, id }); toast(action === 'retry' ? 'Sent to the portal again' : 'Portal decision cancelled'); }
+  catch (x) { toast(x.message); if (btn) btn.disabled = false; }
+}
+// every signed-in app nudges the server about every 2 minutes (sends what is queued; takes in new requests when due)
+let PORTAL_TICK = 0, PORTAL_OFF = false;
+async function portalTick(force) {
+  if (!DB || !STORE.connected || !ME) return; const now = Date.now();
+  if (!force && now - PORTAL_TICK < (PORTAL_OFF ? 10 : 2) * 60000) return; PORTAL_TICK = now;
+  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); } catch (e) { console.warn('portal tick', e); }
+}
+// The portal's OWN reply templates, read from its Reply form (page 168) on 21 Nov 2026. Choosing Language + Status there
+// fills the message with these; our text goes into the #comment# slot (Approved has no slot: a note goes above the closing).
+// So the agent writes only the specific part (reason / missing documents / note) - the portal adds greeting and closing.
+const PORTAL_TEMPLATES = {
+  AR: {
+    3: '، السادة الأعزاء\n. تحية طيبة من شركة ثروة لايف\n#comment#\n. نشكركم على التواصل مع شركة ثروة , وخدمتك أولويتنا',
+    5: '، السادة الاعزاء \n. تحية طيبة من شركة ثروة لايف\n، عقب مراجعة طلبكم الأخير بخصوص الأدوية المزمنة \n. يرجي العلم ان تمت الموافقة على هذه الأدوية بنجاح وتمت  إضافتها إلى خطة العلاج المزمن الخاصة بكم \n\n\n. نشكركم على التواصل مع شركة ثروة وخدمتك أولويتنا',
+    6: '، السادة الاعزاء \n. تحية طيبة من شركة ثروة لايف\n، عقب مراجعة طلبكم الأخير بخصوص الأدوية المزمنة \n.  يرجي العلم ان تمت الموافقة على هذه الأدوية بنجاح وتمت  إضافتها إلى خطة العلاج المزمن الخاصة بكم\n\n\n#comment# بشأن باقي الادويه، يرجي ارسال \n\n\n. نشكركم على التواصل مع شركة ثروة وخدمتك أولويتنا',
+    7: '، السادة الاعزاء \n. تحية طيبة من شركة ثروة لايف\n، عقب مراجعة طلبكم الأخير بخصوص الأدوية المزمنة \n.  يرجي العلم ان تمت الموافقة على هذه الأدوية بنجاح وتمت  إضافتها إلى خطة العلاج المزمن الخاصة بكم\n\n\n#comment# بشأن باقي الادويه، يرجي العلم  \n\n\n. نشكركم على التواصل مع شركة ثروة وخدمتك أولويتنا',
+    8: '، السادة الأعزاء\n. تحية طيبة من شركة ثروة لايف\n#comment#\n. نشكركم على التواصل مع شركة ثروة , وخدمتك أولويتنا'
+  },
+  EN: {
+    3: 'Dears,\nGreetings from Sarwa Life.\n#comment#\nThank you once again for contacting Sarwa. Your well-being is our priority.',
+    5: 'Dears,\nGreetings from Sarwa Life.\nFollowing the review of your recent request regarding chronic medications, these medications have been successfully approved and added to your chronic treatment plan.\n\nThank you once again for contacting Sarwa. Your well-being is our priority.',
+    6: 'Dears,\nGreetings from Sarwa Life.\nFollowing the review of your recent request regarding chronic medications, these medications have been successfully approved and added to your chronic treatment plan.\n\nRegarding the remaining medications, kindly send #comment#\nThank you once again for contacting Sarwa. Your well-being is our priority.',
+    7: 'Dears,\nGreetings from Sarwa Life.\nFollowing the review of your recent request regarding chronic medications, these medications have been successfully approved and added to your chronic treatment plan.\n\nRegarding the remaining medications, kindly note #comment#\nThank you once again for contacting Sarwa. Your well-being is our priority.',
+    8: 'Dears,\nGreetings from Sarwa Life.\n#comment#\nThank you once again for contacting Sarwa. Your well-being is our priority.'
+  }
+};
+const PORTAL_STATUS_OF = { Approved: 5, 'Partially approved': 7, Rejected: 8, Pending: 3 };
+const REJECT_AR = { 'Not covered – item excluded by the policy': 'الصنف غير مغطى تأمينياً', 'Not medically justified': 'غير مبرر طبياً', 'Policy inactive / expired': 'الوثيقة غير سارية', 'Annual or chronic limit exhausted': 'تم استنفاد الحد السنوي / حد الأمراض المزمنة', 'Duplicate request': 'طلب مكرر', Other: 'أخرى' };
+// the agent's part of the message (what fills #comment#)
+function portalText(t, kind, { reason = '', note = '', list = '' } = {}) {
+  const ar = t.lang !== 'EN';
+  if (ar) for (const [en, a] of Object.entries(REJECT_AR)) reason = reason.replace(en, a);
+  if (kind === 'Approved') return note || '';
+  if (kind === 'Pending') return list || '';
+  if (kind === 'reminder') return (ar ? 'تذكير: ما زلنا في انتظار ما يلي لاستكمال طلبكم:\n' : 'Kind reminder: we are still waiting for the following to complete your request:\n') + (list || '');
+  return [reason, note].filter(Boolean).join(ar ? ' – ' : ' - ');   // Rejected / Partially approved
+}
+// exactly what the requester receives: the portal template with our text in its slot
+function portalPreview(t, status, core) {
+  const T = (PORTAL_TEMPLATES[t.lang === 'EN' ? 'EN' : 'AR'] || {})[status]; if (!T) return core || '';
+  if (T.includes('#comment#')) return T.replace('#comment#', core || '');
+  if (!core) return T; const L = T.split('\n'); L.splice(L.length - 1, 0, core, ''); return L.join('\n');
+}
+// queue one decision / message for the portal (the only way a portal ticket answers the requester)
+async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {} }) {
+  if (!isPortal(t)) throw new Error('Not a portal request');
+  if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
+  const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
+  for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
+  const html = textToHtml(text || '');
+  const job = { decision, text: text || '', html, reason, missing, lang: t.lang === 'EN' ? 'EN' : 'AR', agent: me(), agentEmail: (ME && ME.email) || '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), ticketUpdate, queuedAt: new Date().toISOString() };
+  const { error } = await SB.from('portal_outbox').insert({ id, ticket: t.no, request_id: t.portal.requestId, job, status: 'queued' });
+  if (error) throw new Error(/portal_outbox_one_open/.test(error.message) ? 'A decision for this ticket is already on its way to the portal' : 'Not queued: ' + error.message);
+  await emit('portal.queued', t.no, { jobId: id, decision, reason, text: text || '', html, atts, to: portalRecipient(t), channel: t.portal.brokerMail ? 'email' : 'whatsapp' });
+  portalCall({ action: 'push' }).catch(e => console.warn('portal push', e));   // the server also retries on its own
+  return id;
+}
+// Decision on a portal ticket: Approved / Partial / Rejected (final) or Pending – reason (not closed). "Refer to medical team"
+// = Pending – Awaiting medical team decision: internal only, nothing goes to the portal or the member.
+function portalDecisionDialog(t, d, preset, opts = {}) {
+  const D = DECISIONS[d];
+  if (D.status === 'Closed' && isPSP(t) && !(t.eobs || []).length) return toast('PSP ticket ' + t.no + ': upload the EOB approval first (PSP panel on the right)');
+  if (portalBusy(t)) return toast('A decision for ' + t.no + ' is already on its way to the portal');
+  const list0 = d === 'Pending' ? PENDING_REASONS : REJECT_REASONS;
+  const reason = el('select', { style: 'width:100%' }, d === 'Approved' ? [] : [opt('', d === 'Pending' ? '— choose the reason (required) —' : d === 'Partially approved' ? '— reason for the items not approved —' : '— rejection reason —', '')].concat(list0.map(x => opt(x, (d === 'Pending' ? 'Pending – ' : '') + x, PR_LEGACY[preset] || preset || ''))));
+  const note = el('textarea', { rows: 2, dir: 'auto', style: 'width:100%', placeholder: d === 'Rejected' ? 'Justification (required) – e.g. which item is not covered and why' : 'Note (shown in the ticket and added to the message)' });
+  const missing = el('textarea', { rows: 3, dir: 'auto', style: 'width:100%', placeholder: '- HbA1c (≤ 6 months)\n- Lipid profile' }, d === 'Pending' ? missingFromValidation(t) : '');
+  const msg = el('textarea', { rows: 4, dir: 'auto', style: 'width:100%' }); let edited = false;
+  // live preview: the portal's own template for this status with the agent's text in its slot = exactly what is sent
+  const prev = el('div', { dir: 'auto', style: 'white-space:pre-wrap;font-size:12.5px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;max-height:220px;overflow:auto' });
+  const drawPrev = () => { prev.textContent = portalPreview(t, PORTAL_STATUS_OF[d], msg.value.trim()); };
+  msg.addEventListener('input', () => { edited = true; drawPrev(); });
+  const files = []; const filesBox = el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' });
+  const drawFiles = () => filesBox.replaceChildren(...files.map((f, i) => el('span', { class: 'tag' }, '📎 ' + f.name, el('button', { type: 'button', 'aria-label': 'Remove', onclick: () => { files.splice(i, 1); drawFiles(); } }, '×'))));
+  const fileIn = el('input', { type: 'file', multiple: true, onchange: e => { files.push(...e.target.files); e.target.value = ''; drawFiles(); } });
+  const internal = () => d === 'Pending' && reason.value && !PR_CUSTOMER.includes(reason.value);
+  const msgBox = el('div', { style: 'display:grid;gap:6px' });
+  const refresh = () => {
+    if (!edited) msg.value = d === 'Pending' ? portalText(t, 'Pending', { list: missing.value.trim() || ('- ' + ((t.lang === 'EN' ? reason.value : PR_AR[reason.value]) || '…')) }) : portalText(t, d, { reason: [reason.value, d !== 'Approved' ? note.value.trim() : ''].filter(Boolean).join(' – '), note: d === 'Approved' ? note.value.trim() : '' });
+    msgBox.hidden = internal(); drawPrev();
+    hint.textContent = internal() ? 'Internal only: the ticket goes to Pending – ' + reason.value + '. Nothing is sent to the portal or the member.' : D.status === 'Closed' ? 'The portal records the decision and sends this message to ' + portalRecipient(t) + '. The ticket closes when the portal confirms.' : 'The portal keeps the request Pending and sends this request to ' + portalRecipient(t) + '. The ticket goes to Pending – reason when the portal confirms; the member\'s answer reopens it (customer_response).';
+  };
+  const hint = el('div', { class: 'small muted' });
+  [reason, note, missing].forEach(x => x.addEventListener(x.tagName === 'SELECT' ? 'change' : 'input', refresh));
+  msgBox.append(...[d === 'Pending' ? el('label', {}, 'What is missing (one per line)', missing) : null,
+    el('label', {}, d === 'Approved' ? 'Optional note (the portal\'s approval text is sent as is)' : 'Your text – it goes into the portal\'s own message (the portal adds the greeting and closing)', msg),
+    el('div', {}, el('div', { class: 'small muted' }, 'What the requester receives (portal template, ' + (t.lang === 'EN' ? 'English' : 'Arabic') + '):'), prev),
+    el('div', {}, el('div', { class: 'small muted' }, 'Attachments (screenshots, approval letter…) – also paste a screenshot with Ctrl+V'), fileIn, filesBox)].filter(Boolean));
+  const body = el('div', { style: 'display:grid;gap:8px' }, hint, d === 'Approved' ? null : el('label', {}, d === 'Pending' ? 'Pending reason' : 'Reason', reason), el('label', {}, 'Note', note), msgBox);
+  body.addEventListener('paste', e => { const fl = [...((e.clipboardData && e.clipboardData.items) || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean); if (!fl.length) return; e.preventDefault(); for (const f of fl) files.push(new File([f], f.name && !/^image\.\w+$/.test(f.name) ? f.name : 'screenshot-' + new Date().toISOString().slice(0, 19).replace(/\D/g, '') + '.' + ((f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')), { type: f.type })); drawFiles(); });
+  refresh();
+  openDialog(D.icon + ' ' + d + ' – ' + t.no + ' · portal #' + t.portal.requestId, [body],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', style: 'background:' + D.c + ';border-color:' + D.c, onclick: async e => {
+      if (d !== 'Approved' && d !== 'Partially approved' && !reason.value) { reason.focus(); return toast('Choose the reason'); }
+      if (d === 'Rejected' && !note.value.trim()) { note.focus(); return toast('Write the justification – it is sent to the requester'); }
+      if (d === 'Pending' && !internal() && !missing.value.trim()) { missing.focus(); return toast('List what is missing – it is sent to the requester'); }
+      if (!internal() && d !== 'Approved' && !msg.value.trim()) { msg.focus(); return toast('Write the text for the requester'); }
+      e.target.disabled = true;
+      const at = new Date().toISOString();
+      const dec = { decision: d, _decisionReason: reason.value || '', _decisionNote: note.value.trim(), _decisionAt: at, _decisionBy: me() };
+      try {
+        if (internal()) { await emit('update', t.no, { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec }); closeDialog(); toast(t.no + ': Pending – ' + reason.value + ' (internal)'); return; }
+        const ticketUpdate = d === 'Pending' ? { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec } : { ...dec, status: D.status };
+        await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate });
+        closeDialog(); toast(t.no + ': ' + d + ' sent to the portal – the ticket updates when the portal confirms');
+        if (opts.after) opts.after();
+      } catch (x) { e.target.disabled = false; toast(x.message); }
+    } }, d === 'Pending' ? 'Send – Pending' : 'Send – ' + d)]);
+  (d === 'Approved' ? msg : reason).focus();
+}
+// sidebar: the portal request (key data for the decision) and where the answer is
+function portalPanel(t) {
+  if (!isPortal(t)) return null; const p = t.portal, s = t.portalSync;
+  const row = (k, v) => v || v === 0 ? el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, k), el('span', { dir: 'auto', style: 'text-align:right;min-width:0;overflow-wrap:anywhere' }, String(v))) : null;
+  const final = PORTAL_FINAL.includes(+p.statusCode);
+  const sync = s ? ({ queued: ['⏳ Waiting for the portal', '#8a5200'], sending: ['⏳ Sending to the portal…', '#8a5200'], retrying: ['⏳ Portal not reachable – retrying' + (s.nextTry ? ' ' + rel(s.nextTry) : ''), '#8a5200'], sent: ['✓ Portal confirmed ' + rel(s.at), '#1b7344'], conflict: ['⚠ Refused – the request changed on the portal', 'var(--bad)'], error: ['⚠ Refused by the portal', 'var(--bad)'], dead: ['⚠ Sync failed', 'var(--bad)'], cancelled: ['Cancelled', 'var(--muted)'] }[s.state] || [s.state, 'var(--muted)']) : null;
+  const failed = s && ['conflict', 'error', 'dead'].includes(s.state);
+  return el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px;border-left:3px solid #1d5c52' },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '⇄ Portal request #' + p.requestId), el('span', { class: 'pill', style: 'background:' + (final ? 'var(--ok-bg)' : 'var(--warn-bg)') }, p.statusName || '—')),
+    row('Channel', p.channel), row(p.brokerMail ? 'Broker' : 'Mobile', p.brokerMail ? (p.broker ? p.broker + ' ' : '') + p.brokerMail : p.mobile), (p.cc || []).length ? row('Cc', p.cc.join('; ')) : null,
+    row('Policy holder', p.policyHolder), row('Contract', p.contractNo),
+    row('Starting Day', p.startDay != null ? p.startDay + (p.secondDay ? ' (or ' + p.secondDay + ')' : '') + (p.startDaySrc ? ' · ' + p.startDaySrc : '') : 'not found – check Policy holders'),
+    (p.items || []).length ? el('div', {}, el('div', { class: 'muted' }, 'Items'), (p.items || []).map(i => el('div', { dir: 'auto' }, [i.code, i.name, i.dose].filter(Boolean).join(' · ')))) : null,
+    row('On the portal since', p.createdAt ? fmtDate(p.createdAt) : ''), row('Assigned on the portal', p.assignTo),
+    t.portalDirect && openT(t) ? el('div', { style: 'color:#8a5200;font-weight:600' }, '! Decided on the portal' + (t.portalDirect.by ? ' by ' + t.portalDirect.by : '') + ': ' + t.portalDirect.status + ' – check, then close here') : null,
+    sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Answer with the Decision buttons or Reply – it goes back through the portal to ' + portalRecipient(t) + '.'),
+    failed && s.error ? el('div', { class: 'small', style: 'color:var(--bad)' }, s.error) : null,
+    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null);
+}
+// Settings › Portal: connection (admin), status, sync log
+function portalAdmin() {
+  const isAdm = ME && ME.role === 'admin'; const box = el('div', { style: 'display:grid;gap:10px' }, el('p', { class: 'small muted' }, 'Checking the connection…')); const logBox = el('div');
+  const inp = (v, attrs = {}) => el('input', { type: 'text', value: v || '', style: 'width:100%', dir: 'ltr', ...attrs });
+  const draw = s => {
+    const mode = el('select', {}, [['off', 'Off (kill switch)'], ['browser', 'Portal screens via the Outlook bridge PC (no IT)'], ['mock', 'Mock portal – TEST requests only'], ['live', 'Live portal API (ORDS – needs IT)']].map(([v, l]) => opt(v, l, s.mode)));
+    const base = inp(s.baseUrl && s.mode === 'live' ? s.baseUrl : '', { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/chronic/v1' }), tok = inp(s.tokenUrl, { placeholder: 'https://sl-portal.sarwa.insurance/ords/sl_ws/oauth/token' });
+    const cid = inp(s.clientId, { autocomplete: 'off' }), sec = inp('', { type: 'password', autocomplete: 'new-password', placeholder: s.hasSecret ? '(saved – type to change)' : 'client secret' });
+    const every = inp(String(s.intervalMin || 5), { type: 'number', min: 1, max: 60, style: 'width:90px' }), since = inp(s.since || '', { placeholder: '2026-12-01T00:00:00Z (requests changed after)' });
+    const grp = el('select', {}, opt('', '— default group —', s.group || ''), DB.settings.groups.map(g => opt(g, g, s.group || ''))), alert = inp(s.alertTo || '', { placeholder: 'admin emails for sync failures (default: all admins)' });
+    const liveBox = el('div', { style: 'display:grid;gap:8px' }, el('label', { class: 'blk' }, 'Portal API address', base), el('label', { class: 'blk' }, 'Token address (OAuth2)', tok), el('label', { class: 'blk' }, 'Client ID', cid), el('label', { class: 'blk' }, 'Client secret', sec));
+    const syncLive = () => { liveBox.hidden = mode.value !== 'live'; }; mode.onchange = syncLive; syncLive();
+    const run = async (btn, body, ok) => { btn.disabled = true; try { const r = await portalCall(body); toast(ok(r)); draw(await portalCall({ action: 'status' })); loadLog(); } catch (x) { toast(x.message); btn.disabled = false; } };
+    const q = s.queue || {};
+    box.replaceChildren(
+      el('div', { class: 'slabox', style: 'display:grid;gap:4px' },
+        el('div', {}, el('b', {}, 'Status: '), s.mode === 'off' ? el('span', { class: 'pill p-muted' }, 'Off') : s.mode === 'mock' ? el('span', { class: 'pill p-due' }, 'Mock portal (test requests only)') : s.mode === 'browser' ? el('span', { class: 'pill p-ok' }, 'Portal screens via the Outlook bridge PC') : el('span', { class: 'pill p-ok' }, 'Live API')),
+        s.mode === 'browser' ? el('div', { class: 'small', style: s.health && s.health.ok === false ? 'color:var(--bad);font-weight:600' : '' }, 'Bridge PC: ' + (!s.health || !s.health.at ? 'no report yet – is the bridge running on the Outlook PC?' : (s.health.ok ? '✓ signed in, page OK' : '⚠ ' + (s.health.error || 'problem')) + ' · ' + rel(s.health.at) + (s.health.pc ? ' · ' + s.health.pc : ''))) : null,
+        el('div', { class: 'small' }, 'Linked requests: ' + (s.linked || 0) + ' · last check: ' + (s.lastRun ? fmtDate(s.lastRun) + ' (' + rel(s.lastRun) + ')' : 'never') + (s.lastOk ? ' · last OK ' + rel(s.lastOk) : '')),
+        el('div', { class: 'small' }, 'Queue: ' + (q.queued || 0) + ' waiting · ' + (q.sending || 0) + ' sending · ', el('b', { style: (q.dead || q.error || q.conflict) ? 'color:var(--bad)' : '' }, ((q.dead || 0) + (q.error || 0) + (q.conflict || 0)) + ' failed'), ' (', el('a', { href: '#/tickets?view=portalfail' }, 'Sync failed queue'), ')'),
+        s.lastError ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Last error: ' + s.lastError) : null),
+      isAdm ? [el('label', { class: 'blk' }, 'Connection', mode), liveBox,
+        el('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, el('label', { class: 'blk' }, 'Check every (minutes)', every), el('label', { class: 'blk', style: 'flex:1;min-width:220px' }, 'Group for new portal tickets', grp)),
+        el('label', { class: 'blk' }, 'Start with requests changed after (first run only)', since), el('label', { class: 'blk' }, 'Alert emails', alert),
+        el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
+          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim() }, () => 'Portal connection saved') }, 'Save'),
+          el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'test_connection' }, r => r.browser ? 'Bridge PC last report: ' + (r.health && r.health.at ? (r.health.ok ? 'OK ' : 'problem – ' + (r.health.error || '')) + rel(r.health.at) : 'none yet') : 'Signed in to the portal ✓ (' + r.sample + ' request(s) in the last day)') }, 'Test connection'),
+          el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'sync_now' }, r => r.browser ? 'In this mode the Outlook bridge PC syncs every few minutes' : 'Synced: ' + ((r.in && r.in.created) || 0) + ' new, ' + ((r.in && r.in.updated) || 0) + ' updated, ' + ((r.out && r.out.sent) || 0) + ' decision(s) sent') }, 'Sync now'),
+          // token for the Outlook bridge PC (portal bridge): shown ONCE, only its hash is kept; a new one replaces the old one
+          el('button', { class: 'btn', type: 'button', onclick: async e => { if (!confirm('Create a new bridge token? The current one (if any) stops working.')) return; e.target.disabled = true;
+            try { const r = await portalCall({ action: 'new_token' }); const inp = el('input', { type: 'text', value: r.token, readonly: true, dir: 'ltr', style: 'width:100%;font-family:monospace' });
+              openDialog('Bridge token – shown once', [el('p', { class: 'small' }, 'Paste it into Set-PortalCredential.ps1 on the Outlook bridge PC. It is not shown again; only its fingerprint is stored.'), inp],
+                [el('button', { class: 'btn primary', type: 'button', onclick: () => { try { navigator.clipboard.writeText(r.token); toast('Copied'); } catch { inp.select(); } } }, 'Copy'), el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Done')]);
+            } catch (x) { toast(x.message); } e.target.disabled = false; } }, 'New bridge token'))]
+        : el('p', { class: 'small muted' }, 'Only an admin can change the connection.'));
+  };
+  const loadLog = async () => {
+    try {
+      const r = await portalCall({ action: 'log', limit: 100 });
+      logBox.replaceChildren(el('div', { class: 'tablewrap', style: 'overflow-x:auto' }, el('table', { class: 'tbl small' },
+        el('thead', {}, el('tr', {}, ['When', 'Dir', 'Action', 'Request', 'Ticket', 'Result', 'Status', 'By', 'Detail'].map(h => el('th', {}, h)))),
+        el('tbody', {}, (r.rows || []).map(x => el('tr', {}, el('td', { style: 'white-space:nowrap' }, fmtDate(x.at)), el('td', {}, x.direction), el('td', {}, x.action), el('td', {}, x.request_id || ''), el('td', {}, x.ticket ? el('a', { href: '#/t/' + x.ticket }, x.ticket) : ''),
+          el('td', { style: x.ok ? '' : 'color:var(--bad);font-weight:600' }, x.ok ? 'OK' + (x.http_code ? ' ' + x.http_code : '') : 'Failed' + (x.http_code ? ' ' + x.http_code : '')), el('td', {}, [x.old_status, x.new_status].filter(Boolean).join(' → ')), el('td', {}, x.actor || ''),
+          el('td', { style: 'max-width:340px;overflow-wrap:anywhere' }, x.error || (x.detail && Object.keys(x.detail).length ? JSON.stringify(x.detail).slice(0, 200) : ''))))))));
+    } catch (x) { logBox.replaceChildren(el('p', { class: 'small', style: 'color:var(--bad)' }, x.message)); }
+  };
+  portalCall({ action: 'status' }).then(draw).catch(e => box.replaceChildren(el('p', { style: 'color:var(--bad)' }, e.message)));
+  loadLog();
+  return [el('h2', {}, 'Portal – Chronic Attach'),
+    el('p', { class: 'small muted' }, 'Every request on the portal’s Chronic Attach page comes in as a ticket by itself (one ticket per request number). Agents answer in the ticket; the decision goes back through the portal, which records it in the Request Timeline and sends it to the member (WhatsApp) or the broker (email, with everyone in copy). The portal credentials stay on the server.'),
+    box, el('h2', { style: 'margin-top:18px' }, 'Sync log (latest 100)'), el('p', { class: 'small muted' }, 'Every call in both directions: who, what, when and the result. The business record stays the portal’s Request Timeline.'), logBox];
+}
+/* ---- Portal history: every Chronic Attach request ever made (decided ones too), from table portal_history.
+   Old requests are a record, not tickets: they do not fill the queues or use CHR numbers. ---- */
+const PH_STATUS = [[3, 'Pending'], [5, 'Approved'], [6, 'Partially Approved Pending'], [7, 'Partially Approved Rejected'], [8, 'Rejected'], [9, 'Reopened'], [4, 'Closed'], [1, 'Assigned'], [2, 'Processing']];
+const PH_CACHE = new Map();
+const phPill = s => { const n = String(s || ''); const bg = /reject/i.test(n) ? 'var(--bad-bg)' : /^approved$/i.test(n) ? 'var(--ok-bg)' : 'var(--warn-bg)'; return el('span', { class: 'pill', style: 'font-size:11px;padding:0 6px;background:' + bg }, n.replace(/_/g, ' ') || '—'); };
+// member panel: the member's portal requests (any status), newest first
+function portalHistoryBox(t) {
+  const m = String(t.member || '').trim(); if (!/^\d{6,10}$/.test(m) || !SB) return null;
+  const box = el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px' }, el('div', { class: 'small muted' }, 'Portal history…'));
+  const hit = PH_CACHE.get(m);   // the side panel redraws often: one query per card per minute
+  const fresh = hit && Date.now() - hit.at < 60000;
+  const p = fresh ? hit.p : SB.from('portal_history').select('request_id,status_name,creation_date', { count: 'exact' }).eq('individual_number', m).order('creation_date', { ascending: false }).limit(8).then(x => x);   // a real promise: resolved once
+  if (!fresh) PH_CACHE.set(m, { at: Date.now(), p });
+  p.then(({ data, error, count }) => {
+    if (error) { box.remove(); return; }
+    if (!data || !data.length) { box.replaceChildren(el('div', { class: 'small muted' }, 'Portal history: no requests for card ' + m)); return; }
+    box.replaceChildren(el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, 'Portal history'), el('a', { href: '#/ph?q=' + m, class: 'small' }, (count || data.length) + ' request(s) ›')),
+      ...data.map(r => el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', {}, '#' + r.request_id + (r.creation_date ? ' · ' + fmtDay(r.creation_date) : '')), phPill(r.status_name))));
+  });
+  return box;
+}
+// Portal > History: search every portal request by request no., card no., member name or policy holder
+function portalHistoryView(r) {
+  const root = el('div', { class: 'pad' });
+  const q = el('input', { type: 'search', id: 'ph-q', value: r.params.get('q') || '', placeholder: 'Request no., card no., member name or policy holder', style: 'flex:1;min-width:220px' });
+  const st = el('select', { id: 'ph-status' }, opt('', 'All statuses', ''), PH_STATUS.map(([c, n]) => opt(String(c), n, '')));
+  const info = el('div', { class: 'small muted', style: 'margin:8px 0' }); const out = el('div', { style: 'overflow-x:auto' });
+  async function run() {
+    info.textContent = 'Searching…';
+    let qq = SB.from('portal_history').select('request_id,individual_number,individual_name,policy_holder,channel,status_name,status_code,creation_date', { count: 'exact' }).order('creation_date', { ascending: false }).limit(200);
+    const v = q.value.trim().replace(/[,()%*]/g, ' ').trim();
+    if (/^\d{1,7}$/.test(v)) qq = qq.eq('request_id', v); else if (/^\d{8,10}$/.test(v)) qq = qq.eq('individual_number', v); else if (v) qq = qq.or(`individual_name.ilike.*${v}*,policy_holder.ilike.*${v}*`);
+    if (st.value) qq = qq.eq('status_code', +st.value);
+    const { data, error, count } = await qq;
+    if (error) { info.textContent = 'Could not search: ' + error.message; return; }
+    const ids = (data || []).map(x => x.request_id); const tk = new Map();
+    if (ids.length) { const { data: L } = await SB.from('portal_links').select('request_id,ticket').in('request_id', ids); for (const l of L || []) tk.set(l.request_id, l.ticket); }
+    info.textContent = (count || 0).toLocaleString() + ' request(s)' + ((count || 0) > 200 ? ' – showing the newest 200' : '');
+    out.replaceChildren(el('table', { class: 'tbl small' },
+      el('thead', {}, el('tr', {}, ['Request', 'Date', 'Member', 'Card', 'Policy holder', 'Channel', 'Status', 'Ticket'].map(h => el('th', {}, h)))),
+      el('tbody', {}, (data || []).map(x => el('tr', {}, el('td', {}, '#' + x.request_id), el('td', { style: 'white-space:nowrap' }, x.creation_date ? fmtDate(x.creation_date) : ''), el('td', { dir: 'auto' }, x.individual_name || ''),
+        el('td', {}, x.individual_number || ''), el('td', { dir: 'auto' }, x.policy_holder || ''), el('td', {}, x.channel || ''), el('td', {}, phPill(x.status_name)),
+        el('td', {}, tk.get(x.request_id) ? el('a', { href: '#/t/' + tk.get(x.request_id) }, tk.get(x.request_id)) : el('span', { class: 'muted' }, 'history')))))));
+  }
+  q.addEventListener('keydown', e => { if (e.key === 'Enter') run(); }); st.addEventListener('change', run);
+  root.append(el('h2', { style: 'margin:0 0 4px;font-size:18px' }, 'Portal history – Chronic Attach'),
+    el('p', { class: 'muted', style: 'margin:0 0 12px' }, 'Every request made on the portal, old ones included. Open requests are tickets; decided ones are kept here as a record.'),
+    el('div', { class: 'row', style: 'gap:8px;flex-wrap:wrap' }, q, st, el('button', { class: 'btn primary', type: 'button', onclick: run }, 'Search')), info, out);
+  run();
+  return { el: root, update: () => { } };
+}
 /* ---------------- Decision on the request: Approved / Partially approved → closed, Pending (with the reason) → pending,
    Rejected (with the reason, e.g. item not covered) → closed. Suggested from the medicine validation. ---------------- */
 const DECISIONS = {
@@ -3162,6 +3485,12 @@ const PR_TEMPLATES = {
   reminder: { EN: 'Dear Valued Partner,\n\nKind reminder: we are still waiting for the following to complete the review of this request:\n{{list}}\n\nIf we do not receive it, the request will be closed automatically. It reopens as soon as you reply to this email.', AR: 'السادة / شريكنا الموقر،\n\nتذكير: ما زلنا في انتظار ما يلي لاستكمال مراجعة الطلب:\n{{list}}\n\nفي حال عدم الإرسال سيتم إغلاق الطلب تلقائياً، ويُعاد فتحه فور الرد على هذا البريد.' }
 };
 async function sendPendingMail(t, kind, list, opts = {}) {
+  if (isPortal(t)) {   // portal request: the request / reminder goes through the portal (WhatsApp / broker email), status unchanged
+    const txt = portalText(t, kind === 'reminder' ? 'reminder' : 'Pending', { list: list || ('- ' + pendingReasonOf(t)) });
+    const ticketUpdate = kind === 'reminder' ? { _remindersSent: (t.remindersSent || 0) + 1, _lastReminderAt: new Date().toISOString() } : {};
+    await queuePortal(t, { decision: 'Message', text: txt, missing: String(list || '').split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), ticketUpdate });
+    return;
+  }
   const lang = t.lang === 'EN' ? 'EN' : 'AR'; const R = replyAllOf(t);
   if (!R.to) throw new Error('No customer email on this ticket');
   const body = textToHtml(PR_TEMPLATES[kind][lang].replace('{{list}}', list || (lang === 'AR' ? '- ' + (PR_AR[pendingReasonOf(t)] || '') : '- ' + pendingReasonOf(t))));
@@ -3171,6 +3500,7 @@ async function sendPendingMail(t, kind, list, opts = {}) {
 }
 // Set a ticket Pending: the reason is mandatory; for customer-facing reasons the request can go out at once (Reply All)
 function pendingDialog(t, preset, opts = {}) {
+  if (isPortal(t) && !opts.noMail) return portalDecisionDialog(t, 'Pending', preset, opts);   // the request goes through the portal, not Outlook
   const reason = el('select', { style: 'width:100%' }, opt('', '— choose the reason (required) —', ''), PENDING_REASONS.map(r => opt(r, 'Pending – ' + r, PR_LEGACY[preset] || preset || '')));
   const note = el('textarea', { rows: 2, dir: 'auto', style: 'width:100%', placeholder: 'What exactly we wait for (shown in the ticket)' }, opts.note || '');
   const list = el('textarea', { rows: 4, dir: 'auto', style: 'width:100%', placeholder: '- HbA1c (≤ 6 months) ← Galvus Met\n- Lipid profile ← Crestor' }, missingFromValidation(t));
@@ -3330,7 +3660,8 @@ function reminderDialog(t) {
 let CR_SEEN = null;
 async function cycleHousekeeping() {
   if (!DB || !STORE.connected || !me()) return;
-  const due = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical && pendingStage(t) === 'close');
+  // portal requests are not auto-closed here: they stay Pending on the portal, so the ticket waits with them
+  const due = [...DB.tickets.values()].filter(t => !t.mergedInto && !t.historical && !isPortal(t) && pendingStage(t) === 'close');
   if (due.length && Date.now() - (cycleHousekeeping.at || 0) > 5 * 60000) {
     cycleHousekeeping.at = Date.now();
     if (await loadEvents()) DB = fold();
@@ -3355,6 +3686,7 @@ async function cycleHousekeeping() {
 }
 const pendingStageOk = t => pendingStage(t);
 function decisionDialog(t, d, preset) {
+  if (isPortal(t)) return portalDecisionDialog(t, d, preset);   // portal request: the decision goes back through the portal
   if (d === 'Pending') return pendingDialog(t, preset, { decision: true });   // one Pending flow: reason → sub-folder, request email
   const needs = d === 'Pending' || d === 'Rejected' || d === 'Partially approved';
   const list = d === 'Pending' ? PENDING_REASONS : REJECT_REASONS;

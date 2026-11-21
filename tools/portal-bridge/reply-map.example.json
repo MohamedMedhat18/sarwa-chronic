@@ -1,0 +1,18 @@
+{
+  "_note": "TEMPLATE. Not usable until calibrated on a TEST request: open Actions > Reply on the test request, read the real field ids, and fill them in. Copy to %LOCALAPPDATA%\\ChronicPortalBridge\\reply-map.json. Without that file the bridge never submits.",
+  "replyButton": "Reply",
+  "formInIframe": true,
+  "fields": {
+    "status": "#P???_STATUS",
+    "message": "#P???_COMMENT",
+    "reason": "#P???_EXTRA_COMMENT",
+    "file": "input[type=file]"
+  },
+  "statusValues": {
+    "Approved": "5",
+    "Partially approved": "7",
+    "Rejected": "8",
+    "Pending": "3"
+  },
+  "submitButton": "Submit"
+}

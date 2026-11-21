@@ -1,0 +1,610 @@
+// Sarwa portal (Oracle APEX "Chronic Attach", Medical Claims app 2009 / page 165) <-> Sarwa Chronic helpdesk.
+//
+// IN : every request on the portal becomes ONE ticket (key = portal request id, table portal_links). Later changes on the
+//      portal (new files, the member answered on WhatsApp, the request reopened, or someone decided directly in the portal)
+//      are added to that ticket. A requester answer reopens a pending ticket with the "customer_response" tag (same rule as email).
+// OUT: the agent's decision / message is queued in portal_outbox by the app and posted here to the portal's decision endpoint,
+//      which runs the portal's own Reply logic (status, Request Timeline, WhatsApp / broker email). The ticket only changes
+//      (Closed / Pending) after the portal confirmed - a ticket never shows "replied" while the portal is still open.
+//
+// The portal credentials (OAuth2 client credentials) stay on the server (app_secrets, readable by the service role only).
+// Callers: signed-in team members (tick / push / retry / status), admins (settings, sync now), and a scheduler or test
+// script with the portal token (x-portal-token; only its SHA-256 is stored).
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
+const SB_URL = Deno.env.get('SUPABASE_URL')!;
+const db = createClient(SB_URL, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false, autoRefreshToken: false } });
+const cors = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-portal-token',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json; charset=utf-8' } });
+const BUCKET = 'chronic';
+const HD = 'hd';
+const MAX_ATT = 20 * 1048576;          // per file
+const MAX_POST_ATT = 15 * 1048576;     // all files of one decision together
+const RETRY_MIN = [1, 2, 4, 8, 16];    // minutes before attempt 2..6
+const MAX_ATTEMPTS = 5;
+
+// ---------- portal status codes (read from the page's Status Filter, P165_STATUS) ----------
+const PORTAL_STATUS: Record<number, string> = { 1: 'Assigned', 2: 'Processing', 3: 'Pending', 4: 'Closed', 5: 'Approved', 6: 'Partially_Approved_Pending', 7: 'Partially_Approved_Rejected', 8: 'Rejected', 9: 'Reopened' };
+const FINAL = new Set([4, 5, 7, 8]);
+// helpdesk decision -> what is posted to the portal (decision code + the portal status it must end in)
+export const DECISION_MAP: Record<string, { code: string; portalStatus: number | null }> = {
+  'Approved': { code: 'APPROVE', portalStatus: 5 },
+  'Partially approved': { code: 'PARTIAL', portalStatus: 7 },
+  'Rejected': { code: 'REJECT', portalStatus: 8 },
+  'Pending': { code: 'PENDING_DOCS', portalStatus: 3 },   // NOT closed: stays Pending with the missing-documents list sent
+  'Message': { code: 'MESSAGE', portalStatus: null },     // a message / reminder only, the status does not change
+};
+
+// ---------- small helpers ----------
+class HttpErr extends Error { constructor(public status: number, msg: string) { super(msg); } }
+async function sha256(s: string) { const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, '0')).join(''); }
+const rand = (n: number) => [...crypto.getRandomValues(new Uint8Array(n))].map((x) => 'abcdefghijklmnopqrstuvwxyz0123456789'[x % 36]).join('');
+const safe = (s: string) => String(s || '').replace(/[^A-Za-z0-9._-]+/g, '_').replace(/_+/g, '_').slice(0, 120);
+const str = (v: unknown, n = 500) => String(v ?? '').slice(0, n);
+let lastTs = 0;
+// strictly increasing timestamps: events are folded in (ts, id) order, so a ticket.create must sort before its first message
+function nowIso() { let t = Date.now(); if (t <= lastTs) t = lastTs + 1; lastTs = t; return new Date(t).toISOString(); }
+const evId = (ts: string) => ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
+const phoneLocal = (s: unknown) => { let d = String(s || '').replace(/\D/g, ''); if (d.startsWith('0020')) d = d.slice(4); if (d.startsWith('20') && d.length === 12) d = d.slice(2); if (d.length === 10 && d.startsWith('1')) d = '0' + d; return d; };
+const EXT_MIME: Record<string, string> = { jpg: 'image/jpeg', jpeg: 'image/jpeg', jfif: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', pdf: 'application/pdf', heic: 'image/heic', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' };
+const mimeOf = (name: string, m?: string) => { const x = String(m || '').toLowerCase(); if (x && !/octet-stream|unknown|binary/.test(x)) return x; return EXT_MIME[String(name).toLowerCase().split('.').pop() || ''] || 'application/octet-stream'; };
+const readable = (mime: string) => /^(image\/(jpeg|png|webp|gif)|application\/pdf)$/.test(mime);
+function b64(bytes: Uint8Array) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); }
+const errMsg = (e: unknown) => String((e as Error)?.message || e).slice(0, 500);
+
+async function insertEv(actor: string, type: string, t: string | null, d: Record<string, unknown>) {
+  const ts = nowIso();
+  const { error } = await db.from('events').insert({ id: evId(ts), ts, actor, pc: 'portal-sync', type, t, d });
+  if (error) throw new Error('event ' + type + ': ' + error.message);
+}
+async function log(row: Record<string, unknown>) { await db.from('portal_sync_log').insert(row).then(() => {}, () => {}); }
+async function getState(key: string) { const { data } = await db.from('portal_state').select('value').eq('key', key).maybeSingle(); return (data?.value || {}) as Record<string, any>; }
+async function setState(key: string, value: unknown) { await db.from('portal_state').upsert({ key, value, updated_at: new Date().toISOString() }); }
+
+// ---------- configuration (Settings > Portal; stored server-side) ----------
+// mode: off | mock (built-in test portal) | live (ORDS HTTP, needs IT) | browser (local bridge PC drives the real portal UI, no IT)
+type Cfg = { mode: 'off' | 'mock' | 'live' | 'browser'; baseUrl: string; tokenUrl: string; clientId: string; clientSecret: string; intervalMin: number; since: string; group: string; alertTo: string; mailbox: string };
+const serverReaches = (c: Cfg) => c.mode === 'mock' || c.mode === 'live';   // in browser mode the portal is reachable only from the bridge PC
+async function readSecret(name: string) { const { data } = await db.from('app_secrets').select('value').eq('name', name).maybeSingle(); try { return data ? JSON.parse(data.value) : null; } catch { return null; } }
+async function writeSecret(name: string, value: unknown, by?: string) { const { error } = await db.from('app_secrets').upsert({ name, value: JSON.stringify(value), updated_at: new Date().toISOString(), updated_by: by || null }); if (error) throw new Error(error.message); }
+async function config(): Promise<Cfg> {
+  const c = { mode: 'off', baseUrl: '', tokenUrl: '', clientId: '', clientSecret: '', intervalMin: 5, since: '', group: '', alertTo: '', mailbox: 'Chronic@sarwa.life', ...(await readSecret('portal') || {}) } as Cfg;
+  if (c.mode === 'mock') { const m = await readSecret('portal_mock') || {}; c.baseUrl = SB_URL + '/functions/v1/portal-mock'; c.tokenUrl = c.baseUrl + '/oauth/token'; c.clientId = m.clientId || ''; c.clientSecret = m.clientSecret || ''; }
+  return c;
+}
+
+// ---------- portal API (ORDS, OAuth2 client credentials) ----------
+let TOK = { v: '', exp: 0, key: '' };
+async function token(c: Cfg) {
+  const key = c.tokenUrl + '|' + c.clientId;
+  if (TOK.v && TOK.key === key && Date.now() < TOK.exp - 60000) return TOK.v;
+  const r = await fetch(c.tokenUrl, { method: 'POST', signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Authorization: 'Basic ' + btoa(c.clientId + ':' + c.clientSecret) }, body: 'grant_type=client_credentials' });
+  if (!r.ok) throw new HttpErr(r.status, 'portal sign-in failed (' + r.status + '): ' + (await r.text()).slice(0, 200));
+  const j = await r.json(); TOK = { v: j.access_token, exp: Date.now() + (+j.expires_in || 3600) * 1000, key };
+  return TOK.v;
+}
+async function api(c: Cfg, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) {
+  if (c.mode === 'off' || !c.baseUrl) throw new HttpErr(503, 'The portal connection is off (Settings > Portal)');
+  const r = await fetch(c.baseUrl.replace(/\/$/, '') + path, { method, signal: AbortSignal.timeout(30000), headers: { Authorization: 'Bearer ' + await token(c), Accept: 'application/json', ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) TOK.v = '';
+  return r;
+}
+async function apiJson(c: Cfg, path: string) { const r = await api(c, 'GET', path); if (!r.ok) throw new HttpErr(r.status, 'GET ' + path + ' -> ' + r.status + ' ' + (await r.text()).slice(0, 200)); return r.json(); }
+
+// ---------- the portal request (contract in docs/PORTAL-INTEGRATION.md) ----------
+type Att = { id: string | number; file_name?: string; mime_type?: string; size?: number; source?: string; uploaded_at?: string };
+type Tl = { id: string | number; status_code?: number; status_name?: string; comment?: string; extra_comment?: string; by?: string; actor_type?: string; source?: string; at?: string };
+type Req = {
+  request_id: string | number; individual_number?: string; individual_name?: string; mobile?: string; channel?: string; contract_no?: string; policy_holder?: string; policy_holder_name?: string;
+  broker?: string; broker_mail?: string; cc?: string[]; status_code: number; status_name?: string; chronic_date?: string; assign_to?: string; creation_user?: string; creation_date?: string; last_update?: string;
+  request_type?: string; item_codes?: { code?: string; name?: string; dose?: string; quantity?: number }[]; starting_day?: number; notes?: string; attachments?: Att[]; timeline?: Tl[];
+};
+const statusName = (q: Req) => q.status_name || PORTAL_STATUS[q.status_code] || String(q.status_code);
+const isOurs = (x: Tl) => x.actor_type === 'integration' || x.source === 'integration' || /^sarwa[- ]chronic/i.test(String(x.by || ''));
+const isRequester = (q: Req, x: Tl) => x.actor_type === 'requester' || ['whatsapp', 'broker', 'member'].includes(String(x.source || '').toLowerCase()) ||
+  (!!x.by && [q.creation_user, q.mobile, q.broker_mail].filter(Boolean).map((v) => String(v).toLowerCase()).includes(String(x.by).toLowerCase()));
+
+function portalInfo(q: Req, hd: any) {
+  const startDay = q.starting_day ?? hd?.start_day ?? null;
+  return {
+    requestId: String(q.request_id), channel: q.channel || '', mobile: phoneLocal(q.mobile || q.creation_user), individual: q.individual_number || '',
+    policyHolder: q.policy_holder || q.policy_holder_name || '', contractNo: q.contract_no || '', broker: q.broker || '', brokerMail: q.broker_mail || '', cc: q.cc || [],
+    statusCode: q.status_code, statusName: statusName(q), chronicDate: q.chronic_date || '', createdAt: q.creation_date || '', lastUpdate: q.last_update || '', assignTo: q.assign_to || '',
+    requestType: q.request_type || '', items: (q.item_codes || []).slice(0, 60), startDay, startDaySrc: q.starting_day != null ? 'portal' : hd ? 'holder_days (' + hd.via + ')' : '',
+    secondDay: hd?.second_day ?? null,
+  };
+}
+function requestText(q: Req, p: ReturnType<typeof portalInfo>) {
+  const L = [`Chronic Attach request No. ${q.request_id} - ${p.channel || 'portal'}`,
+    `Member: ${q.individual_name || '-'} (${q.individual_number || '-'})${p.mobile ? ' - mobile ' + p.mobile : ''}`,
+    `Policy holder: ${p.policyHolder || '-'}${p.contractNo ? ' - contract ' + p.contractNo : ''}${p.startDay != null ? ' - Starting Day ' + p.startDay : ''}`];
+  if (p.broker || p.brokerMail) L.push(`Broker: ${p.broker || ''} ${p.brokerMail ? '<' + p.brokerMail + '>' : ''}`.trim());
+  if ((q.item_codes || []).length) L.push('Items:', ...(q.item_codes || []).map((i) => `- ${i.code || ''} ${i.name || ''}${i.dose ? ' - ' + i.dose : ''}${i.quantity ? ' x ' + i.quantity : ''}`.trim()));
+  if (q.notes) L.push('Notes: ' + q.notes);
+  return L.join('\n');
+}
+
+async function copyAtts(c: Cfg, no: string, q: Req, list: Att[]) {
+  const out = [];
+  for (const a of list) {
+    const r = await api(c, 'GET', `/requests/${encodeURIComponent(String(q.request_id))}/attachments/${encodeURIComponent(String(a.id))}`);
+    if (!r.ok) throw new HttpErr(r.status, 'attachment ' + a.id + ' -> ' + r.status);
+    const buf = new Uint8Array(await r.arrayBuffer());
+    const name = a.file_name || ('file-' + a.id); const mime = mimeOf(name, a.mime_type || r.headers.get('content-type') || '');
+    if (buf.length > MAX_ATT) { out.push({ name, mime, size: buf.length, path: '', cls: 'unreadable', why: 'larger than 20 MB - open it in the portal', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
+    const path = `${HD}/files/${no}/${rand(5)}_${safe(name)}`;
+    const { error } = await db.storage.from(BUCKET).upload(path, buf, { contentType: mime, upsert: true });
+    if (error) throw new Error('upload ' + name + ': ' + error.message);
+    out.push({ name, mime, size: buf.length, path, cls: readable(mime) ? 'readable' : 'unreadable', why: readable(mime) ? '' : 'open it in the portal / Word', via: 'portal', portalId: String(a.id), source: a.source || '' });
+  }
+  return out;
+}
+
+// browser mode: the bridge PC already downloaded the file in the real browser and sends its bytes as base64
+type InlineAtt = Att & { content_base64?: string };
+async function saveInlineAtts(no: string, list: InlineAtt[]) {
+  const out = [];
+  for (const a of list) {
+    const name = a.file_name || ('file-' + a.id); const mime = mimeOf(name, a.mime_type || '');
+    if (!a.content_base64) { out.push({ name, mime, size: a.size || 0, path: '', cls: 'unreadable', why: 'not downloaded (too large / open it in the portal)', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
+    const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0));
+    if (bytes.length > MAX_ATT) { out.push({ name, mime, size: bytes.length, path: '', cls: 'unreadable', why: 'larger than 20 MB - open it in the portal', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
+    const path = `${HD}/files/${no}/${rand(5)}_${safe(name)}`;
+    const { error } = await db.storage.from(BUCKET).upload(path, bytes, { contentType: mime, upsert: true });
+    if (error) throw new Error('upload ' + name + ': ' + error.message);
+    out.push({ name, mime, size: bytes.length, path, cls: readable(mime) ? 'readable' : 'unreadable', why: readable(mime) ? '' : 'open it in the portal / Word', via: 'portal', portalId: String(a.id), source: a.source || '' });
+  }
+  return out;
+}
+type AttFn = (no: string, list: InlineAtt[]) => Promise<any[]>;
+
+// ---------- IN: portal -> tickets ----------
+async function syncIn(c: Cfg, force = false) {
+  const cur = await getState('cursor');
+  if (!force && cur.lastRun && Date.now() - Date.parse(cur.lastRun) < Math.max(1, c.intervalMin) * 60000 - 20000) return { skipped: 'not due' };
+  const { data: got } = await db.rpc('portal_try_lock', { p_key: 'lock:sync', p_secs: 240 });
+  if (!got) return { skipped: 'another sync is running' };
+  const startedAt = new Date().toISOString();
+  const since = cur.since || c.since || new Date(Date.now() - 3 * 86400000).toISOString();
+  const from = new Date(Date.parse(since) - 120000).toISOString();   // 2 minutes overlap - re-reads are cheap and idempotent
+  const res = { seen: 0, created: 0, updated: 0, same: 0, skipped: 0, errors: [] as string[] };
+  let maxTs = since;
+  try {
+    let offset = 0;
+    for (let page = 0; page < 40; page++) {
+      const j = await apiJson(c, `/requests?changed_since=${encodeURIComponent(from)}&limit=50&offset=${offset}`);
+      const items: { request_id: string; last_update?: string; status_code?: number }[] = j.items || [];
+      for (const s of items) {
+        res.seen++;
+        try {
+          const r = await syncOne(c, String(s.request_id), s.last_update);
+          (res as any)[r]++;
+          if (s.last_update && s.last_update > maxTs) maxTs = s.last_update;
+        } catch (e) {
+          res.errors.push(s.request_id + ': ' + errMsg(e));
+          await log({ direction: 'in', action: 'sync_request', request_id: String(s.request_id), ok: false, http_code: (e as HttpErr).status || null, error: errMsg(e) });
+        }
+      }
+      if (!j.hasMore || !items.length) break;
+      offset += items.length;
+    }
+    // the cursor only moves when everything up to it was taken in (a failed request is read again next time)
+    await setState('cursor', { since: res.errors.length ? since : maxTs, lastRun: startedAt, lastOk: res.errors.length ? cur.lastOk || null : startedAt, lastError: res.errors[0] || null, last: res });
+    if (res.created || res.updated || res.errors.length) await log({ direction: 'in', action: 'sync', ok: !res.errors.length, detail: res, error: res.errors[0] || null });
+    return res;
+  } catch (e) {
+    await setState('cursor', { ...cur, lastRun: startedAt, lastError: errMsg(e) });
+    await log({ direction: 'in', action: 'sync', ok: false, http_code: (e as HttpErr).status || null, error: errMsg(e) });
+    throw e;
+  } finally {
+    await db.from('portal_state').update({ updated_at: new Date(Date.now() - 86400000).toISOString() }).eq('key', 'lock:sync');
+  }
+}
+
+async function syncOne(c: Cfg, id: string, lastUpdate?: string): Promise<'created' | 'updated' | 'same' | 'skipped'> {
+  const { data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle();
+  if (link && lastUpdate && link.portal_updated_at && Date.parse(link.portal_updated_at) >= Date.parse(lastUpdate)) return 'same';
+  const q: Req = await apiJson(c, `/requests/${encodeURIComponent(id)}`);
+  const hash = await reqHash(q);
+  if (link && link.last_hash === hash) { await db.from('portal_links').update({ synced_at: new Date().toISOString() }).eq('request_id', id); return 'same'; }
+  const attFn: AttFn = (no, list) => copyAtts(c, no, q, list);
+  return link ? await updateTicket(c, q, link, hash, attFn) : await createTicket(c, q, hash, attFn);
+}
+const reqHash = (q: Req) => sha256(JSON.stringify([q.status_code, q.last_update || '', (q.attachments || []).map((a) => String(a.id)).sort(), (q.timeline || []).map((x) => String(x.id)).sort()]));
+
+async function createTicket(c: Cfg, q: Req, hash: string, attFn: AttFn): Promise<'created' | 'skipped'> {
+  const id = String(q.request_id);
+  // a request that is already decided in the portal and was never in the helpdesk is not imported (history before go-live)
+  if (FINAL.has(+q.status_code)) { await log({ direction: 'in', action: 'skip_final', request_id: id, detail: { status: statusName(q) } }); return 'skipped'; }
+  const { data: hd } = await db.rpc('portal_holder_day', { p_holder: q.policy_holder || q.policy_holder_name || '', p_member: q.individual_number || '' });
+  const { data: nt, error: e1 } = await db.rpc('portal_next_ticket');
+  if (e1 || !nt) throw new Error('ticket number: ' + (e1?.message || 'none'));
+  const no = (nt as any).no as string, seq = (nt as any).seq as number;
+  // claim the request first: the primary key makes a second run (or a second server) stop here - no duplicate ticket
+  const { error: e2 } = await db.from('portal_links').insert({ request_id: id, ticket: no, last_hash: '', status_code: q.status_code, status_name: statusName(q), portal_updated_at: q.last_update || null });
+  if (e2) { if (/duplicate|unique/i.test(e2.message)) return 'skipped'; throw new Error(e2.message); }
+  try {
+    const p = portalInfo(q, hd);
+    const atts = await attFn(no, q.attachments || []);
+    const created = q.creation_date || new Date().toISOString();
+    const channelTag = String(p.channel || 'portal').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+    await insertEv('Portal sync', 'ticket.create', no, {
+      no, seq, source: 'portal', subject: `Chronic Attach #${id} - ${q.individual_name || q.individual_number || ''}`.trim(),
+      requester: { name: p.broker || q.individual_name || '', email: p.brokerMail, phone: p.mobile }, member: q.individual_number || '', memberName: q.individual_name || '',
+      lang: 'AR', status: q.status_code === 9 ? 'Open' : 'Open', priority: 'Medium', type: /renew/i.test(q.request_type || '') ? 'Renewal' : 'New chronic request',
+      group: c.group || 'Chronic review', agent: '', tags: ['portal', channelTag], ruleNames: [], createdAt: created, requestId: '', portal: p, mobile: p.mobile,
+    });
+    await insertEv('Portal sync', 'msg.in', no, {
+      key: `portal:${id}:init`, initial: true, portal: true, channel: p.channel, fromName: q.individual_name || p.broker || '', fromEmail: p.brokerMail, to: '', cc: (q.cc || []).join('; '),
+      date: created, subject: `Chronic Attach #${id}`, text: requestText(q, p), atts,
+    });
+    await db.from('portal_links').update({ last_hash: hash, att_ids: (q.attachments || []).map((a) => String(a.id)), timeline_ids: (q.timeline || []).map((x) => String(x.id)), synced_at: new Date().toISOString() }).eq('request_id', id);
+    await log({ direction: 'in', action: 'create_ticket', request_id: id, ticket: no, new_status: statusName(q), detail: { attachments: atts.length, startDay: p.startDay, policyHolder: p.policyHolder } });
+    return 'created';
+  } catch (e) {
+    // leave the link with an empty hash: the next run completes the ticket (files / first message) instead of creating another one
+    await log({ direction: 'in', action: 'create_ticket', request_id: id, ticket: no, ok: false, error: errMsg(e) });
+    throw e;
+  }
+}
+
+async function updateTicket(c: Cfg, q: Req, link: any, hash: string, attFn: AttFn): Promise<'updated' | 'same'> {
+  const id = String(q.request_id), no = link.ticket as string;
+  const { data: created } = await db.from('events').select('id').eq('type', 'ticket.create').eq('t', no).maybeSingle();
+  if (!created) { await db.from('portal_links').delete().eq('request_id', id); return await createTicket(c, q, hash, attFn) as any; }   // half-made earlier: start again
+  const knownAtt = new Set<string>(link.att_ids || []), knownTl = new Set<string>(link.timeline_ids || []);
+  const newAtts = (q.attachments || []).filter((a) => !knownAtt.has(String(a.id)) && !/sarwa/i.test(String(a.source || '')));
+  const newTl = (q.timeline || []).filter((x) => !knownTl.has(String(x.id)) && !isOurs(x));
+  const fromReq = newTl.filter((x) => isRequester(q, x)), staff = newTl.filter((x) => !isRequester(q, x));
+  const oldCode = +link.status_code, newCode = +q.status_code;
+  const p = portalInfo(q, null);
+  let changed = false;
+  // a) the requester answered: new documents, a WhatsApp / email answer, or the request reopened -> reopens the ticket (customer_response)
+  if (newAtts.length || fromReq.length || (newCode === 9 && oldCode !== 9)) {
+    const atts = await attFn(no, newAtts);
+    const text = fromReq.map((x) => [x.comment, x.extra_comment].filter(Boolean).join('\n')).filter(Boolean).join('\n\n')
+      || (newAtts.length ? `New document(s) added on the portal: ${newAtts.map((a) => a.file_name || a.id).join(', ')}` : 'The request was reopened on the portal.');
+    const at = [...fromReq.map((x) => x.at || ''), ...newAtts.map((a) => a.uploaded_at || ''), q.last_update || ''].filter(Boolean).sort().pop() || new Date().toISOString();
+    await insertEv('Portal sync', 'msg.in', no, { key: `portal:${id}:${hash.slice(0, 16)}`, portal: true, channel: p.channel, fromName: q.individual_name || p.broker || '', fromEmail: p.brokerMail, to: '', cc: (q.cc || []).join('; '), date: at, subject: `Chronic Attach #${id} - answer`, text, atts });
+    await log({ direction: 'in', action: 'customer_response', request_id: id, ticket: no, old_status: PORTAL_STATUS[oldCode], new_status: statusName(q), detail: { files: atts.length, messages: fromReq.length } });
+    changed = true;
+  }
+  // b) the status changed on the portal without the helpdesk (someone used Reply / changed it in the portal directly)
+  if (oldCode !== newCode) {
+    const who = staff.map((x) => x.by).filter(Boolean)[0] || '';
+    const direct = newCode !== 9 && staff.length > 0;
+    await insertEv('Portal sync', 'portal.update', no, { statusCode: newCode, statusName: statusName(q), from: PORTAL_STATUS[oldCode] || String(oldCode), by: who, direct, lastUpdate: q.last_update || '', assignTo: q.assign_to || '' });
+    if (direct && FINAL.has(newCode)) {
+      await insertEv('Portal sync', 'note', no, { auto: true, html: `<b>Decided directly on the portal</b>${who ? ' by ' + who.replace(/</g, '&lt;') : ''}: ${statusName(q)}. The helpdesk did not send this decision. Check it, then close the ticket here (no second message is sent).` });
+    }
+    await log({ direction: 'in', action: direct ? 'portal_direct_change' : 'portal_status', request_id: id, ticket: no, ok: !direct, actor: who || null, old_status: PORTAL_STATUS[oldCode], new_status: statusName(q) });
+    changed = true;
+  } else if (staff.length) {
+    await insertEv('Portal sync', 'portal.update', no, { statusCode: newCode, statusName: statusName(q), by: staff[0].by || '', direct: true, comment: str(staff.map((x) => x.comment || '').join(' / '), 500), lastUpdate: q.last_update || '' });
+    changed = true;
+  }
+  await db.from('portal_links').update({ last_hash: hash, status_code: newCode, status_name: statusName(q), portal_updated_at: q.last_update || null,
+    att_ids: (q.attachments || []).map((a) => String(a.id)), timeline_ids: (q.timeline || []).map((x) => String(x.id)), synced_at: new Date().toISOString() }).eq('request_id', id);
+  return changed ? 'updated' : 'same';
+}
+
+// apply a successful decision result (from the ORDS HTTP response, or from the bridge PC's browser result)
+async function recordSent(j: any, link: any, res: any, httpCode: number | null) {
+  const job = j.job || {}; const id = String(j.request_id); const by = (job.agent || 'Agent') + ' (via portal)';
+  const sentAt = new Date().toISOString();
+  await db.from('portal_outbox').update({ status: 'sent', http_code: httpCode, result: res, error: null, sent_at: sentAt }).eq('id', j.id);
+  await db.from('portal_links').update({ status_code: res.status_code ?? link?.status_code, status_name: res.status_name || link?.status_name, portal_updated_at: res.last_update || link?.portal_updated_at,
+    timeline_ids: [...new Set([...(link?.timeline_ids || []), ...(res.timeline_id ? [String(res.timeline_id)] : [])])], synced_at: sentAt }).eq('request_id', id);
+  await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'sent', statusCode: res.status_code ?? null, statusName: res.status_name || '', timelineId: res.timeline_id || '', delivered: res.delivered || null, sentAt });
+  if (job.ticketUpdate && Object.keys(job.ticketUpdate).length) await insertEv(by, 'update', j.ticket, job.ticketUpdate);
+  await log({ direction: 'out', action: 'decision', request_id: id, ticket: j.ticket, http_code: httpCode, actor: job.agent || null, old_status: link?.status_name || null, new_status: res.status_name || null, detail: { job: j.id, decision: job.decision, delivered: res.delivered || null, attempts: j.attempts, via: res.via || 'api' } });
+}
+// a transient failure: queue again with back-off (minutes; seconds on the mock with fastRetry)
+async function recordRetry(c: Cfg, j: any, status: number | null, text: string): Promise<'retrying'> {
+  const unit = (c as any).fastRetry ? 1000 : 60000;   // seconds instead of minutes when fast-retry is on (tests)
+  const next = new Date(Date.now() + RETRY_MIN[Math.min(j.attempts - 1, RETRY_MIN.length - 1)] * unit).toISOString();
+  await db.from('portal_outbox').update({ status: 'queued', next_try_at: next, http_code: status || null, error: text }).eq('id', j.id);
+  await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'retrying', attempt: j.attempts, nextTry: next, error: str(text, 300), http: status || null });
+  await log({ direction: 'out', action: 'decision', request_id: j.request_id, ticket: j.ticket, ok: false, http_code: status || null, error: text, detail: { job: j.id, attempt: j.attempts, nextTry: next } });
+  return 'retrying';
+}
+
+// ---------- OUT: decisions -> portal ----------
+async function pushOut(c: Cfg) {
+  const out = { sent: 0, retrying: 0, failed: 0 };
+  for (let round = 0; round < 5; round++) {
+    const { data: jobs, error } = await db.rpc('portal_claim_outbox', { n: 10 });
+    if (error) throw new Error(error.message);
+    if (!jobs || !jobs.length) break;
+    for (const j of jobs as any[]) { const r = await pushOne(c, j); (out as any)[r]++; }
+  }
+  return out;
+}
+
+async function pushOne(c: Cfg, j: any): Promise<'sent' | 'retrying' | 'failed'> {
+  const job = j.job || {}; const id = String(j.request_id); const by = (job.agent || 'Agent') + ' (via portal)';
+  const { data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle();
+  let r: Response | null = null, problem = '';
+  try {
+    const files = []; let total = 0;
+    for (let i = 0; i < (job.attachments || []).length; i++) {
+      const path = job.attachments[i]; const { data, error } = await db.storage.from(BUCKET).download(path);
+      if (error || !data) throw new Error('attachment not found: ' + path);
+      const bytes = new Uint8Array(await data.arrayBuffer()); total += bytes.length;
+      if (total > MAX_POST_ATT) throw new HttpErr(413, 'attachments over 15 MB together - send fewer files');
+      const name = (job.attachmentNames || [])[i] || path.split('/').pop();
+      files.push({ file_name: name, mime_type: mimeOf(name, data.type), content_base64: b64(bytes) });
+    }
+    const map = DECISION_MAP[job.decision] || DECISION_MAP.Message;
+    const body = {
+      decision: map.code, status_code: map.portalStatus, message: str(job.text, 8000), message_html: str(job.html, 60000), reason: str(job.reason, 500), missing_documents: (job.missing || []).slice(0, 30),
+      agent_name: str(job.agent, 200), agent_email: str(job.agentEmail, 200), ticket: j.ticket, base_last_update: link?.portal_updated_at || null, source: 'sarwa-chronic', attachments: files,
+    };
+    r = await api(c, 'POST', `/requests/${encodeURIComponent(id)}/decision`, body, { 'Idempotency-Key': j.id });
+  } catch (e) { problem = errMsg(e); if (e instanceof HttpErr && e.status === 413) return await fail(j, 'dead', 413, problem); }
+
+  if (r && r.ok) { const res = await r.json().catch(() => ({})); await recordSent(j, link, res, r.status); return 'sent'; }
+  const status = r ? r.status : 0;
+  const text = r ? (await r.text().catch(() => '')).slice(0, 400) : problem;
+  if (status === 409) return await fail(j, 'conflict', 409, 'The request changed on the portal after this ticket was last updated - refresh, check, then send again. ' + text);
+  const transient = !r || status === 401 || status === 408 || status === 425 || status === 429 || status >= 500;
+  if (transient && j.attempts < MAX_ATTEMPTS) return await recordRetry(c, j, status, text);
+  return await fail(j, transient ? 'dead' : 'error', status || null, text || ('HTTP ' + status));
+}
+
+// a job that will not go through by itself: the ticket shows it (Sync failed queue) and the admin gets an email
+async function fail(j: any, status: 'conflict' | 'error' | 'dead', http: number | null, error: string): Promise<'failed'> {
+  await db.from('portal_outbox').update({ status, http_code: http, error }).eq('id', j.id);
+  await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status, http, error: str(error, 500), attempts: j.attempts });
+  await log({ direction: 'out', action: 'decision', request_id: j.request_id, ticket: j.ticket, ok: false, http_code: http, error, detail: { job: j.id, final: status, attempts: j.attempts } });
+  if (status !== 'conflict') await alertAdmin(j, status, error).catch(() => {});
+  return 'failed';
+}
+async function alertAdmin(j: any, status: string, error: string) {
+  const c = await config();
+  const to = c.alertTo || ((await db.from('profiles').select('email').eq('role', 'admin').eq('active', true)).data || []).map((p: any) => p.email).filter(Boolean).join('; ');
+  if (!to) return;
+  const outId = 'out_portal_' + Date.now().toString(36) + rand(4);
+  const html = `<p>The decision on <b>${j.ticket}</b> (portal request ${j.request_id}) could not be posted to the portal: <b>${status}</b>.</p><p>${String(error).replace(/</g, '&lt;')}</p><p>Open the ticket > Portal panel > Try again, or the "Portal - sync failed" queue. The request is still open on the portal.</p>`;
+  await db.from('outbox').insert({ id: outId, ticket: j.ticket, status: 'queued', job: { outId, ticket: j.ticket, to, cc: '', replyAll: false, subject: `[Portal sync failed] ${j.ticket} / request ${j.request_id}`, html, replyToMid: '', attachments: [], attachmentNames: [], attachmentCids: [], mailbox: c.mailbox || 'Chronic@sarwa.life', queuedBy: 'Portal sync', queuedAt: new Date().toISOString(), internal: true } });
+}
+
+// ---------- who is calling ----------
+type Who = { kind: 'token' } | { kind: 'user'; id: string; name: string; email: string; role: string };
+async function caller(req: Request): Promise<Who | null> {
+  const pt = req.headers.get('x-portal-token') || '';
+  if (pt.startsWith('chp_')) { const s = await readSecret('portal_token'); if (s && s.hash && s.hash === await sha256(pt)) return { kind: 'token' }; return null; }
+  const jwt = (req.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!jwt) return null;
+  const { data } = await db.auth.getUser(jwt); if (!data?.user) return null;
+  const { data: p } = await db.from('profiles').select('id,name,email,role,active').eq('id', data.user.id).maybeSingle();
+  return p && p.active ? { kind: 'user', id: p.id, name: p.name || p.email, email: p.email, role: p.role } : null;
+}
+const isAdmin = (w: Who | null) => !!w && (w.kind === 'token' || w.role === 'admin');
+
+async function statusOf(c: Cfg) {
+  const cur = await getState('cursor');
+  const counts: Record<string, number> = {};
+  for (const s of ['queued', 'sending', 'conflict', 'error', 'dead']) { const { count } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).eq('status', s); counts[s] = count || 0; }
+  const { count: links } = await db.from('portal_links').select('request_id', { count: 'exact', head: true });
+  const health = c.mode === 'browser' ? await getState('health') : null;
+  return { mode: c.mode, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
+    clientId: c.mode === 'live' ? c.clientId : '', hasSecret: !!c.clientSecret, intervalMin: c.intervalMin, group: c.group, alertTo: c.alertTo, since: c.since,
+    cursor: cur.since || null, lastRun: cur.lastRun || null, lastOk: cur.lastOk || null, lastError: cur.lastError || null, last: cur.last || null, queue: counts, linked: links || 0, health };
+}
+
+// ---------- mock helpers (only while the connection is in mock mode: TEST requests) ----------
+async function mockSetup() {
+  const m = (await readSecret('portal_mock')) || {};
+  if (!m.clientId) await writeSecret('portal_mock', { clientId: 'mock-' + rand(8), clientSecret: rand(32) });
+  return { ok: true };
+}
+
+// ---------- browser bridge: the local worker on the in-network PC (Outlook bridge PC) drives the real portal UI ----------
+// Supabase never reaches the portal in this mode. The worker pulls decisions, carries them out in a signed-in browser,
+// confirms from the Request Timeline, and pushes new/changed requests in. It authenticates with the chp_ portal token.
+// claim: one specific job (id) - the bridge only claims what it is allowed to write - or, without id, whatever is due
+async function bridgeJobs(limit: number, id?: string) {
+  const { data: jobs, error } = id ? await db.rpc('portal_claim_one', { p_id: id }) : await db.rpc('portal_claim_outbox', { n: Math.max(1, Math.min(10, limit)) });
+  if (error) throw new Error(error.message);
+  return await jobViews((jobs || []) as any[]);
+}
+// look without claiming (dry-run previews; jobs stay queued and the ticket keeps "Waiting for the portal")
+async function bridgePeek(limit: number) {
+  const { data, error } = await db.from('portal_outbox').select('*').eq('status', 'queued').lte('next_try_at', new Date(Date.now() + 2000).toISOString()).order('created_at').limit(Math.max(1, Math.min(25, limit)));
+  if (error) throw new Error(error.message);
+  return await jobViews((data || []) as any[]);
+}
+async function jobViews(jobs: any[]) {
+  const out = [];
+  for (const j of jobs) {
+    const job = j.job || {}; const paths: string[] = job.attachments || [];
+    let files: { name: string; url: string }[] = [];
+    if (paths.length) { const { data: su } = await db.storage.from(BUCKET).createSignedUrls(paths, 900); files = (su || []).map((s, i) => ({ name: (job.attachmentNames || [])[i] || paths[i].split('/').pop()!, url: s.signedUrl || '' })); }
+    const { data: link } = await db.from('portal_links').select('portal_updated_at,status_name').eq('request_id', j.request_id).maybeSingle();
+    out.push({ id: j.id, ticket: j.ticket, request_id: j.request_id, attempt: j.attempts, decision: job.decision, status_code: DECISION_MAP[job.decision]?.portalStatus ?? null,
+      message: job.text || '', reason: job.reason || '', missing: job.missing || [], lang: job.lang || 'AR', agent: job.agent || '', base_last_update: link?.portal_updated_at || null, portal_status_now: link?.status_name || null, files });
+  }
+  return out;
+}
+async function bridgeJobResult(b: any) {
+  const { data: j } = await db.from('portal_outbox').select('*').eq('id', String(b.id || '')).maybeSingle();
+  if (!j) throw new HttpErr(404, 'unknown job');
+  if (j.status !== 'sending') return { ok: true, already: j.status };   // idempotent: the result already came in
+  const { data: link } = await db.from('portal_links').select('*').eq('request_id', j.request_id).maybeSingle();
+  const c = await config(); const result = String(b.result || 'error');
+  if (result === 'sent') { await recordSent(j, link, { ...(b.portal || {}), via: 'browser' }, 200); return { ok: true, status: 'sent' }; }
+  if (result === 'conflict') { await fail(j, 'conflict', 409, str(b.error || 'the request changed on the portal', 400)); return { ok: true, status: 'conflict' }; }
+  if (result === 'retry' && j.attempts < MAX_ATTEMPTS) { await recordRetry(c, j, b.http || null, str(b.error || 'the bridge could not complete the submit', 400)); return { ok: true, status: 'retrying' }; }
+  await fail(j, 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));
+  return { ok: true, status: 'error' };
+}
+async function bridgeIngest(requests: (Req & { attachments?: InlineAtt[] })[]) {
+  const res = { created: 0, updated: 0, same: 0, skipped: 0, errors: [] as string[] };
+  const c = await config(); const attFn: AttFn = (no, list) => saveInlineAtts(no, list as InlineAtt[]);
+  for (const q of requests || []) {
+    try {
+      const id = String(q.request_id);
+      const { data: link } = await db.from('portal_links').select('*').eq('request_id', id).maybeSingle();
+      const hash = await reqHash(q);
+      if (link && link.last_hash === hash) { await db.from('portal_links').update({ synced_at: new Date().toISOString() }).eq('request_id', id); res.same++; continue; }
+      const r = link ? await updateTicket(c, q, link, hash, attFn) : await createTicket(c, q, hash, attFn);
+      (res as any)[r]++;
+    } catch (e) { res.errors.push(String(q.request_id) + ': ' + errMsg(e)); await log({ direction: 'in', action: 'bridge_ingest', request_id: String(q.request_id), ok: false, error: errMsg(e) }); }
+  }
+  const cur = await getState('cursor');
+  await setState('cursor', { ...cur, lastRun: new Date().toISOString(), lastOk: res.errors.length ? cur.lastOk || null : new Date().toISOString(), lastError: res.errors[0] || null, last: res, via: 'browser' });
+  if (res.created || res.updated || res.errors.length) await log({ direction: 'in', action: 'bridge_ingest', ok: !res.errors.length, detail: res, error: res.errors[0] || null });
+  return res;
+}
+// Portal history: one row per portal request (any status), upserted by request id - re-running the import is safe
+async function bridgeHistory(rows: any[]) {
+  const clean = (rows || []).filter((r) => r && /^\d{1,12}$/.test(String(r.request_id || ''))).slice(0, 2000).map((r) => ({
+    request_id: String(r.request_id), individual_number: str(r.individual_number, 20) || null, individual_name: str(r.individual_name, 200) || null,
+    policy_holder: str(r.policy_holder, 200) || null, contract_no: str(r.contract_no, 40) || null, channel: str(r.channel, 40) || null,
+    creation_user: str(r.creation_user, 120) || null, broker: str(r.broker, 200) || null, broker_mail: str(r.broker_mail, 200) || null,
+    status_code: Number.isFinite(+r.status_code) ? +r.status_code : null, status_name: str(r.status_name, 60) || null,
+    chronic_date: /^\d{4}-\d{2}-\d{2}$/.test(String(r.chronic_date || '')) ? r.chronic_date : null, creation_date: r.creation_date || null,
+    assign_to: str(r.assign_to, 120) || null, source: str(r.source || 'chronic-attach', 40), updated_at: new Date().toISOString(),
+  }));
+  if (!clean.length) return { upserted: 0 };
+  const { error } = await db.from('portal_history').upsert(clean, { onConflict: 'request_id' });
+  if (error) throw new Error(error.message);
+  return { upserted: clean.length };
+}
+async function bridgeReconcile(openIds: string[]) {
+  const set = new Set((openIds || []).map(String));
+  const { data } = await db.from('portal_links').select('request_id').limit(10000);
+  const linked = new Set((data || []).map((l: any) => String(l.request_id)));
+  const missing = [...set].filter((id) => !linked.has(id));
+  const { data: openLinks } = await db.from('portal_links').select('request_id').in('status_code', [1, 2, 3, 6, 9]);
+  const extra = (openLinks || []).map((l: any) => String(l.request_id)).filter((id: string) => !set.has(id));
+  await log({ direction: 'system', action: 'reconcile', ok: missing.length === 0, detail: { portal_open: set.size, linked: linked.size, missing: missing.length, closed_elsewhere: extra.length } });
+  return { portal_open: set.size, linked: linked.size, missing_tickets: missing, closed_on_portal_still_open_here: extra };
+}
+async function bridgeHealth(b: any) {
+  const ok = !!b.ok, now = new Date().toISOString(); const prev = await getState('health');
+  await setState('health', { ok, loggedIn: !!b.loggedIn, pageOk: !!b.pageOk, at: now, error: b.error || null, pc: str(b.pc, 120), alerted: (prev as any).alerted || null });
+  if (!ok) {
+    await log({ direction: 'system', action: 'health', ok: false, error: str(b.error, 400), detail: { loggedIn: !!b.loggedIn, pageOk: !!b.pageOk } });
+    const c = await config();
+    const to = c.alertTo || ((await db.from('profiles').select('email').eq('role', 'admin').eq('active', true)).data || []).map((p: any) => p.email).filter(Boolean).join('; ');
+    if (to && (!(prev as any).alerted || Date.now() - Date.parse((prev as any).alerted) > 3600000)) {
+      await setState('health', { ok, loggedIn: !!b.loggedIn, pageOk: !!b.pageOk, at: now, error: b.error || null, pc: str(b.pc, 120), alerted: now });
+      const outId = 'out_portal_' + Date.now().toString(36) + rand(4);
+      await db.from('outbox').insert({ id: outId, ticket: '', status: 'queued', job: { outId, ticket: '', to, cc: '', replyAll: false, subject: '[Portal bridge] health check failed', html: `<p>The portal bridge on the Outlook PC reported a problem: <b>${String(b.error || 'unknown').replace(/</g, '&lt;')}</b>.</p><p>Signed in: ${!!b.loggedIn}. Page structure OK: ${!!b.pageOk}. Check the bridge PC: Chrome signed in to the portal, the page layout unchanged, and the portal account valid.</p>`, replyToMid: '', attachments: [], attachmentNames: [], attachmentCids: [], mailbox: c.mailbox || 'Chronic@sarwa.life', queuedBy: 'Portal bridge', queuedAt: now, internal: true } });
+    }
+  }
+  return { ok: true };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
+  try {
+    const body = await req.json().catch(() => ({}));
+    const who = await caller(req);
+    if (!who) return json({ error: 'Please sign in again.' }, 401);
+    const c = await config();
+    switch (body.action) {
+      case 'status': return json({ ok: true, ...(await statusOf(c)) });
+
+      // every signed-in app (about every 2 minutes) and the scheduler: send what is queued, take in new requests when due.
+      // In browser mode Supabase cannot reach the portal, so the bridge PC does all of it; the server only waits.
+      case 'tick': {
+        if (c.mode === 'off') return json({ ok: true, off: true });
+        if (!serverReaches(c)) return json({ ok: true, browser: true });
+        const out = await pushOut(c);
+        let inn: unknown = null; try { inn = await syncIn(c, false); } catch (e) { inn = { error: errMsg(e) }; }
+        return json({ ok: true, out, in: inn });
+      }
+      case 'push': { if (c.mode === 'off') return json({ error: 'The portal connection is off' }, 400); if (!serverReaches(c)) return json({ ok: true, browser: true }); return json({ ok: true, out: await pushOut(c) }); }
+
+      case 'retry': case 'cancel': {
+        const { data: row } = await db.from('portal_outbox').select('*').eq('id', String(body.id || '')).maybeSingle();
+        if (!row) return json({ error: 'Unknown job' }, 404);
+        if (!['error', 'dead', 'conflict'].includes(row.status)) return json({ error: 'This job is ' + row.status }, 400);
+        const actor = who.kind === 'user' ? who.name : 'Portal token';
+        if (body.action === 'cancel') {
+          await db.from('portal_outbox').update({ status: 'cancelled' }).eq('id', row.id);
+          await insertEv(actor, 'portal.status', row.ticket, { jobId: row.id, status: 'cancelled' });
+          await log({ direction: 'out', action: 'cancel', request_id: row.request_id, ticket: row.ticket, actor, detail: { job: row.id } });
+          return json({ ok: true });
+        }
+        const { error } = await db.from('portal_outbox').update({ status: 'queued', attempts: 0, next_try_at: new Date().toISOString(), error: null }).eq('id', row.id);
+        if (error) return json({ error: /portal_outbox_one_open/.test(error.message) ? 'Another decision for this ticket is already on its way' : error.message }, 400);
+        await insertEv(actor, 'portal.status', row.ticket, { jobId: row.id, status: 'requeued' });
+        await log({ direction: 'out', action: 'retry', request_id: row.request_id, ticket: row.ticket, actor, detail: { job: row.id, was: row.status } });
+        const out = c.mode !== 'off' ? await pushOut(c) : null;
+        return json({ ok: true, out });
+      }
+
+      case 'log': {
+        const q = db.from('portal_sync_log').select('*').order('at', { ascending: false }).limit(Math.max(1, Math.min(500, +body.limit || 100)));
+        const { data, error } = body.request_id ? await q.eq('request_id', String(body.request_id)) : body.failed ? await q.eq('ok', false) : await q;
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, rows: data });
+      }
+    }
+
+    // ---- browser bridge (local worker on the Outlook bridge PC); portal token only ----
+    if (typeof body.action === 'string' && body.action.startsWith('bridge_')) {
+      if (who.kind !== 'token') return json({ error: 'Bridge token required' }, 403);
+      switch (body.action) {
+        case 'bridge_config': return json({ ok: true, mode: c.mode, active: c.mode === 'browser', intervalMin: c.intervalMin, group: c.group, since: c.since, portalUrl: 'https://sl-portal.sarwa.insurance' });
+        case 'bridge_jobs': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgeJobs(+body.limit || 5, body.id ? String(body.id) : undefined) : [] });
+        case 'bridge_peek': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgePeek(+body.limit || 5) : [] });
+        case 'bridge_job_result': return json(await bridgeJobResult(body));
+        case 'bridge_ingest': return json({ ok: true, ...(await bridgeIngest(body.requests || [])) });
+        case 'bridge_reconcile': return json({ ok: true, ...(await bridgeReconcile(body.open_request_ids || [])) });
+        case 'bridge_history': return json({ ok: true, ...(await bridgeHistory(body.rows || [])) });
+        case 'bridge_health': return json(await bridgeHealth(body));
+      }
+      return json({ error: 'Unknown bridge action' }, 400);
+    }
+
+    // ---- admin only ----
+    if (!isAdmin(who)) return json({ error: 'Only an admin can change the portal connection.' }, 403);
+    const actor = who.kind === 'user' ? who.name : 'Portal token';
+    switch (body.action) {
+      case 'set_config': {
+        const old = (await readSecret('portal')) || {};
+        const mode = ['off', 'mock', 'live', 'browser'].includes(body.mode) ? body.mode : old.mode || 'off';
+        const next = { ...old, mode,
+          baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : old.baseUrl || '', tokenUrl: typeof body.tokenUrl === 'string' ? body.tokenUrl.trim() : old.tokenUrl || '',
+          clientId: typeof body.clientId === 'string' ? body.clientId.trim() : old.clientId || '', clientSecret: body.clientSecret ? String(body.clientSecret) : old.clientSecret || '',
+          intervalMin: Math.max(1, Math.min(60, +body.intervalMin || old.intervalMin || 5)), since: typeof body.since === 'string' ? body.since : old.since || '',
+          fastRetry: (mode === 'mock' || mode === 'browser') ? !!body.fastRetry : false,
+          group: typeof body.group === 'string' ? body.group : old.group || '', alertTo: typeof body.alertTo === 'string' ? body.alertTo : old.alertTo || '', mailbox: typeof body.mailbox === 'string' && body.mailbox ? body.mailbox : old.mailbox || 'Chronic@sarwa.life' };
+        if (mode === 'live' && !/^https:\/\//.test(next.baseUrl)) return json({ error: 'The portal address must start with https://' }, 400);
+        if (mode === 'mock') await mockSetup();
+        await writeSecret('portal', next, who.kind === 'user' ? who.id : undefined);
+        TOK.v = '';
+        await log({ direction: 'system', action: 'set_config', actor, detail: { mode, baseUrl: next.baseUrl, intervalMin: next.intervalMin } });
+        return json({ ok: true, ...(await statusOf(await config())) });
+      }
+      case 'test_connection': {
+        if (c.mode === 'off') return json({ error: 'The connection is off' }, 400);
+        if (c.mode === 'browser') { const h = await getState('health'); return json({ ok: true, browser: true, health: h, note: 'In browser mode the Outlook bridge PC reaches the portal, not Supabase. Its last health check is shown here.' }); }
+        TOK.v = ''; await token(c);
+        const j = await apiJson(c, `/requests?changed_since=${encodeURIComponent(new Date(Date.now() - 86400000).toISOString())}&limit=1&offset=0`);
+        await log({ direction: 'system', action: 'test_connection', actor, detail: { items: (j.items || []).length } });
+        return json({ ok: true, signedIn: true, sample: (j.items || []).length });
+      }
+      case 'sync_now': { if (c.mode === 'off') return json({ error: 'The connection is off' }, 400); if (!serverReaches(c)) return json({ ok: true, browser: true, note: 'The Outlook bridge PC runs the sync in browser mode.' }); const out = await pushOut(c); const inn = await syncIn(c, true); return json({ ok: true, out, in: inn }); }
+      case 'reset_cursor': { await setState('cursor', { since: typeof body.since === 'string' && body.since ? body.since : null }); await log({ direction: 'system', action: 'reset_cursor', actor, detail: { since: body.since || null } }); return json({ ok: true }); }
+      case 'new_token': {   // for a scheduler (or the test script): shown once, only the SHA-256 is kept
+        const tok = 'chp_' + [...crypto.getRandomValues(new Uint8Array(32))].map((x) => x.toString(16).padStart(2, '0')).join('');
+        await writeSecret('portal_token', { hash: await sha256(tok), created: new Date().toISOString() });
+        return json({ ok: true, token: tok });
+      }
+    }
+    return json({ error: 'Unknown action' }, 400);
+  } catch (e) {
+    return json({ error: errMsg(e) }, e instanceof HttpErr && e.status >= 400 && e.status < 600 ? 502 : 500);
+  }
+});
