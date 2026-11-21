@@ -18,6 +18,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'ChronicPortalBridge'
+if (Test-Path (Join-Path $dir 'node\node.exe')) { $env:Path = (Join-Path $dir 'node') + ";$env:Path" }   # portable Node.js
 $cred = Import-Clixml (Join-Path $dir 'portal.cred.xml')
 $tokSecure = (Import-Clixml (Join-Path $dir 'bridge.token.xml')).token
 $plain = { param($s) [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)) }
