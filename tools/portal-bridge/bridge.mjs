@@ -66,9 +66,20 @@ async function call(action, body = {}) {
 
 // ---------------- session and navigation ----------------
 async function frameWith(page, selector) { for (const f of page.frames()) { try { if (await f.locator(selector).count()) return f; } catch { } } return null; }
+// what the person would SEE: a captcha widget, or a code prompt in the visible text. (The page source always contains the
+// "Forgot Password?" reset dialog named send-otp - seen 21 Nov 2026 - so the source must not be scanned.)
 async function blockedOn(f) {
-  const html = (await f.content()).toLowerCase();
-  return /captcha|recaptcha|hcaptcha/.test(html) ? 'captcha' : /one[- ]time|otp|authenticator|verification code|two[- ]factor/.test(html) ? 'second factor' : '';
+  if (await f.locator('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .g-recaptcha, .h-captcha, [data-sitekey]').count().catch(() => 0)) return 'captcha';
+  const text = (await f.locator('body').innerText().catch(() => '')).toLowerCase();
+  return /one[- ]time (password|code)|verification code|authenticator|two[- ]factor|enter (the )?(otp|code)|رمز التحقق/.test(text) ? 'second factor' : '';
+}
+// the sign-in page is shown inside a frame of the portal home ("/"); after signing in continue at that frame's address
+async function leaveLoginFrame(page) {
+  if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0)) return;
+  for (const fr of page.frames()) {
+    if (fr === page.mainFrame()) continue;
+    if (await fr.getByRole('link', { name: 'Claims' }).count().catch(() => 0) || /home-page|medical-claims/.test(fr.url())) { await page.goto(fr.url(), { waitUntil: 'domcontentloaded' }); await page.waitForTimeout(2000); return; }
+  }
 }
 // seen on the live portal (21 Nov 2026): after a while APEX shows "Your session has ended" with a "Sign In Again" button
 async function sessionEnded(page) {
@@ -81,6 +92,7 @@ async function sessionEnded(page) {
 }
 async function ensureLoggedIn(page) {
   if (await sessionEnded(page)) await page.goto(LOGIN, { waitUntil: 'domcontentloaded' }).catch(() => { });
+  await leaveLoginFrame(page);
   if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) && !(await sessionEnded(page))) return;
   if (await page.locator('#my_ir').count().catch(() => 0)) return;
   if (!(await frameWith(page, 'input[type=password]'))) await page.goto(LOGIN, { waitUntil: 'domcontentloaded' });
@@ -96,6 +108,8 @@ async function ensureLoggedIn(page) {
   await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500);
   const f2 = await frameWith(page, 'input[type=password]');
   if (f2) { const b2 = await blockedOn(f2); throw b2 ? new Blocked(`a ${b2} appeared after sign-in - automation stopped`) : new Blocked('sign-in failed (wrong password or locked account) - not retried'); }
+  for (const fr of page.frames()) { const b3 = await blockedOn(fr); if (b3) throw new Blocked(`a ${b3} appeared after sign-in - automation stopped`); }
+  await leaveLoginFrame(page);
 }
 async function openChronicAttach(page) {
   await ensureLoggedIn(page);
@@ -105,7 +119,10 @@ async function openChronicAttach(page) {
     if (!/medical-claims2009/.test(page.url())) { await page.getByRole('link', { name: 'Claims' }).first().click(); await page.waitForLoadState('networkidle'); await pause(); }
     const link = page.locator('a[href*="/chronic-attach"]').first();
     if (!(await link.count())) throw new Error('Chronic Attach link not found in the Claims menu (page structure changed?)');
-    await link.click(); await page.waitForLoadState('networkidle');
+    // the menu entry may sit in a collapsed side menu (not clickable); its address carries the session, so open it directly
+    if (await link.isVisible().catch(() => false)) await link.click();
+    else await page.goto(new URL(await link.getAttribute('href'), page.url()).href, { waitUntil: 'domcontentloaded' });
+    await page.waitForLoadState('networkidle').catch(() => { });
   }
   if (await frameWith(page, 'input[type=password]')) { await ensureLoggedIn(page); return openChronicAttach(page); }   // session expired
   await page.locator('#my_ir').waitFor({ timeout: 30000 });
@@ -120,7 +137,16 @@ async function frameForPage(page, pageId, timeout = 20000) {
   throw new Error(`portal page ${pageId} did not open (page structure changed?)`);
 }
 async function closeDialogs(page) {
-  for (let i = 0; i < 5; i++) { const x = page.locator('.ui-dialog:visible .ui-dialog-titlebar-close'); if (!(await x.count())) break; await x.last().click(); await page.waitForTimeout(700); }
+  // the close button can be covered or outside the view (seen 21 Nov 2026): short click, then Escape, then jQuery UI close
+  for (let i = 0; i < 5; i++) {
+    const x = page.locator('.ui-dialog:visible .ui-dialog-titlebar-close'); if (!(await x.count().catch(() => 0))) break;
+    try { await x.last().click({ timeout: 3000 }); }
+    catch {
+      await page.keyboard.press('Escape').catch(() => { });
+      await page.evaluate(() => { try { window.$('.ui-dialog-content').each(function () { try { if (window.$(this).dialog('isOpen')) window.$(this).dialog('close'); } catch { } }); } catch { } }).catch(() => { });
+    }
+    await page.waitForTimeout(700);
+  }
 }
 async function openDrawer(page, requestId) {
   await closeDialogs(page);

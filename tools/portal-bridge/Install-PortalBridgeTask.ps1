@@ -6,14 +6,14 @@
   Needs Node.js. The account and token come from Set-PortalCredential.ps1 (DPAPI, this Windows user only).
   Remove with:  Unregister-ScheduledTask ChronicPortalBridge -Confirm:$false
 #>
-param([Parameter(Mandatory)] [string] $SupabaseUrl, [switch] $Live, [int] $IntervalMin = 5)
+param([Parameter(Mandatory)] [string] $SupabaseUrl, [switch] $Live, [switch] $Headless, [int] $IntervalMin = 5)
 $ErrorActionPreference = 'Stop'
 $portableNode = Join-Path $env:LOCALAPPDATA 'ChronicPortalBridge\node'   # portable Node.js (no admin rights needed)
 if (Test-Path (Join-Path $portableNode 'node.exe')) { $env:Path = "$portableNode;$env:Path" }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Node.js is not installed (winget install OpenJS.NodeJS.LTS)' }
 $root = Join-Path $env:LOCALAPPDATA 'ChronicPortalBridge'; $app = Join-Path $root 'app'
 New-Item -ItemType Directory -Force $app | Out-Null
-foreach ($f in 'bridge.mjs', 'portal-reader.js', 'portal-agent.js', 'reply-map.json', 'package.json', 'Start-PortalBridge.ps1') { Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $app $f) -Force }
+foreach ($f in 'bridge.mjs', 'portal-reader.js', 'portal-agent.js', 'reply-map.json', 'package.json', 'Start-PortalBridge.ps1', 'Set-PortalCredential.ps1') { Copy-Item (Join-Path $PSScriptRoot $f) (Join-Path $app $f) -Force }
 Push-Location $app
 try {
   $env:PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD = '1'; $ErrorActionPreference = 'Continue'   # npm writes notices to stderr
@@ -21,7 +21,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw "npm install failed ($LASTEXITCODE)" }
 } finally { $ErrorActionPreference = 'Stop'; Pop-Location }
 $script = Join-Path $app 'Start-PortalBridge.ps1'
-$arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -SupabaseUrl `"$SupabaseUrl`" -IntervalMin $IntervalMin" + $(if ($Live) { ' -Live' } else { '' })
+$arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -SupabaseUrl `"$SupabaseUrl`" -IntervalMin $IntervalMin" + $(if ($Live) { ' -Live' } else { '' }) + $(if ($Headless) { ' -Headless' } else { '' })
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg -WorkingDirectory $app
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew

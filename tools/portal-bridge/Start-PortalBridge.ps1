@@ -27,6 +27,7 @@ $env:PORTAL_TOKEN = & $plain $tokSecure
 $env:PORTAL_USER = $cred.UserName
 $env:PORTAL_PASS = & $plain $cred.Password
 $env:BRIDGE_DIR = $dir
+$env:NODE_USE_SYSTEM_CA = '1'   # trust the Windows certificate store (the company network inspects HTTPS with its own CA)
 $env:INTERVAL_MIN = "$IntervalMin"
 $env:HEADLESS = $(if ($Headless) { '1' } else { '0' })
 if ($Live) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = '*' }
@@ -34,7 +35,8 @@ elseif ($LiveWriteAllow) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = $LiveWrit
 try {
   Push-Location $PSScriptRoot
   $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }
-  & node @args2 2>&1 | Tee-Object -FilePath (Join-Path $dir 'bridge.log') -Append
+  $ErrorActionPreference = 'Continue'   # node writes to stderr; keep going and log it (UTF-8)
+  & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8
 } finally {
   Pop-Location
   Remove-Item Env:PORTAL_PASS, Env:PORTAL_TOKEN -ErrorAction SilentlyContinue
