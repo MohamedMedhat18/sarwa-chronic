@@ -393,7 +393,7 @@ async function statusOf(c: Cfg) {
   for (const s of ['queued', 'sending', 'conflict', 'error', 'dead']) { const { count } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).eq('status', s); counts[s] = count || 0; }
   const { count: links } = await db.from('portal_links').select('request_id', { count: 'exact', head: true });
   const health = c.mode === 'browser' ? await getState('health') : null;
-  return { mode: c.mode, dryRun: c.dryRun !== false, levels: { ...DEFAULT_LEVELS, ...((c as any).levels || {}) }, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
+  return { mode: c.mode, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], levels: { ...DEFAULT_LEVELS, ...((c as any).levels || {}) }, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
     clientId: c.mode === 'live' ? c.clientId : '', hasSecret: !!c.clientSecret, intervalMin: c.intervalMin, group: c.group, alertTo: c.alertTo, since: c.since,
     cursor: cur.since || null, lastRun: cur.lastRun || null, lastOk: cur.lastOk || null, lastError: cur.lastError || null, last: cur.last || null, queue: counts, linked: links || 0, health };
 }
@@ -409,11 +409,23 @@ async function mockSetup() {
 // Supabase never reaches the portal in this mode. The worker pulls decisions, carries them out in a signed-in browser,
 // confirms from the Request Timeline, and pushes new/changed requests in. It authenticates with the chp_ portal token.
 // claim: one specific job (id) - the bridge only claims what it is allowed to write - or, without id, whatever is due
+// live gate: with dry run off, only requests on the admin's live list (or all, once approved) are handed out for writing
+const liveOk = (c: any, requestId: string) => c.liveAll === true || ((c.liveRequests || []) as string[]).map(String).includes(String(requestId));
 async function bridgeJobs(limit: number, id?: string) {
-  if ((await config()).dryRun !== false) return [];   // dry run: nothing is handed to the bridge for writing
-  const { data: jobs, error } = id ? await db.rpc('portal_claim_one', { p_id: id }) : await db.rpc('portal_claim_outbox', { n: Math.max(1, Math.min(10, limit)) });
-  if (error) throw new Error(error.message);
-  return await jobViews((jobs || []) as any[]);
+  const c: any = await config();
+  if (c.dryRun !== false) return [];   // dry run: nothing is handed to the bridge for writing
+  let jobs: any[] = [];
+  if (id) {
+    const { data: j0 } = await db.from('portal_outbox').select('request_id').eq('id', id).maybeSingle();
+    if (!j0 || !liveOk(c, j0.request_id)) return [];
+    const { data, error } = await db.rpc('portal_claim_one', { p_id: id }); if (error) throw new Error(error.message); jobs = data || [];
+  } else if (c.liveAll === true) {
+    const { data, error } = await db.rpc('portal_claim_outbox', { n: Math.max(1, Math.min(10, limit)) }); if (error) throw new Error(error.message); jobs = data || [];
+  } else {
+    const { data: due } = await db.from('portal_outbox').select('id').eq('status', 'queued').in('request_id', ((c.liveRequests || []) as string[]).map(String)).lte('next_try_at', new Date(Date.now() + 2000).toISOString()).order('created_at').limit(Math.max(1, Math.min(10, limit)));
+    for (const d of due || []) { const { data } = await db.rpc('portal_claim_one', { p_id: d.id }); jobs.push(...(data || [])); }
+  }
+  return await jobViews(jobs);
 }
 // look without claiming (dry-run previews; jobs stay queued and the ticket keeps "Waiting for the portal")
 async function bridgePeek(limit: number) {
@@ -524,7 +536,7 @@ async function bridgeIngest(requests: (Req & { attachments?: InlineAtt[] })[], b
       if (link && link.last_hash === hash) { await db.from('portal_links').update({ synced_at: new Date().toISOString() }).eq('request_id', id); res.same++; continue; }
       const r = link ? await updateTicket(c, q, link, hash, attFn) : await createTicket(c, q, hash, attFn);
       (res as any)[r]++;
-      if (r === 'created') { const { data: l2 } = await db.from('portal_links').select('ticket').eq('request_id', id).maybeSingle(); if (l2) await runRules(l2.ticket, id); }
+      if (r === 'created' || r === 'updated') { const { data: l2 } = await db.from('portal_links').select('ticket').eq('request_id', id).maybeSingle(); if (l2) await runRules(l2.ticket, id); }   // checks again on arrival and after an answer
     } catch (e) { res.errors.push(String(q.request_id) + ': ' + errMsg(e)); await log({ direction: 'in', action: 'bridge_ingest', request_id: String(q.request_id), ok: false, error: errMsg(e) }); }
   }
   const cur = await getState('cursor');
@@ -588,7 +600,7 @@ Deno.serve(async (req) => {
       // In browser mode Supabase cannot reach the portal, so the bridge PC does all of it; the server only waits.
       case 'tick': {
         if (c.mode === 'off') return json({ ok: true, off: true, dryRun: c.dryRun !== false });
-        if (!serverReaches(c)) return json({ ok: true, browser: true, dryRun: c.dryRun !== false });
+        if (!serverReaches(c)) return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [] });
         const out = c.dryRun !== false ? { dryRun: true } : await pushOut(c);   // dry run pauses OUT only; requests still come IN
         let inn: unknown = null; try { inn = await syncIn(c, false); } catch (e) { inn = { error: errMsg(e) }; }
         return json({ ok: true, out, in: inn, dryRun: c.dryRun !== false });
@@ -626,7 +638,7 @@ Deno.serve(async (req) => {
     if (typeof body.action === 'string' && body.action.startsWith('bridge_')) {
       if (who.kind !== 'token') return json({ error: 'Bridge token required' }, 403);
       switch (body.action) {
-        case 'bridge_config': return json({ ok: true, mode: c.mode, active: c.mode === 'browser', dryRun: c.dryRun !== false, intervalMin: c.intervalMin, group: c.group, since: c.since, portalUrl: 'https://sl-portal.sarwa.insurance' });
+        case 'bridge_config': return json({ ok: true, mode: c.mode, active: c.mode === 'browser', dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], intervalMin: c.intervalMin, group: c.group, since: c.since, portalUrl: 'https://sl-portal.sarwa.insurance' });
         case 'bridge_jobs': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgeJobs(+body.limit || 5, body.id ? String(body.id) : undefined) : [] });
         case 'bridge_peek': return json({ ok: true, jobs: c.mode === 'browser' ? await bridgePeek(+body.limit || 5) : [] });
         case 'bridge_job_result': return json(await bridgeJobResult(body));
@@ -649,7 +661,10 @@ Deno.serve(async (req) => {
         // automation level per decision type: 1 automatic (only after the admin approved that rule), 2 prepared + one click, 3 manual
         const lv = (body.levels && typeof body.levels === 'object') ? Object.fromEntries(Object.keys(DEFAULT_LEVELS).map((k) => [k, [1, 2, 3].includes(+body.levels[k]) ? +body.levels[k] : (old.levels || {})[k] ?? DEFAULT_LEVELS[k]])) : old.levels;
         if (lv && lv.medical_team !== 3) lv.medical_team = 3;   // Refer to medical team is always manual
+        const liveRequests = Array.isArray(body.liveRequests) ? body.liveRequests : typeof body.liveRequests === 'string' ? body.liveRequests.split(/[\s,;]+/) : old.liveRequests || [];
         const next = { ...old, mode, levels: lv, dryRun: typeof body.dryRun === 'boolean' ? body.dryRun : old.dryRun !== false,
+          liveRequests: [...new Set(liveRequests.map((x: unknown) => String(x).trim()).filter((x: string) => /^\d{1,12}$/.test(x)))].slice(0, 200),
+          liveAll: typeof body.liveAll === 'boolean' ? body.liveAll : old.liveAll === true,
           baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : old.baseUrl || '', tokenUrl: typeof body.tokenUrl === 'string' ? body.tokenUrl.trim() : old.tokenUrl || '',
           clientId: typeof body.clientId === 'string' ? body.clientId.trim() : old.clientId || '', clientSecret: body.clientSecret ? String(body.clientSecret) : old.clientSecret || '',
           intervalMin: Math.max(1, Math.min(60, +body.intervalMin || old.intervalMin || 5)), since: typeof body.since === 'string' ? body.since : old.since || '',
@@ -659,7 +674,7 @@ Deno.serve(async (req) => {
         if (mode === 'mock') await mockSetup();
         await writeSecret('portal', next, who.kind === 'user' ? who.id : undefined);
         TOK.v = '';
-        await log({ direction: 'system', action: 'set_config', actor, detail: { mode, baseUrl: next.baseUrl, intervalMin: next.intervalMin, dryRun: next.dryRun, levels: next.levels } });
+        await log({ direction: 'system', action: 'set_config', actor, detail: { mode, baseUrl: next.baseUrl, intervalMin: next.intervalMin, dryRun: next.dryRun, levels: next.levels, liveRequests: next.liveRequests, liveAll: next.liveAll } });
         return json({ ok: true, ...(await statusOf(await config())) });
       }
       case 'rules_run': { const { data: l } = await db.from('portal_links').select('ticket,request_id').eq('ticket', String(body.ticket || '')).maybeSingle(); if (!l) return json({ error: 'Not a portal ticket' }, 400); return json({ ok: true, ...(await runRules(l.ticket, l.request_id)) }); }

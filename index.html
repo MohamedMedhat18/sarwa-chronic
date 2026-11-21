@@ -1774,7 +1774,8 @@ function ticketView(r) {
     el('button', { type: 'button', title: 'Bold', onclick: () => cmd('bold') }, 'B'), el('button', { type: 'button', title: 'Italic', onclick: () => cmd('italic'), style: 'font-style:italic' }, 'I'), el('button', { type: 'button', title: 'Underline', onclick: () => cmd('underline'), style: 'text-decoration:underline' }, 'U'),
     el('button', { type: 'button', title: 'Bulleted list', onclick: () => cmd('insertUnorderedList') }, '• List'), el('button', { type: 'button', title: 'Numbered list', onclick: () => cmd('insertOrderedList') }, '1. List'),
     el('button', { type: 'button', title: 'Right-to-left', onclick: () => { ce.dir = ce.dir === 'rtl' ? 'ltr' : 'rtl'; } }, '⇄ RTL'),
-    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const c = cannedList()[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', 'Insert canned response…'), cannedList().map((c, i) => opt(String(i), c.title))),
+    // portal tickets get short texts: the portal wraps them in its own greeting and closing (no letter, no second greeting)
+    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const list = isPortal(DB.tickets.get(no)) ? PORTAL_CANNED : cannedList(); const c = list[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', isPortal(DB.tickets.get(no)) ? 'Insert portal text…' : 'Insert canned response…'), (isPortal(DB.tickets.get(no)) ? PORTAL_CANNED : cannedList()).map((c, i) => opt(String(i), c.title))),
     el('button', { type: 'button', onclick: () => fileIn.click() }, '📎 Attach'));
   // "Then set Pending – <reason>": the reply itself is the request to the customer, the reason files it in its Pending sub-folder
   const afterSel = el('select', { 'aria-label': 'Status after sending' }, opt('', 'Keep status'),
@@ -1805,7 +1806,7 @@ function ticketView(r) {
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   fwdSel.addEventListener('change', () => drawEditor());
   async function send() {
@@ -3224,6 +3225,16 @@ const PORTAL_TEMPLATES = {
   }
 };
 const PORTAL_STATUS_OF = { Approved: 5, 'Partially approved': 7, Rejected: 8, Pending: 3 };
+// short texts for portal replies (the portal adds "Dears, greetings from Sarwa Life" and the closing line itself)
+const PORTAL_CANNED = [
+  { title: 'Missing documents (AR)', html: '<p>برجاء إرسال ما يلي لاستكمال مراجعة الطلب:</p><ul><li>…</li></ul>' },
+  { title: 'Missing documents (EN)', html: '<p>Kindly send the following to complete the review of your request:</p><ul><li>…</li></ul>' },
+  { title: 'Unreadable prescription (AR)', html: '<p>برجاء إرسال صورة أوضح للروشتة حيث تعذرت قراءة بعض الأصناف.</p>' },
+  { title: 'Lab results needed (AR)', html: '<p>برجاء إرسال نتيجة التحاليل الحديثة (خلال آخر 6 شهور) لاستكمال المراجعة.</p>' },
+  { title: 'Member data mismatch (AR)', html: '<p>برجاء التأكد من رقم الكارت واسم العضو حيث توجد بيانات غير مطابقة.</p>' },
+  { title: 'Acute medicine (AR)', html: '<p>الأصناف التالية تُصرف كعلاج حاد وليست ضمن العلاج المزمن:</p><ul><li>…</li></ul>' },
+  { title: 'Request received (AR)', html: '<p>تم استلام طلبكم وجاري المراجعة، وسيتم الرد عليكم في أقرب وقت.</p>' }
+];
 const REJECT_AR = { 'Not covered – item excluded by the policy': 'الصنف غير مغطى تأمينياً', 'Not medically justified': 'غير مبرر طبياً', 'Policy inactive / expired': 'الوثيقة غير سارية', 'Annual or chronic limit exhausted': 'تم استنفاد الحد السنوي / حد الأمراض المزمنة', 'Duplicate request': 'طلب مكرر', Other: 'أخرى' };
 // the agent's part of the message (what fills #comment#)
 function portalText(t, kind, { reason = '', note = '', list = '' } = {}) {
@@ -3243,7 +3254,9 @@ function portalPreview(t, status, core) {
 // DRY RUN (Settings › Portal, admin): decisions and messages on portal tickets are only PREVIEWED – nothing is queued,
 // nothing reaches the portal, the member or the broker, and the ticket does not change. Safe until the server says otherwise.
 let PORTAL_DRY = true;
-const portalSetDry = r => { if (r && typeof r.dryRun === 'boolean') PORTAL_DRY = r.dryRun; if (r && r.levels && typeof PORTAL_LEVELS !== 'undefined') { PORTAL_LEVELS = { ...PORTAL_LEVELS, ...r.levels }; PORTAL_LEVELS_AT = Date.now(); } };
+let PORTAL_LIVE = { all: false, requests: [] };   // with dry run off, only these requests really go to the portal
+const portalLiveOk = t => PORTAL_LIVE.all || PORTAL_LIVE.requests.map(String).includes(String((t.portal || {}).requestId));
+const portalSetDry = r => { if (r && typeof r.dryRun === 'boolean') PORTAL_DRY = r.dryRun; if (r && Array.isArray(r.liveRequests)) PORTAL_LIVE = { all: r.liveAll === true, requests: r.liveRequests }; if (r && r.levels && typeof PORTAL_LEVELS !== 'undefined') { PORTAL_LEVELS = { ...PORTAL_LEVELS, ...r.levels }; PORTAL_LEVELS_AT = Date.now(); } };
 let PORTAL_LEVELS_AT = 0;
 function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
   const p = t.portal || {}; const code = PORTAL_STATUS_OF[decision] ?? null;
@@ -3254,8 +3267,9 @@ function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
     : PORTAL_FINAL.includes(formCode) ? 'Final: the portal request becomes ' + NAME[formCode] + '; the ticket closes after the portal confirms in its Request Timeline.'
     : 'Not final: the portal request stays Pending; the ticket goes to Pending – ' + (ticketUpdate.pendingReason || 'reason') + ' after the portal confirms; the member’s answer reopens it (customer_response).';
   const row = (k, v) => el('tr', {}, el('td', { class: 'muted', style: 'white-space:nowrap;vertical-align:top;padding-right:10px' }, k), el('td', { dir: 'auto', style: 'overflow-wrap:anywhere' }, v));
-  openDialog('Dry run – nothing was sent · ' + t.no + ' · portal #' + (p.requestId || ''), [el('div', { style: 'display:grid;gap:10px' },
-    el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, 'Dry run is on (Settings › Portal). This is exactly what would be submitted on the portal’s Reply form (page 168). Nothing was queued or saved; the ticket did not change.'),
+  const whyDry = PORTAL_DRY ? 'Dry run is on (Settings › Portal).' : 'Live sending is not switched on for request #' + (p.requestId || '') + ' (Settings › Portal › Live requests).';
+  openDialog('Preview – nothing was sent · ' + t.no + ' · portal #' + (p.requestId || ''), [el('div', { style: 'display:grid;gap:10px' },
+    el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, whyDry + ' This is exactly what would be submitted on the portal’s Reply form (page 168). Nothing was queued or saved; the ticket did not change.'),
     el('table', { class: 'tbl small' }, el('tbody', {},
       row('Portal request', '#' + (p.requestId || '') + ' · now ' + (p.statusName || '—')),
       row('Delivered by the portal to', portalRecipient(t)),
@@ -3273,7 +3287,7 @@ function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
 async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {} }) {
   if (!isPortal(t)) throw new Error('Not a portal request');
   if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
-  if (PORTAL_DRY) return portalDryRun(t, { decision, text, files, ticketUpdate });
+  if (PORTAL_DRY || !portalLiveOk(t)) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   const html = textToHtml(text || '');
@@ -3307,7 +3321,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
   const refresh = () => {
     if (!edited) msg.value = d === 'Pending' ? portalText(t, 'Pending', { list: missing.value.trim() || ('- ' + ((t.lang === 'EN' ? reason.value : PR_AR[reason.value]) || '…')) }) : portalText(t, d, { reason: [reason.value, d !== 'Approved' ? note.value.trim() : ''].filter(Boolean).join(' – '), note: d === 'Approved' ? note.value.trim() : '' });
     msgBox.hidden = internal(); drawPrev();
-    if (goBtn) goBtn.textContent = internal() ? 'Set Pending (internal)' : (PORTAL_DRY ? 'Preview (dry run) – ' : 'Send – ') + d;
+    if (goBtn) goBtn.textContent = internal() ? 'Set Pending (internal)' : (PORTAL_DRY ? 'Preview (dry run) – ' : !portalLiveOk(t) ? 'Preview (not live) – ' : 'Send to the portal – ') + d;
     hint.textContent = internal() ? 'Internal only: the ticket goes to Pending – ' + reason.value + '. Nothing is sent to the portal or the member.' : D.status === 'Closed' ? 'The portal records the decision and sends this message to ' + portalRecipient(t) + '. The ticket closes when the portal confirms.' : 'The portal keeps the request Pending and sends this request to ' + portalRecipient(t) + '. The ticket goes to Pending – reason when the portal confirms; the member\'s answer reopens it (customer_response).';
   };
   const hint = el('div', { class: 'small muted' }); let goBtn = null;
@@ -3366,6 +3380,8 @@ function portalAdmin() {
   const draw = s => {
     portalSetDry(s);
     const dry = el('input', { type: 'checkbox', checked: s.dryRun !== false });
+    const liveReq = inp((s.liveRequests || []).join(', '), { placeholder: 'portal request numbers, e.g. 38232' });
+    const liveAll = el('input', { type: 'checkbox', checked: s.liveAll === true });
     const LV = { missing_docs: 'Pending – missing documents', approve: 'Approve', reject: 'Reject', partial: 'Partially approved', duplicate: 'Duplicate request', review: 'Needs review', medical_team: 'Refer to medical team' };
     const lvNow = { ...PORTAL_LEVELS, ...(s.levels || {}) }; const lvSel = {};
     const levelSel = Object.entries(LV).map(([k, label]) => { const sel = el('select', { disabled: k === 'medical_team' }, [[1, 'Level 1 – automatic (locked)'], [2, 'Level 2 – one click'], [3, 'Level 3 – manual']].map(([v, l]) => { const o = opt(String(v), l, String(lvNow[k] ?? 3)); if (v === 1) o.disabled = true; return o; })); lvSel[k] = sel; return el('label', { class: 'blk' }, label, sel); });
@@ -3388,13 +3404,15 @@ function portalAdmin() {
         s.lastError ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Last error: ' + s.lastError) : null),
       isAdm ? [el('label', { class: 'blk' }, 'Connection', mode), liveBox,
         el('label', { class: 'row', style: 'gap:8px;align-items:center' }, dry, el('span', {}, el('b', {}, 'Dry run'), ' – preview portal replies only (nothing queued, nothing sent, the ticket does not change)')),
+        el('label', { class: 'blk' }, 'Live requests – with dry run off, replies to these portal requests really go to the portal (and from there to the member / broker)', liveReq),
+        el('label', { class: 'row', style: 'gap:8px;align-items:center' }, liveAll, el('span', {}, el('b', {}, 'Live for all portal requests'), ' – only after the first live replies were checked')),
         el('div', { class: 'slabox', style: 'display:grid;gap:6px' }, el('b', {}, 'Automation level per decision type'),
           el('div', { class: 'small muted' }, 'Level 2 = the decision is prepared on the ticket and the agent confirms with one click. Level 3 = manual. Level 1 (fully automatic) stays locked until you approve a rule; Refer to medical team is always manual.'),
           el('div', { style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px' }, levelSel)),
         el('div', { class: 'row', style: 'gap:12px;flex-wrap:wrap' }, el('label', { class: 'blk' }, 'Check every (minutes)', every), el('label', { class: 'blk', style: 'flex:1;min-width:220px' }, 'Group for new portal tickets', grp)),
         el('label', { class: 'blk' }, 'Start with requests changed after (first run only)', since), el('label', { class: 'blk' }, 'Alert emails', alert),
         el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap' },
-          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim(), dryRun: dry.checked, levels: Object.fromEntries(Object.entries(lvSel).map(([k, sel]) => [k, +sel.value])) }, () => 'Portal connection saved' + (dry.checked ? ' – dry run ON' : ' – dry run OFF')) }, 'Save'),
+          el('button', { class: 'btn primary', type: 'button', onclick: e => run(e.target, { action: 'set_config', mode: mode.value, baseUrl: base.value, tokenUrl: tok.value, clientId: cid.value, clientSecret: sec.value, intervalMin: +every.value, since: since.value.trim(), group: grp.value, alertTo: alert.value.trim(), dryRun: dry.checked, liveRequests: liveReq.value, liveAll: liveAll.checked, levels: Object.fromEntries(Object.entries(lvSel).map(([k, sel]) => [k, +sel.value])) }, () => 'Portal connection saved' + (dry.checked ? ' – dry run ON' : ' – dry run OFF')) }, 'Save'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'test_connection' }, r => r.browser ? 'Bridge PC last report: ' + (r.health && r.health.at ? (r.health.ok ? 'OK ' : 'problem – ' + (r.health.error || '')) + rel(r.health.at) : 'none yet') : 'Signed in to the portal ✓ (' + r.sample + ' request(s) in the last day)') }, 'Test connection'),
           el('button', { class: 'btn', type: 'button', disabled: s.mode === 'off', onclick: e => run(e.target, { action: 'sync_now' }, r => r.browser ? 'In this mode the Outlook bridge PC syncs every few minutes' : 'Synced: ' + ((r.in && r.in.created) || 0) + ' new, ' + ((r.in && r.in.updated) || 0) + ' updated, ' + ((r.out && r.out.sent) || 0) + ' decision(s) sent') }, 'Sync now'),
           // token for the Outlook bridge PC (portal bridge): shown ONCE, only its hash is kept; a new one replaces the old one
@@ -3435,6 +3453,8 @@ function portalSuggestion(t) {
   const hasFiles = t.msgs.some(m => m.kind === 'in' && (m.atts || []).some(a => a.path && a.source !== 'Sarwa'));
   if (srv && srv.kind === 'missing_docs' && !hasFiles) return { d: 'Pending', reason: 'Missing documents', why: 'No prescription or document on the portal', conf: srv.confidence, kind: 'missing_docs' };
   if (srv && srv.kind === 'duplicate') return { d: null, why: srv.reason, conf: srv.confidence, kind: 'duplicate' };
+  // the AI reader found files but no prescription in them -> the prescription itself is missing
+  if (t.aiRead && !((t.aiRead.data || {}).items || []).length && /no prescription|not a prescription|no medicine/i.test(t.aiRead.error || t.aiRead.notes || '')) return { d: 'Pending', reason: 'Missing documents', why: 'AI reader: ' + String(t.aiRead.error || t.aiRead.notes).slice(0, 160), conf: 0.8, kind: 'missing_docs' };
   const it = typeof suggestedDecision === 'function' ? suggestedDecision(t) : null;
   if (it) {
     const kind = it.d === 'Approved' ? 'approve' : it.d === 'Rejected' ? 'reject' : it.d === 'Partially approved' ? 'partial' : 'missing_docs';
