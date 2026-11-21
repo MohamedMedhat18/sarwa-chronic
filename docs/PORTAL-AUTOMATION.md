@@ -68,6 +68,19 @@ Direct WhatsApp (only if wanted, e.g. reminders without a portal status change) 
 6. A webhook URL for delivery receipts (a Supabase function) so a ticket is "delivered" only on the receipt.
 Unofficial WhatsApp automation (WhatsApp Web scripts, unofficial libraries) is not used.
 
+### First live reply from Sarwa Chronic (21 Nov 2026, test request 38234, approved by the admin)
+
+| Cairo time | Step |
+|---|---|
+| 17:53 | test request created on WhatsApp (2 files) |
+| 17:54 | portal agent imported it by itself (ticket, both files, arrival checks R1-R5) |
+| 17:56 | Send on the ticket (Pending - missing documents + test image); live list = this request only |
+| 17:58 | agent filled the portal's Reply form (status 3, AR, template + text, file) and saved it |
+| 17:58 | new entry found in the Request Timeline -> job "sent" on attempt 1 -> ticket Pending |
+| 17:58 | WhatsApp with the message and the image received on the requester's phone (confirmed) |
+
+Settings > Portal: dry run OFF, Live requests = the approved request numbers; "Live for all" stays off until approved.
+
 ## 5. Done only after confirmation
 
 A decision or message is "sent" only when the bridge sees the new entry in the portal's Request Timeline. Failures are
