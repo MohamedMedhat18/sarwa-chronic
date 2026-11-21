@@ -20,6 +20,7 @@ import { chromium } from 'playwright';
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const env = process.env;
 const SB = (env.SUPABASE_URL || '').replace(/\/$/, '');
@@ -36,7 +37,7 @@ const STATUS = { Assigned: 1, Processing: 2, Pending: 3, Closed: 4, Approved: 5,
 const FINAL = new Set([4, 5, 7, 8]);
 const EXPECTED_HEADERS = ['Request Id', 'Individual Name', 'Chronic Status Name', 'Creation User', 'Cr Type', 'Creation Date'];
 const MAX_FILE = 20 * 1048576;
-const READER = new URL('./portal-reader.js', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');   // in-page reader (no clicks)
+const READER = fileURLToPath(new URL('./portal-reader.js', import.meta.url));   // in-page reader (no clicks)
 mkdirSync(join(DATA, 'previews'), { recursive: true });
 const MAP = JSON.parse(readFileSync(existsSync(join(DATA, 'reply-map.json')) ? join(DATA, 'reply-map.json') : new URL('./reply-map.json', import.meta.url), 'utf8'));
 const F = MAP.form;
@@ -296,7 +297,9 @@ const histRow = (r, statusName) => ({ request_id: r['Request Id'], individual_nu
   policy_holder: r['Policy Holder Name'] || r['Policy Holder'] || '', contract_no: r['Contract No'] || r['Contract no'] || '', channel: r['Cr Type'] || '', creation_user: r['Creation User'] || '',
   broker: r['Broker'] || '', broker_mail: r['Broker Mail'] || '', status_name: statusName || r['Chronic Status Name'] || '', status_code: STATUS[statusName || r['Chronic Status Name']] ?? null,
   chronic_date: ddmmyyyy(r['Chronic Date']), creation_date: iso(r['Creation Date']) || null, assign_to: r['Assign To'] || '' });
-const canWrite = (job) => DRY ? 'DRY_RUN is on' : !ALLOW.has(String(job.request_id)) ? `request ${job.request_id} is not in LIVE_WRITE_ALLOW` : '';
+// two gates: this PC (DRY_RUN / LIVE_WRITE_ALLOW, '*' = every request the server allows) AND the server (Settings > Portal:
+// dry run off + live list / live for all - bridge_jobs hands out nothing else)
+const canWrite = (job) => DRY ? 'DRY_RUN is on' : !(ALLOW.has('*') || ALLOW.has(String(job.request_id))) ? `request ${job.request_id} is not in LIVE_WRITE_ALLOW` : '';
 
 // ---------------- one cycle ----------------
 async function cycle(page, full) {

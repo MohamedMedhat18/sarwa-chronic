@@ -5,10 +5,13 @@
   .\Start-PortalBridge.ps1 -SupabaseUrl https://<project>.supabase.co                       # dry run, every 5 minutes
   .\Start-PortalBridge.ps1 -SupabaseUrl ... -Once                                          # one cycle (health / backfill check)
   .\Start-PortalBridge.ps1 -SupabaseUrl ... -LiveWriteAllow 38206                          # live writes ONLY for request 38206
+  .\Start-PortalBridge.ps1 -SupabaseUrl ... -Live                                          # live writes for whatever the server allows
+                                                                                           # (Settings > Portal: dry run off + live list / live for all)
 #>
 param(
   [Parameter(Mandatory)] [string] $SupabaseUrl,
   [string] $LiveWriteAllow = '',
+  [switch] $Live,
   [int] $IntervalMin = 5,
   [switch] $Once,
   [switch] $Headless
@@ -25,7 +28,8 @@ $env:PORTAL_PASS = & $plain $cred.Password
 $env:BRIDGE_DIR = $dir
 $env:INTERVAL_MIN = "$IntervalMin"
 $env:HEADLESS = $(if ($Headless) { '1' } else { '0' })
-if ($LiveWriteAllow) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = $LiveWriteAllow } else { $env:DRY_RUN = '1'; $env:LIVE_WRITE_ALLOW = '' }
+if ($Live) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = '*' }
+elseif ($LiveWriteAllow) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = $LiveWriteAllow } else { $env:DRY_RUN = '1'; $env:LIVE_WRITE_ALLOW = '' }
 try {
   Push-Location $PSScriptRoot
   $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }
