@@ -289,27 +289,59 @@ function matchOurs(r, job, statusName, core) {
   if (STATUS[r['Chronic Status Name']] !== STATUS[statusName] && r['Chronic Status Name'] !== statusName) return false;
   return core ? norm(r['Chronic Comment']).includes(norm(core).slice(0, 40)) : true;
 }
-async function submitReply(page, job) {
-  await openChronicAttach(page);
-  const row = (await readReport(page)).find((r) => r['Request Id'] === String(job.request_id));
-  if (!row) return { result: 'conflict', error: 'the request is no longer in the Chronic Attach list (closed on the portal?)' };
-  const curCode = STATUS[row['Chronic Status Name']] ?? 3; const core = coreOf(job);
-  const targetName = Object.keys(STATUS).find((k) => STATUS[k] === +statusFor(job, curCode) && !k.includes(' ')) || row['Chronic Status Name'];
-  const before = await readTimeline(page, job.request_id);
-  const already = before.find((r) => !st(job.request_id).mine.includes(tlId(job.request_id, r)) && job.attempt > 1 && matchOurs(r, job, targetName, core));
-  if (already) return confirmed(job, already, row);                                         // an earlier attempt went through
-  if (FINAL.has(curCode) && job.decision !== 'Message') return { result: 'conflict', error: `the request is already ${row['Chronic Status Name']} on the portal` };
-  if (job.portal_status_now && row['Chronic Status Name'] !== job.portal_status_now && FINAL.has(curCode)) return { result: 'conflict', error: `status changed on the portal to ${row['Chronic Status Name']}` };
-  const sent = await fillReply(page, job, curCode, true);
-  for (let i = 0; i < 6; i++) {                                                             // confirm from the Request Timeline
-    await openChronicAttach(page);
-    const after = await readTimeline(page, job.request_id);
-    const known = new Set(before.map((b) => tlId(job.request_id, b)));
-    const hit = after.find((r) => !known.has(tlId(job.request_id, r)) && matchOurs(r, job, targetName, core));
-    if (hit) { const row2 = (await readReport(page)).find((r) => r['Request Id'] === String(job.request_id)) || row; return confirmed(job, hit, row2, sent); }
-    await pause(5000, 8000);
+// wait for the report's result itself (rows, or the portal's "no data found") - not for a spinner class
+async function waitReport(page, secs = 90) {
+  for (let i = 0; i < secs; i++) {
+    await page.waitForTimeout(1000);
+    const s8 = await page.evaluate(() => ({ busy: !!document.querySelector('.u-Processing, .u-Processing-spinner, .a-IRR-loading, .apex_wait_overlay'), rows: document.querySelectorAll('#my_ir .a-IRR-table td[headers]').length, none: !!document.querySelector('#my_ir .a-IRR-noDataMsg, #my_ir .nodatafound') })).catch(() => ({ busy: true }));
+    if (!s8.busy && (s8.rows || s8.none)) return true;
   }
-  return { result: 'retry', error: 'saved, but the Request Timeline did not show the reply yet - it is checked again before any resend' };
+  return false;
+}
+async function cardOf(id) {   // member card number from Sarwa Chronic (function portal-info, bridge token)
+  const r = await fetch(SB + '/functions/v1/portal-info', { method: 'POST', headers: { 'content-type': 'application/json', 'x-portal-token': TOKEN }, body: JSON.stringify({ request_ids: [String(id)] }) }).catch(() => null);
+  return r && r.ok ? ((await r.json().catch(() => ({}))).members || {})[String(id)] || '' : '';
+}
+// the request on the Pending list, or - when it already left it (a final decision moves it off) - with the card filter
+async function findAnywhere(page, id, card) {
+  await openChronicAttach(page); await resetReport(page);
+  let row = (await readReport(page)).find((r) => r['Request Id'] === String(id));
+  if (row || !card) return row || null;
+  await page.evaluate((c) => { apex.item('P165_INDIVIDUAL_NUM').setValue(c); apex.item('P165_STATUS').setValue(''); }, String(card));
+  await page.locator('#B500203752390221333').click();
+  await waitReport(page);
+  row = (await readReport(page)).find((r) => r['Request Id'] === String(id));
+  return row || null;
+}
+async function submitReply(page, job) {
+  const id = String(job.request_id);
+  try {
+    let row = await findAnywhere(page, id, '');
+    let card = row ? (row['Individual Number'] || row._indiv || '') : await cardOf(id);
+    if (!row) row = await findAnywhere(page, id, card);
+    if (!row) return { result: 'conflict', error: 'the request was not found on the portal (Chronic Attach, all statuses)' };
+    card = card || row['Individual Number'] || row._indiv || '';
+    const curCode = STATUS[row['Chronic Status Name']] ?? 3; const core = coreOf(job);
+    const targetName = Object.keys(STATUS).find((k) => STATUS[k] === +statusFor(job, curCode) && !k.includes(' ')) || row['Chronic Status Name'];
+    const before = await readTimeline(page, id);
+    // an earlier attempt of THIS job already went through (retry, or the request is already in the target final status)
+    const already = before.find((r) => !st(id).mine.includes(tlId(id, r)) && (job.attempt > 1 || FINAL.has(curCode)) && matchOurs(r, job, targetName, core));
+    if (already) return confirmed(job, already, row);
+    if (FINAL.has(curCode) && job.decision !== 'Message') return { result: 'conflict', error: `the request is already ${row['Chronic Status Name']} on the portal` };
+    if (job.portal_status_now && row['Chronic Status Name'] !== job.portal_status_now && FINAL.has(curCode)) return { result: 'conflict', error: `status changed on the portal to ${row['Chronic Status Name']}` };
+    const sent = await fillReply(page, job, curCode, true);
+    const known = new Set(before.map((b) => tlId(id, b)));
+    for (let i = 0; i < 6; i++) {   // confirm from the Request Timeline - found again wherever the request is now
+      await pause(3000, 5000);
+      const row2 = await findAnywhere(page, id, card);
+      if (!row2) continue;
+      const hit = (await readTimeline(page, id)).find((r) => !known.has(tlId(id, r)) && matchOurs(r, job, targetName, core));
+      if (hit) return confirmed(job, hit, row2, sent);
+    }
+    return { result: 'retry', error: 'saved, but the Request Timeline did not show the reply yet - it is checked again before any resend' };
+  } finally {
+    await resetReport(page).catch(() => { });
+  }
 }
 function confirmed(job, entry, row, sent) {
   const tid = tlId(job.request_id, entry); const s = st(job.request_id);
