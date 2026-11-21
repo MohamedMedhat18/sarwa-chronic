@@ -197,14 +197,10 @@ async function reportCount(page) {
   const t = await page.locator('#my_ir .a-IRR-pagination').first().innerText().catch(() => '');
   const m = t.match(/(\d+)\s*-\s*(\d+)(?:\s*of\s*(\d+))?/); return m ? +(m[3] || m[2]) : null;
 }
+// Request Timeline through the in-page reader (GET of the signed dialog address - no click on the report link)
 async function readTimeline(page, requestId) {
-  await closeDialogs(page);
-  await page.locator('#my_ir a', { hasText: new RegExp('^' + requestId + '$') }).first().click();   // Request Timeline (read only)
-  const f = await frameForPage(page, '172');
-  await f.locator('.a-IRR-table').first().waitFor({ timeout: 20000 });
-  const rows = (await f.locator('body').evaluate(IR_ROWS)).filter((r) => r['Chronic Status Name'] || r['Creation Date']);
-  await closeDialogs(page); await pause(600, 1200);
-  return rows;
+  if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
+  return await page.evaluate((x) => window.SarwaPortalReader.timeline(x), String(requestId));
 }
 // Broker Attachments (page 170): the member's / broker's files, each with a download link carrying a stable file id (k1).
 // Files not sent to Sarwa Chronic before are fetched inside the signed-in page and passed on as base64.
@@ -348,17 +344,27 @@ async function cycle(page, full) {
   // read every request with the in-page reader (plain GETs of the signed dialog URLs - no clicks, nothing submitted):
   // timeline + Broker and Sarwa attachments; files already sent are listed but not downloaded again
   await page.addScriptTag({ path: READER });
-  for (const row of rows) {
-    const id = row['Request Id']; const s = st(id);
+  // new requests first (they must reach Sarwa Chronic fast); a known request is re-read in full only when its timeline
+  // changed, or on the full pass (files added without a timeline entry are caught there)
+  const fpOf = (list) => sha(JSON.stringify(list.map((e) => [e.status, norm(e.comment), norm(e.extra)])));
+  const order = [...rows].sort((a, b) => (state[a['Request Id']] ? 1 : 0) - (state[b['Request Id']] ? 1 : 0));
+  let skipped = 0;
+  for (const row of order) {
+    const id = row['Request Id']; const known = !!state[id] && !!state[id].tlq; const s = st(id);
+    if (known && !full) {
+      const raw = await page.evaluate((x) => window.SarwaPortalReader.timeline(x), id);
+      if (fpOf(raw.map((e) => ({ status: e['Chronic Status Name'], comment: e['Chronic Comment'], extra: e['Extra Comment'] }))) === s.tlq) { skipped++; await pause(200, 500); continue; }
+    }
     const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
-    requests.push({ req: r.req, fp: r.tlFingerprint });
-    await pause();
+    const fp = fpOf(r.req.timeline.map((t) => ({ status: t.status_name, comment: t.comment, extra: t.extra_comment })));
+    // send each request on its own: a new one is a ticket within seconds, not after the whole list
+    const res = await call('bridge_ingest', { requests: [r.req] });
+    if (!(res.errors || []).length) { s.tlq = fp; s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
+    requests.push({ id, created: res.created || 0, updated: res.updated || 0, same: res.same || 0, error: (res.errors || [])[0] || '' });
+    if (res.created) log('NEW ticket for request', id);
+    await pause(400, 900);
   }
-  if (requests.length) {
-    const r = await call('bridge_ingest', { requests: requests.map((x) => x.req) });
-    log('ingest', JSON.stringify({ seen: requests.length, created: r.created, updated: r.updated, same: r.same, errors: r.errors }));
-    if (!(r.errors || []).length) { for (const x of requests) { const s = st(x.req.request_id); s.tl = x.fp; s.files = [...new Set([...s.files, ...x.req.attachments.map((a) => a.id)])]; } saveState(); }
-  }
+  log('ingest', JSON.stringify({ seen: rows.length, read: requests.length, unchanged: skipped, created: requests.reduce((a, x) => a + x.created, 0), updated: requests.reduce((a, x) => a + x.updated, 0), errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error) }));
   for (let i = 0; i < rows.length; i += 1000) await call('bridge_history', { rows: rows.slice(i, i + 1000).map((r) => histRow(r)) }).catch((e) => log('history:', e.message));
   const rec = await call('bridge_reconcile', { open_request_ids: rows.filter((r) => !FINAL.has(STATUS[r['Chronic Status Name']])).map((r) => r['Request Id']) });
   log('reconcile', JSON.stringify({ shown_on_report: shown, read: rows.length, missing: rec.missing_tickets, closed_elsewhere: rec.closed_on_portal_still_open_here }));
@@ -384,37 +390,44 @@ async function cycle(page, full) {
   // requests that left the list (decided / changed directly on the portal): look each one up and send its current state
   // in - the server marks the ticket "Changed on the portal" and never overwrites. At most 5 per cycle, each every 30 min.
   state._lookup ||= {};
-  for (const id of (rec.closed_on_portal_still_open_here || []).filter((x) => /^\d+$/.test(x)).slice(0, 5)) {
-    if (Date.now() - (state._lookup[id] || 0) < 30 * 60000) continue;
+  const gone = (rec.closed_on_portal_still_open_here || []).filter((x) => /^\d+$/.test(x)).slice(0, 5);
+  let cards = {};
+  if (gone.length) {
+    const r = await fetch(SB + '/functions/v1/portal-info', { method: 'POST', headers: { 'content-type': 'application/json', 'x-portal-token': TOKEN }, body: JSON.stringify({ request_ids: gone }) }).catch(() => null);
+    cards = (r && r.ok ? (await r.json().catch(() => ({}))).members : null) || {};
+  }
+  for (const id of gone) {
+    state._miss ||= {};
+    const wait = (state._miss[id] || 0) >= 2 ? 6 * 3600000 : 30 * 60000;   // not found twice -> look again only every 6 h
+    if (Date.now() - (state._lookup[id] || 0) < wait) continue;
     state._lookup[id] = Date.now(); saveState();
-    try { log('changed on the portal?', id, await lookupRequest(page, id)); }
+    try { const out = await lookupRequest(page, id, cards[id]); state._miss[id] = /^not found/.test(out) ? (state._miss[id] || 0) + 1 : 0; saveState(); log('changed on the portal?', id, out.slice(0, 120)); }
     catch (e) { log('lookup failed', id, String(e.message || e).slice(0, 200)); if (e instanceof Blocked) throw e; }
   }
   await call('bridge_health', { ok: true, loggedIn: true, pageOk: true, pc: env.COMPUTERNAME || '' });
 }
-// find one request with the report's own search over ALL statuses, read it (timeline + files) and send it in.
-// The search and the Status filter are always put back (Pending, no search) afterwards.
-async function lookupRequest(page, id) {
+// find one request with the portal's card filter (Individual Number) over ALL statuses - a member has only a few requests,
+// so the report answers in seconds (a text search over all ~18,000 requests never finished). The card number comes from
+// Sarwa Chronic (function portal-info, bridge token). Status Filter / card filter are always put back afterwards.
+async function lookupRequest(page, id, card) {
+  if (!card) return 'not found on the portal (no card number known for this request)';
   await openChronicAttach(page);
-  const idle = async (ms) => { const end = Date.now() + ms; await page.waitForTimeout(1500); while (Date.now() < end) { if (!(await page.locator('.u-Processing, .a-IRR-loading').count().catch(() => 0))) return; await page.waitForTimeout(1000); } };
-  const setStatus = async (v) => { await page.evaluate((x) => apex.item('P165_STATUS').setValue(x), v); await page.locator('#B500203752390221333').click(); await idle(120000); await page.waitForTimeout(1500); };
-  try {
-    await resetReport(page); await idle(60000);   // search first on the small Pending list, then widen to all statuses
-    // the report's own search (Enter in the box does not start it on this page): row text contains <id>
-    const applied = () => page.locator('#my_ir .a-IRR-controls-item', { hasText: String(id) }).count().catch(() => 0);
-    const tries = [
-      async () => { await page.fill('#my_ir_search_field', String(id)); await page.locator('#my_ir_search_button, #my_ir .a-IRR-search-button, #my_ir button:has-text("Go")').first().click({ timeout: 5000 }); },
-      async () => { await page.fill('#my_ir_search_field', String(id)); await page.press('#my_ir_search_field', 'Enter'); },
-      async () => { await page.evaluate((x) => { window.$('#my_ir_search_field').val(x); window.$('#my_ir_ir').interactiveReport('instance')._search('SEARCH'); }, String(id)); },
-    ];
-    for (const t of tries) {
-      await t().catch(() => { });
-      for (let i = 0; i < 20; i++) { await page.waitForTimeout(750); if (!(await page.locator('.u-Processing').count().catch(() => 0)) && await applied()) break; }
-      if (await applied()) break;
+  const waitResult = async () => {
+    for (let i = 0; i < 90; i++) {
+      await page.waitForTimeout(1000);
+      const s8 = await page.evaluate(() => ({ busy: !!document.querySelector('.u-Processing, .u-Processing-spinner, .a-IRR-loading, .apex_wait_overlay'), rows: document.querySelectorAll('#my_ir .a-IRR-table td[headers]').length, none: !!document.querySelector('#my_ir .a-IRR-noDataMsg, #my_ir .nodatafound') })).catch(() => ({ busy: true }));
+      if (!s8.busy && (s8.rows || s8.none)) return true;
     }
-    await setStatus('');   // All Data, with the search filter kept: only the matching request(s)
+    return false;
+  };
+  try {
+    await resetReport(page);
+    await page.evaluate((c) => { apex.item('P165_INDIVIDUAL_NUM').setValue(c); apex.item('P165_STATUS').setValue(''); }, String(card));
+    await page.locator('#B500203752390221333').click();
+    await waitResult();
     await page.addScriptTag({ path: READER });
     const found = await page.evaluate((x) => window.SarwaPortalReader.reportRows().some((r) => r['Request Id'] === String(x)), id);
+    if (!found) await page.screenshot({ path: join(DATA, 'previews', `lookup-${id}.png`), fullPage: true }).catch(() => { });   // evidence for the admin
     if (!found) return 'not found on the portal ' + JSON.stringify(await page.evaluate((x) => ({ otherReports: [...document.querySelectorAll('.a-IRR, .t-Report, .a-GV')].map((r) => { const reg = r.closest('[id^="R"], [id$="_ir"]') || r; const tab = reg.closest('.t-TabsRegion-items > div, [role=tabpanel]'); return { id: (reg.id || '').slice(0, 40), tab: tab ? (document.querySelector('[aria-controls="' + tab.id + '"]') || {}).textContent?.trim() : '', rows: r.querySelectorAll('tr').length, hasId: r.textContent.includes(x) }; }).slice(0, 8), tabLinks: [...document.querySelectorAll('.t-Tabs a, [role=tab]')].map((a) => a.textContent.trim() + '>' + (a.getAttribute('aria-controls') || a.getAttribute('href') || '').slice(0, 40)).slice(0, 6), status: apex.item('P165_STATUS').getValue(), search: !!document.querySelector('#my_ir_search_field'), filters: [...document.querySelectorAll('#my_ir .a-IRR-controls-item')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()).slice(0, 3), pag: (document.querySelector('#my_ir .a-IRR-pagination') || {}).textContent?.replace(/\s+/g, ' ').trim(), rows: window.SarwaPortalReader.reportRows().length, tabs: [...document.querySelectorAll('a,button')].map((e) => e.textContent.trim()).filter((t) => /^Chronic Attach/.test(t)).slice(0, 4) }), String(id)).catch((e) => ({ err: String(e) })));
     const s = st(id);
     const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
@@ -435,8 +448,9 @@ async function resetReport(page) {
     await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(1500);
   }
   await page.fill('#my_ir_search_field', '').catch(() => { });
-  if (await page.evaluate(() => apex.item('P165_STATUS').getValue()).catch(() => '3') !== '3') {
-    await page.evaluate(() => apex.item('P165_STATUS').setValue('3')).catch(() => { });
+  const cur = await page.evaluate(() => [apex.item('P165_STATUS').getValue(), apex.item('P165_INDIVIDUAL_NUM').getValue()]).catch(() => ['3', '']);
+  if (cur[0] !== '3' || cur[1]) {
+    await page.evaluate(() => { apex.item('P165_INDIVIDUAL_NUM').setValue(''); apex.item('P165_STATUS').setValue('3'); }).catch(() => { });
     await page.locator('#B500203752390221333').click().catch(() => { });
     await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500);
   }
@@ -449,7 +463,7 @@ async function main() {
   const page = ctx.pages()[0] || await ctx.newPage();
   log(`portal bridge started - ${DRY ? 'DRY RUN (previews only, nothing saved)' : 'live writes for: ' + ([...ALLOW].join(',') || 'none')}`);
   for (let n = 0; ; n++) {
-    try { await cycle(page, n % 12 === 0); }
+    try { await cycle(page, n % 5 === 0); }   // full pass (files too) every 5th cycle
     catch (e) {
       const msg = String(e.message || e).slice(0, 400); log('cycle failed:', msg);
       await call('bridge_health', { ok: false, loggedIn: !(e instanceof Blocked), pageOk: !/structure|not found|not recognised|did not open/.test(msg), error: msg, pc: env.COMPUTERNAME || '' }).catch(() => { });
