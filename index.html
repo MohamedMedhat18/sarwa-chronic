@@ -1804,7 +1804,7 @@ function ticketView(r) {
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   fwdSel.addEventListener('change', () => drawEditor());
   async function send() {
@@ -3302,9 +3302,10 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
   const refresh = () => {
     if (!edited) msg.value = d === 'Pending' ? portalText(t, 'Pending', { list: missing.value.trim() || ('- ' + ((t.lang === 'EN' ? reason.value : PR_AR[reason.value]) || '…')) }) : portalText(t, d, { reason: [reason.value, d !== 'Approved' ? note.value.trim() : ''].filter(Boolean).join(' – '), note: d === 'Approved' ? note.value.trim() : '' });
     msgBox.hidden = internal(); drawPrev();
+    if (goBtn) goBtn.textContent = internal() ? 'Set Pending (internal)' : (PORTAL_DRY ? 'Preview (dry run) – ' : 'Send – ') + d;
     hint.textContent = internal() ? 'Internal only: the ticket goes to Pending – ' + reason.value + '. Nothing is sent to the portal or the member.' : D.status === 'Closed' ? 'The portal records the decision and sends this message to ' + portalRecipient(t) + '. The ticket closes when the portal confirms.' : 'The portal keeps the request Pending and sends this request to ' + portalRecipient(t) + '. The ticket goes to Pending – reason when the portal confirms; the member\'s answer reopens it (customer_response).';
   };
-  const hint = el('div', { class: 'small muted' });
+  const hint = el('div', { class: 'small muted' }); let goBtn = null;
   [reason, note, missing].forEach(x => x.addEventListener(x.tagName === 'SELECT' ? 'change' : 'input', refresh));
   msgBox.append(...[d === 'Pending' ? el('label', {}, 'What is missing (one per line)', missing) : null,
     el('label', {}, d === 'Approved' ? 'Optional note (the portal\'s approval text is sent as is)' : 'Your text – it goes into the portal\'s own message (the portal adds the greeting and closing)', msg),
@@ -3314,7 +3315,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
   body.addEventListener('paste', e => { const fl = [...((e.clipboardData && e.clipboardData.items) || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean); if (!fl.length) return; e.preventDefault(); for (const f of fl) files.push(new File([f], f.name && !/^image\.\w+$/.test(f.name) ? f.name : 'screenshot-' + new Date().toISOString().slice(0, 19).replace(/\D/g, '') + '.' + ((f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')), { type: f.type })); drawFiles(); });
   refresh();
   openDialog(D.icon + ' ' + d + ' – ' + t.no + ' · portal #' + t.portal.requestId, [body],
-    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', style: 'background:' + D.c + ';border-color:' + D.c, onclick: async e => {
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), goBtn = el('button', { class: 'btn primary', type: 'button', style: 'background:' + D.c + ';border-color:' + D.c, onclick: async e => {
       if (d !== 'Approved' && d !== 'Partially approved' && !reason.value) { reason.focus(); return toast('Choose the reason'); }
       if (d === 'Rejected' && !note.value.trim()) { note.focus(); return toast('Write the justification – it is sent to the requester'); }
       if (d === 'Pending' && !internal() && !missing.value.trim()) { missing.focus(); return toast('List what is missing – it is sent to the requester'); }
@@ -3331,6 +3332,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
         if (opts.after) opts.after();
       } catch (x) { e.target.disabled = false; toast(x.message); }
     } }, (PORTAL_DRY && !internal() ? 'Preview (dry run) – ' : 'Send – ') + d)]);
+  refresh();   // label of the main button follows the chosen reason (internal Pending is applied, not previewed)
   (d === 'Approved' ? msg : reason).focus();
 }
 // sidebar: the portal request (key data for the decision) and where the answer is

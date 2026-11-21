@@ -29,7 +29,7 @@ $pdf = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("%PDF-1.4`n1 0 
 $now = (Get-Date).ToUniversalTime().ToString('o')
 
 # 0) browser mode on, with fast retries for the test
-$r = Portal @{ action = 'set_config'; mode = 'browser'; fastRetry = $true; intervalMin = 1; alertTo = 'portal-alerts@example.invalid' }
+$r = Portal @{ action = 'set_config'; mode = 'browser'; dryRun = $false; fastRetry = $true; intervalMin = 1; alertTo = 'portal-alerts@example.invalid' }
 Check 'B00 browser mode on' ($r.mode -eq 'browser' -and $r.baseUrl -match 'Outlook bridge') ($r.error)
 # in browser mode the server must NOT reach out
 $t0 = Portal @{ action = 'tick' }
@@ -121,7 +121,7 @@ $off = Portal @{ action = 'set_config'; mode = 'off' }
 $cfg2 = Bridge @{ action = 'bridge_config' }
 $jobsOff = Bridge @{ action = 'bridge_jobs'; limit = 5 }
 Check 'B18 kill switch: Off stops the bridge' ($cfg2.active -eq $false -and @($jobsOff.jobs).Count -eq 0) "active=$($cfg2.active) jobs=$(@($jobsOff.jobs).Count)"
-Portal @{ action = 'set_config'; mode = 'browser'; fastRetry = $true } | Out-Null
+Portal @{ action = 'set_config'; mode = 'browser'; dryRun = $false; fastRetry = $true } | Out-Null
 
 # 11) dry-run safety: peek never claims; claim-one takes only the approved job
 $p1 = Mock 'decide' @{ ticket = (TicketOf '900002'); decision = 'Message'; text = 'TEST peek 1' }
@@ -133,6 +133,19 @@ $c1 = (Bridge @{ action = 'bridge_jobs'; limit = 5; id = 'pd_does_not_exist' }).
 $c2 = (Bridge @{ action = 'bridge_jobs'; limit = 5; id = $p1.id }).jobs
 Check 'B21 claim-one takes only the named job' (@($c1).Count -eq 0 -and @($c2).Count -eq 1 -and $c2[0].id -eq $p1.id) "other=$(@($c1).Count) named=$(@($c2).Count)"
 Bridge @{ action = 'bridge_job_result'; id = $p1.id; result = 'sent'; portal = @{ status_code = 3; status_name = 'Pending'; timeline_id = 'tl-p1'; last_update = (Get-Date).ToUniversalTime().ToString('o') } } | Out-Null
+
+# 13) dry run (Settings > Portal): nothing is handed to the bridge for writing; peek still shows it; requests still come in
+$d0 = Portal @{ action = 'set_config'; mode = 'browser'; dryRun = $true; fastRetry = $true }
+$p2 = Mock 'decide' @{ ticket = (TicketOf '900002'); decision = 'Message'; text = 'TEST dry run' }
+Start-Sleep -Milliseconds 300
+$dj = (Bridge @{ action = 'bridge_jobs'; limit = 5; id = $p2.id }).jobs
+$dc = Bridge @{ action = 'bridge_config' }
+$dp = (Bridge @{ action = 'bridge_peek'; limit = 10 }).jobs
+$st = State '900002'; $pj = @($st.jobs | Where-Object id -eq $p2.id)[0]
+Check 'B22 dry run: bridge gets nothing to write, job untouched' ($d0.dryRun -eq $true -and $dc.dryRun -eq $true -and @($dj).Count -eq 0 -and @($dp | Where-Object id -eq $p2.id).Count -eq 1 -and $pj.status -eq 'queued' -and $pj.attempts -eq 0) "dryRun=$($dc.dryRun) claimed=$(@($dj).Count) status=$($pj.status)"
+Portal @{ action = 'set_config'; mode = 'browser'; dryRun = $false; fastRetry = $true } | Out-Null
+Bridge @{ action = 'bridge_jobs'; limit = 5; id = $p2.id } | Out-Null
+Bridge @{ action = 'bridge_job_result'; id = $p2.id; result = 'sent'; portal = @{ status_code = 3; status_name = 'Pending'; timeline_id = 'tl-p2'; last_update = (Get-Date).ToUniversalTime().ToString('o') } } | Out-Null
 
 # 12) audit log both directions
 $lg = Portal @{ action = 'log'; limit = 200 }
