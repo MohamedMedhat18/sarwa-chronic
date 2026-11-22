@@ -1028,7 +1028,8 @@ async function runImporter() {
   try {
     for (let round = 0; round < 20; round++) {
       // claim_mail3 also hands out historical emails (Outlook "Done" folder) – older app versions use claim_mail2, which leaves them alone
-      const { data, error } = await SB.rpc('claim_mail3', { n: 5 });
+      // claim_mail4 also hands out recovery emails (no-attachment requests made into tickets) – older versions use claim_mail3/2
+      const { data, error } = await SB.rpc('claim_mail4', { n: 5 });
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
       if (await loadEvents()) DB = fold();   // see what other devices did just now (duplicates, replies)
@@ -4658,7 +4659,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22a';
+const APP_VERSION = '2026-11-22b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
