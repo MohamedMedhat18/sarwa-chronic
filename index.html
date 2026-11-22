@@ -924,11 +924,11 @@ function applyEv(S, e) {
     case 'portal.status': {   // the portal sync's answer: sent | retrying | conflict | error | dead | requeued | cancelled
       if (!t) return; const m = t.msgs.find(x => x.kind === 'out' && x.portal && x.jobId === d.jobId);
       const st = d.status === 'requeued' ? 'queued' : d.status;
-      if (m) { m.state = st; m.error = d.error || ''; if (d.status === 'sent') { m.sentAt = d.sentAt || e.ts; m.delivered = d.delivered || null; } }
+      if (m) { m.state = st; m.error = d.error || ''; m.timeout = !!d.timeout; if (st === 'queued' && d.status === 'requeued') m.waitFrom = e.ts; if (d.status === 'sent') { m.sentAt = d.sentAt || e.ts; m.delivered = d.delivered || null; } }
       if (d.status === 'sent') { const at = d.sentAt || e.ts; if (!t.firstResponseAt) t.firstResponseAt = at; if (!t.lastOut || at > t.lastOut) t.lastOut = at; }
       if (t.portalSync && t.portalSync.jobId === d.jobId) t.portalSync = { ...t.portalSync, state: st, error: d.error || '', at: e.ts, attempt: d.attempt || t.portalSync.attempt || 0, nextTry: d.nextTry || '' };
       if (d.status === 'sent' && d.statusName) t.portal = { ...(t.portal || {}), statusCode: d.statusCode, statusName: d.statusName };
-      const txt = { sent: 'Portal confirmed' + (d.statusName ? ': ' + d.statusName : '') + (d.delivered ? ' · sent by ' + d.delivered.channel + ' to ' + d.delivered.to : ''), retrying: 'Portal not reachable – trying again ' + (d.nextTry ? fmtDate(d.nextTry) : 'soon'), conflict: 'Portal refused: the request changed on the portal – refresh and send again', error: 'Portal refused the decision: ' + (d.error || ''), dead: 'Portal sync failed after ' + (d.attempts || 5) + ' tries: ' + (d.error || ''), requeued: 'Sent to the portal again', cancelled: 'Portal decision cancelled' }[d.status] || ('Portal: ' + d.status);
+      const txt = { sent: 'Portal confirmed' + (d.statusName ? ': ' + d.statusName : '') + (d.delivered ? ' · sent by ' + d.delivered.channel + ' to ' + d.delivered.to : ''), retrying: 'Portal not reachable – trying again ' + (d.nextTry ? fmtDate(d.nextTry) : 'soon'), conflict: 'Portal refused: the request changed on the portal – refresh and send again', error: 'Portal refused the decision: ' + (d.error || ''), dead: d.timeout ? 'Failed – not confirmed by the portal: ' + (d.error || '') : 'Portal sync failed after ' + (d.attempts || 3) + ' tries: ' + (d.error || ''), requeued: 'Sent to the portal again', cancelled: 'Portal decision cancelled' }[d.status] || ('Portal: ' + d.status);
       t.timeline.push({ ts: e.ts, by: e.by, text: txt }); t.updated = e.ts; break;
     }
   }
@@ -1637,7 +1637,9 @@ function msgCard(m, t, fromNo) {
       m.htmlPath ? el('div', { style: 'padding:0 14px 10px 54px' }, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => showOriginal(m) }, 'View original email')) : null);
   }
   if (m.kind === 'out' && m.portal) {   // decision / message sent back through the portal (its Reply logic delivers it)
-    const st = { queued: ['Waiting for the portal', 'p-due'], sending: ['Sending to the portal…', 'p-due'], retrying: ['Portal not reachable – retrying', 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: ['Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'] }[m.state] || [m.state, 'p-muted'];
+    const waitMin = Math.max(0, Math.round((Date.now() - new Date(m.waitFrom || m.at).getTime()) / 60000));
+    const waitTxt = waitMin >= 1 ? ' · ' + waitMin + ' min' : '';   // after 15 min the server marks it Failed (with the reason)
+    const st = { queued: ['Waiting for the portal' + waitTxt, 'p-due'], sending: ['Sending to the portal…' + waitTxt, 'p-due'], retrying: ['Portal not reachable – retrying' + waitTxt, 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: [m.timeout ? 'Failed – not confirmed in 15 min' : 'Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'] }[m.state] || [m.state, 'p-muted'];
     const failed = ['conflict', 'error', 'dead'].includes(m.state);
     return el('div', { class: 'msg out', style: 'border-left:3px solid #1d5c52' },
       el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
@@ -3431,10 +3433,13 @@ function portalHealthBox(s) {
     const med = sent.length ? sent[Math.floor(sent.length / 2)] : null, worst = sent.length ? sent[sent.length - 1] : null;
     const fmt = x => x == null ? '—' : x < 90 ? Math.round(x) + ' s' : Math.round(x / 60) + ' min';
     const h = s.health || {}; const age = h.at ? (Date.now() - Date.parse(h.at)) / 1000 : null;
-    const warn = (age != null && age > 600) || oldest > 600 || (med != null && med > 120);
+    const warn = (age != null && age > 360) || oldest > 600 || (med != null && med > 120) || !!s.bridgeProblem;
+    const sw = s.sweep || {};
     box.style.borderLeft = '4px solid ' + (warn ? 'var(--bad)' : '#2f8a4f');
     box.replaceChildren(el('b', {}, 'Portal health (last 24 h)'),
+      s.bridgeProblem ? el('div', { class: 'small', style: 'color:var(--bad);font-weight:600' }, '⚠ ' + s.bridgeProblem + '. Replies are held in the queue; after ' + (s.timeoutMin || 15) + ' min they move to Sync failed with this reason.') : null,
       el('div', { class: 'small' }, 'Bridge PC: last report ' + (age == null ? 'never' : fmt(age) + ' ago') + (h.ok === false ? ' – ⚠ ' + (h.error || 'problem') : h.ok ? ' – OK' : '')),
+      el('div', { class: 'small muted' }, 'Safety check (every minute): up to ' + (s.maxAttempts || 3) + ' tries per reply, Failed after ' + (s.timeoutMin || 15) + ' min with an alert, daily list of unconfirmed replies.' + (sw.at ? ' Last action ' + fmtDate(sw.at) + ': ' + [sw.retaken ? sw.retaken + ' taken back' : '', sw.timedOut ? sw.timedOut + ' failed (timeout)' : '', sw.resynced ? sw.resynced + ' re-synced' : '', sw.bridgeAlert ? 'bridge alert sent' : ''].filter(Boolean).join(', ') : '')),
       el('div', { class: 'small' }, 'Replies waiting: ' + waiting.length + (waiting.length ? ' · oldest ' + fmt(oldest) : '')),
       el('div', { class: 'small' }, 'Send → portal confirmed: median ' + fmt(med) + ' · worst ' + fmt(worst) + ' · ' + sent.length + ' sent'),
       el('div', { class: 'small', style: failed ? 'color:var(--bad);font-weight:600' : '' }, 'Failed / conflict: ' + failed),
@@ -4714,7 +4719,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22g';
+const APP_VERSION = '2026-11-22h';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

@@ -57,11 +57,26 @@ function iso(dmy) {
   const [, d, mo, y, h = '00', mi = '00'] = m;
   return new Date(`${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}T${h.padStart(2, '0')}:${mi}:00${TZ}`).toISOString();
 }
+const BRIDGE_VERSION = 6;   // the server hands replies only to this version or newer (old copies cannot take and drop them)
+// every call to Sarwa Chronic: a dropped connection ("fetch failed") or a server hiccup (5xx) is tried 3 times (2 s, 5 s, 10 s)
 async function call(action, body = {}) {
-  const r = await fetch(SB + '/functions/v1/portal', { method: 'POST', headers: { 'content-type': 'application/json', 'x-portal-token': TOKEN }, body: JSON.stringify({ action, ...body }) });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok || j.error) throw new Error(`${action}: ${j.error || r.status}`);
-  return j;
+  for (let i = 0; ; i++) {
+    let r;
+    try { r = await fetch(SB + '/functions/v1/portal', { method: 'POST', headers: { 'content-type': 'application/json', 'x-portal-token': TOKEN }, body: JSON.stringify({ action, bv: BRIDGE_VERSION, pc: env.COMPUTERNAME || '', ...body }), signal: AbortSignal.timeout(60000) }); }
+    catch (e) { if (i < 3) { await new Promise((ok) => setTimeout(ok, [2000, 5000, 10000][i])); continue; } throw new Error(`${action}: ${e.message || e} (Sarwa Chronic not reachable)`); }
+    if (r.status >= 500 && i < 3) { await new Promise((ok) => setTimeout(ok, [2000, 5000, 10000][i])); continue; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(`${action}: ${j.error || r.status}`);
+    return j;
+  }
+}
+// a reply's result must reach Sarwa Chronic: if it cannot be delivered now it is kept in state.json and sent first next time
+async function reportResult(id, res) {
+  try { await call('bridge_job_result', { id, ...res }); delete state._results?.[id]; saveState(); return true; }
+  catch (e) { (state._results ||= {})[id] = { ...res, at: new Date().toISOString() }; saveState(); log('result kept for later', id, res.result, String(e.message || e).slice(0, 150)); return false; }
+}
+async function flushResults() {
+  for (const [id, res] of Object.entries(state._results || {})) { const { at, ...r } = res; if (await reportResult(id, r)) log('kept result delivered', id, r.result); else break; }
 }
 
 // ---------------- session and navigation ----------------
@@ -431,6 +446,7 @@ async function cycle(page, full) {
   log('reconcile', JSON.stringify({ shown_on_report: shown, read: rows.length, missing: rec.missing_tickets, closed_elsewhere: rec.closed_on_portal_still_open_here }));
   log('cycle', full ? 'full' : 'changed', `${((Date.now() - t0) / 1000).toFixed(0)} s`);
   await outboundNow(page);
+  await lateConfirm(page).catch((e) => { log('late check failed', String(e.message || e).slice(0, 200)); if (e instanceof Blocked) throw e; });
   // requests that left the list (decided / changed directly on the portal): look each one up and send its current state
   // in - the server marks the ticket "Changed on the portal" and never overwrites. At most 5 per cycle, each every 30 min.
   state._lookup ||= {};
@@ -500,6 +516,30 @@ async function resetReport(page) {
   }
 }
 
+// ---------------- status sync for replies that timed out (read only) ----------------
+// A reply failed by the 15-minute timeout may still have reached the portal (saved, then the connection dropped). For up to
+// 48 h the bridge looks for it in the request's Timeline every 15 min: found -> reported as sent (once, nothing is resent).
+async function lateConfirm(page) {
+  const jobs = (await call('bridge_unconfirmed', { limit: 4 })).jobs || [];
+  state._late ||= {}; let checked = 0;
+  for (const job of jobs) {
+    if (checked >= 2 || Date.now() - (state._late[job.id] || 0) < 15 * 60000) continue;
+    state._late[job.id] = Date.now(); saveState(); checked++;
+    const id = String(job.request_id);
+    const row = await findAnywhere(page, id, await cardOf(id));
+    if (!row) { log('late check', job.id, id, 'request not found on the portal'); continue; }
+    const tl = await readTimeline(page, id); const core = coreOf(job);
+    const targetName = Object.keys(STATUS).find((k) => STATUS[k] === +statusFor(job, STATUS[row['Chronic Status Name']] ?? 3) && !k.includes(' ')) || row['Chronic Status Name'];
+    const day = String(job.queued_at || '').slice(0, 10);
+    const dayOf = (s) => { const m = String(s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : '9999'; };
+    const hit = tl.find((r) => !st(id).mine.includes(tlId(id, r)) && matchOurs(r, job, targetName, core) && (!day || dayOf(r['Creation Date']) >= day));
+    await resetReport(page).catch(() => { });
+    if (!hit) { log('late check', job.id, id, 'not on the portal - stays Sync failed (Try again in the ticket)'); continue; }
+    await reportResult(job.id, { ...confirmed(job, hit, row), late_check: true });
+    log('late check', job.id, id, 'found in the Timeline - marked sent');
+  }
+}
+
 // ---------------- read-only re-check of replies marked "conflict" (admin approved, 22 Nov 2026) ----------------
 // For each job: find the request (Pending list or card filter), read its Request Timeline, and look for an entry that matches
 // the reply (same target status; our text if there was one; on or after the day it was queued). Opens no form, submits
@@ -534,6 +574,7 @@ const CHANGED_EVERY_MS = 120000;    // known requests: timeline check (+ reconci
 const FULL_EVERY_MS = 10 * 60000;   // full pass: files too
 const firstSeen = {};               // job id -> when the bridge first saw it queued (queue-age alert)
 async function outboundNow(page) {
+  if (Object.keys(state._results || {}).length) await flushResults();
   const jobs = (await call('bridge_peek', { limit: 5 })).jobs || [];
   for (const j of jobs) {
     firstSeen[j.id] ||= Date.now();
@@ -548,7 +589,7 @@ async function outboundNow(page) {
     claimed.queued_s = ((Date.now() - firstSeen[j.id]) / 1000).toFixed(1);
     let res;
     try { res = await submitReply(page, claimed); } catch (e) { res = e instanceof Blocked ? { result: 'error', error: e.message } : { result: 'retry', error: String(e.message || e).slice(0, 300) }; }
-    await call('bridge_job_result', { id: claimed.id, ...res }); log('job', claimed.id, res.result, res.error || '');
+    await reportResult(claimed.id, res); log('job', claimed.id, res.result, res.error || '');
     delete firstSeen[j.id];
     await pause(1500, 3000);
   }
