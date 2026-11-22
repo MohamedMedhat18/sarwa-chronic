@@ -1033,6 +1033,8 @@ async function runImporter() {
       if (error) throw new Error(error.message);
       if (!data || !data.length) break;
       if (await loadEvents()) DB = fold();   // see what other devices did just now (duplicates, replies)
+      // oldest first: the first email of a conversation opens the ticket, later ones join it (the server returns them unordered)
+      data.sort((a, b) => String(a.received_at || '').localeCompare(String(b.received_at || '')) || a.id - b.id);
       for (let i = 0; i < data.length; i++) {
         const row = data[i];
         setSync('busy', `Importing email ${i + 1} of ${data.length}…`);
@@ -4659,7 +4661,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22b';
+const APP_VERSION = '2026-11-22c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
