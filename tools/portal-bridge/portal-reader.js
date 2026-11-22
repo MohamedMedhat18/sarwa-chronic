@@ -45,11 +45,15 @@
   }
   const reportRows = () => irRows(document.querySelector('#my_ir')).filter((r) => /^\d+$/.test(r['Request Id'] || ''));
   const rowLink = (id, re) => [...document.querySelectorAll('#my_ir a')].find((a) => re.test(a.getAttribute('href') || '') && (re.source.includes('p173') || a.textContent.trim() === String(id)));
-  async function timeline(id) {
+  // the signed address of a request's Timeline (valid for the whole session) - kept to confirm a reply with one GET,
+  // even after a final decision moved the request off the Pending list
+  function timelineUrl(id) {
     const a = rowLink(id, new RegExp('p172_chronic_id=' + id + '(?!\\d)'));
     if (!a) throw new Error('timeline link not found for ' + id);
-    return irRows((await getDoc(dialogUrl(a.getAttribute('href')))).body).filter((r) => r['Chronic Status Name'] || r['Creation Date']);
+    return dialogUrl(a.getAttribute('href'));
   }
+  async function timelineAt(url) { return irRows((await getDoc(url)).body).filter((r) => r['Chronic Status Name'] || r['Creation Date']); }
+  async function timeline(id) { return timelineAt(timelineUrl(id)); }
   // files: { skip: Set of attachment ids already stored (not downloaded again) }
   async function files(id, skip = new Set()) {
     const a = rowLink(id, new RegExp('p173_chronic_id=' + id + '(?!\\d)'));
@@ -102,5 +106,5 @@
     const f = await files(id, new Set(opts.skip || [])); await sleep(400);
     return { req: await toRequest(row, tl, f.files, new Set(opts.mine || [])), seen: f.seen, tlFingerprint: await sha(JSON.stringify(tl)) };
   }
-  window.SarwaPortalReader = { version: 1, reportRows, readRequest, timeline, files, toRequest, historyRow, irRows };
+  window.SarwaPortalReader = { version: 2, reportRows, readRequest, timeline, timelineUrl, timelineAt, files, toRequest, historyRow, irRows };
 })();

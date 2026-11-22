@@ -14,6 +14,7 @@ param(
   [switch] $Live,
   [int] $IntervalMin = 5,
   [switch] $Once,
+  [string] $Recheck = '',   # read-only re-check of "conflict" replies: path of the jobs JSON (nothing is submitted)
   [switch] $Headless
 )
 $ErrorActionPreference = 'Stop'
@@ -34,7 +35,7 @@ if ($Live) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = '*' }
 elseif ($LiveWriteAllow) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = $LiveWriteAllow } else { $env:DRY_RUN = '1'; $env:LIVE_WRITE_ALLOW = '' }
 try {
   Push-Location $PSScriptRoot
-  $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }
+  $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }; if ($Recheck) { $args2 += @('--recheck', $Recheck) }
   $ErrorActionPreference = 'Continue'   # node writes to stderr; keep going and log it (UTF-8)
   & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8
 } finally {

@@ -3373,6 +3373,30 @@ function portalPanel(t) {
     failed && s.error ? el('div', { class: 'small', style: 'color:var(--bad)' }, s.error) : null,
     failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null);
 }
+// Portal health (Settings › Portal): replies waiting, how long a send takes, failures - straight from the outbox (last 24 h)
+function portalHealthBox(s) {
+  const box = el('div', { class: 'slabox', style: 'display:grid;gap:4px' }, el('b', {}, 'Portal health'), el('div', { class: 'small muted' }, 'Loading…'));
+  (async () => {
+    const since = new Date(Date.now() - 86400000).toISOString();
+    const { data, error } = await SB.from('portal_outbox').select('status,created_at,sent_at').gte('created_at', since).limit(2000);
+    if (error) { box.lastChild.textContent = error.message; return; }
+    const rows = data || []; const sent = rows.filter(r => r.status === 'sent' && r.sent_at).map(r => (Date.parse(r.sent_at) - Date.parse(r.created_at)) / 1000).sort((a, b) => a - b);
+    const waiting = rows.filter(r => ['queued', 'sending'].includes(r.status)); const oldest = waiting.length ? Math.max(...waiting.map(r => (Date.now() - Date.parse(r.created_at)) / 1000)) : 0;
+    const failed = rows.filter(r => ['conflict', 'error', 'dead'].includes(r.status)).length;
+    const med = sent.length ? sent[Math.floor(sent.length / 2)] : null, worst = sent.length ? sent[sent.length - 1] : null;
+    const fmt = x => x == null ? '—' : x < 90 ? Math.round(x) + ' s' : Math.round(x / 60) + ' min';
+    const h = s.health || {}; const age = h.at ? (Date.now() - Date.parse(h.at)) / 1000 : null;
+    const warn = (age != null && age > 600) || oldest > 600 || (med != null && med > 120);
+    box.style.borderLeft = '4px solid ' + (warn ? 'var(--bad)' : '#2f8a4f');
+    box.replaceChildren(el('b', {}, 'Portal health (last 24 h)'),
+      el('div', { class: 'small' }, 'Bridge PC: last report ' + (age == null ? 'never' : fmt(age) + ' ago') + (h.ok === false ? ' – ⚠ ' + (h.error || 'problem') : h.ok ? ' – OK' : '')),
+      el('div', { class: 'small' }, 'Replies waiting: ' + waiting.length + (waiting.length ? ' · oldest ' + fmt(oldest) : '')),
+      el('div', { class: 'small' }, 'Send → portal confirmed: median ' + fmt(med) + ' · worst ' + fmt(worst) + ' · ' + sent.length + ' sent'),
+      el('div', { class: 'small', style: failed ? 'color:var(--bad);font-weight:600' : '' }, 'Failed / conflict: ' + failed),
+      warn ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Slower than expected: check the bridge PC (task ChronicPortalBridge) and its portal sign-in.') : null);
+  })();
+  return box;
+}
 // Settings › Portal: connection (admin), status, sync log
 function portalAdmin() {
   const isAdm = ME && ME.role === 'admin'; const box = el('div', { style: 'display:grid;gap:10px' }, el('p', { class: 'small muted' }, 'Checking the connection…')); const logBox = el('div');
@@ -3402,6 +3426,7 @@ function portalAdmin() {
         el('div', { class: 'small' }, 'Queue: ' + (q.queued || 0) + ' waiting · ' + (q.sending || 0) + ' sending · ', el('b', { style: (q.dead || q.error || q.conflict) ? 'color:var(--bad)' : '' }, ((q.dead || 0) + (q.error || 0) + (q.conflict || 0)) + ' failed'), ' (', el('a', { href: '#/tickets?view=portalfail' }, 'Sync failed queue'), ')'),
         s.dryRun !== false ? el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, 'Dry run is ON: decisions and messages on portal tickets are previewed only – nothing is queued or sent.') : null,
         s.lastError ? el('div', { class: 'small', style: 'color:var(--bad)' }, 'Last error: ' + s.lastError) : null),
+      portalHealthBox(s),
       isAdm ? [el('label', { class: 'blk' }, 'Connection', mode), liveBox,
         el('label', { class: 'row', style: 'gap:8px;align-items:center' }, dry, el('span', {}, el('b', {}, 'Dry run'), ' – preview portal replies only (nothing queued, nothing sent, the ticket does not change)')),
         el('label', { class: 'blk' }, 'Live requests – with dry run off, replies to these portal requests really go to the portal (and from there to the member / broker)', liveReq),
