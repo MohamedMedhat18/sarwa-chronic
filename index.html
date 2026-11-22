@@ -838,6 +838,9 @@ function applyEv(S, e) {
       threadKeys(S, t.no, d);
       const at = d.date || e.ts; t.msgs.push({ kind: 'in', id: e.id, at, by: d.fromName || d.fromEmail, ...d });
       if (!t.lastIn || at > t.lastIn) t.lastIn = at; t.updated = e.ts;
+      // the request arrived with its FIRST email: an older email of the conversation that reaches the helpdesk late (recovered,
+      // synced late by Outlook, imported in another order) moves "created" back to it, so SLA and age are counted from the real start
+      if (!d.automated && !t.historical && Date.parse(at) < Date.parse(t.created)) { t.created = at; if (t.history[0]) t.history[0].ts = at; }
       // only an email written AFTER our last reply / the closing is a new customer response. An older email that reaches the helpdesk
       // late (recovered, synced late by Outlook) is added to the conversation but does not reopen a ticket the team already answered.
       // automatic mail (out of office, "No Reply Mail" notifications, delivery reports) joins the conversation but never reopens
@@ -3854,15 +3857,21 @@ const lastOutOf = t => t.msgs.filter(m => m.kind === 'out' && !m.outlook && !m.a
 const replyFailed = t => { const m = lastOutOf(t); return !!m && m.state === 'error' && !t.mergedInto; };
 async function outboxWatch() {
   if (!SB || !STORE.connected || Date.now() - (outboxWatch.at || 0) < 120000) return; outboxWatch.at = Date.now();
-  const since = new Date(Date.now() + CLOCK.off - 15 * 60000).toISOString();
+  const since = new Date(Date.now() + CLOCK.off - 15 * 60000).toISOString(), since10 = new Date(Date.now() + CLOCK.off - 10 * 60000).toISOString();
   const { data } = await SB.from('outbox').select('id,ticket,created_at').eq('status', 'queued').lt('created_at', since).limit(50);
-  const stuck = data || [], failed = [...DB.tickets.values()].filter(replyFailed);
+  // incoming: an email waiting more than 10 minutes to become a ticket, or one the importer marked done without filing it anywhere
+  const { data: mq } = await SB.from('mail_inbox').select('id,path,status,created_at,subject').or('status.eq.new,status.eq.claimed,status.eq.error').lt('created_at', since10).limit(50);
+  const { data: recent } = await SB.from('mail_inbox').select('path,subject').eq('status', 'done').gt('created_at', new Date(Date.now() + CLOCK.off - 2 * DAY).toISOString()).lt('created_at', since10).limit(1000);
+  const lost = (recent || []).filter(r => !DB.processed.has(r.path));
+  const stuck = data || [], failed = [...DB.tickets.values()].filter(replyFailed), waitIn = mq || [];
   let box = document.getElementById('outboxAlert');
-  if (!stuck.length && !failed.length) { if (box) box.remove(); return; }
+  if (!stuck.length && !failed.length && !waitIn.length && !lost.length) { if (box) box.remove(); return; }
   if (!box) { box = el('div', { id: 'outboxAlert', class: 'banner', role: 'alert', style: 'margin:0;border-radius:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }); const v = document.querySelector('.view'); if (v) v.before(box); }
   box.replaceChildren(
     stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 15 min'), ' – check that Outlook is open and connected on the Chronic PC (' + [...new Set(stuck.map(x => x.ticket))].slice(0, 6).join(', ') + ')') : null,
-    failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null);
+    failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null,
+    waitIn.length ? el('span', {}, '⚠ ', el('b', {}, waitIn.length + ' email(s) not turned into tickets for 10+ min'), waitIn.some(x => x.status === 'error') ? ' (import error: ' + waitIn.filter(x => x.status === 'error').length + ')' : ' – keep this page open a minute; if it stays, tell the admin') : null,
+    lost.length ? el('span', {}, '⚠ ', el('b', {}, lost.length + ' email(s) received but not filed'), ' – tell the admin (', lost.slice(0, 3).map(x => x.subject || '(no subject)').join('; '), ')') : null);
 }
 function decisionDialog(t, d, preset) {
   if (isPortal(t)) return portalDecisionDialog(t, d, preset);   // portal request: the decision goes back through the portal
@@ -4705,7 +4714,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22f';
+const APP_VERSION = '2026-11-22g';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
