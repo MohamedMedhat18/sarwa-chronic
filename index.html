@@ -805,6 +805,8 @@ function setStatus(t, s, ts, by) {
 }
 // "customer_response": the customer / provider wrote back on a pending (or closed) ticket – shown until an agent picks it up
 const CR_TAG = 'customer_response';
+// when the team last wrote to the customer (helpdesk reply or Outlook reply; not the automatic acknowledgement)
+const lastAgentOut = t => { let x = ''; for (const m of t.msgs) if (m.kind === 'out' && !m.auto) { const a = m.sentAt || m.at || ''; if (a > x) x = a; } return x; };
 function clearCR(t) { if (!t.custResp) return; t.custResp = null; t.tags = (t.tags || []).filter(x => x !== CR_TAG); }
 function applyEv(S, e) {
   const d = e.d || {}; const t = e.t ? S.tickets.get(e.t) : null;
@@ -834,11 +836,14 @@ function applyEv(S, e) {
       threadKeys(S, t.no, d);
       const at = d.date || e.ts; t.msgs.push({ kind: 'in', id: e.id, at, by: d.fromName || d.fromEmail, ...d });
       if (!t.lastIn || at > t.lastIn) t.lastIn = at; t.updated = e.ts;
-      if (!d.initial && !d.historical && ['Pending', 'Waiting on provider', 'Resolved', 'Closed'].includes(t.status)) {
+      // only an email written AFTER our last reply / the closing is a new customer response. An older email that reaches the helpdesk
+      // late (recovered, synced late by Outlook) is added to the conversation but does not reopen a ticket the team already answered.
+      const newer = Date.parse(at) > Math.max(Date.parse(lastAgentOut(t) || 0) || 0, Date.parse(t.closedAt || t.resolvedAt || 0) || 0);
+      if (!d.initial && !d.historical && newer && ['Pending', 'Waiting on provider', 'Resolved', 'Closed'].includes(t.status)) {
         t.custResp = { at: e.ts, from: t.status, reason: t.pendingReason || (t.status === 'Waiting on provider' ? 'Awaiting third party (GlobeMed / i-CARE / provider)' : '') };
         if (!(t.tags || []).includes(CR_TAG)) t.tags = [...(t.tags || []), CR_TAG];
       }
-      if (!d.initial && !d.historical && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (customer replied)');
+      if (!d.initial && !d.historical && newer && t.status !== 'Open') setStatus(t, 'Open', e.ts, 'System (customer replied)');
       if (!d.initial) t.timeline.push({ ts: e.ts, by: 'System', text: (d.historical ? 'Historical import (already handled in Outlook): ' : '') + (d.internal ? 'Sarwa colleague wrote' : 'Provider replied') + (d.threadBy ? ' (joined by ' + d.threadBy + ')' : '') });
       break;
     }
@@ -4697,7 +4702,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22d';
+const APP_VERSION = '2026-11-22e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
