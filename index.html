@@ -756,8 +756,16 @@ const DEFAULTS = {
 };
 let DB = null; // folded state
 
+// Server time for every change: agent PCs whose clock runs ahead (seen: 23 s – 3.5 min) stamped replies AFTER the Outlook PC's
+// "sent" confirmation. The offset to the server clock is measured at start and every 15 minutes (round-trip corrected).
+const CLOCK = { off: 0, at: 0 };
+async function syncClock() {
+  if (!SB || Date.now() - CLOCK.at < 15 * 60000) return;
+  try { const t0 = Date.now(); const { data, error } = await SB.rpc('server_now'); const t1 = Date.now(); if (error || !data) return; CLOCK.off = Date.parse(data) - (t0 + t1) / 2; CLOCK.at = t1; if (Math.abs(CLOCK.off) > 20000) console.info('Clock of this PC differs from the server by ' + Math.round(CLOCK.off / 1000) + ' s – corrected'); } catch { }
+}
+const nowIso = () => new Date(Date.now() + CLOCK.off).toISOString();
 async function emit(type, t, d) {
-  const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
+  const ts = nowIso(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6);
   const sys = type === 'msg.in' || type === 'email.ignored' || (type === 'ticket.create' && d && d.source === 'email') || (type === 'msg.out' && d && d.auto);
   // EOB approvals are given by the assessor (or admin); an EOB arriving by email is attached automatically
   if ((type === 'eob.add' || type === 'eob.remove') && !(d && d.auto) && !canEOB()) { toast('Only the assessor can upload or remove the EOB approval'); throw new Error('Assessor only'); }
@@ -775,7 +783,10 @@ const rowToEv = r => ({ id: r.id, ts: new Date(r.ts).toISOString(), by: r.actor,
 let refoldT = null;
 function refoldSoon() { clearTimeout(refoldT); refoldT = setTimeout(() => { DB = fold(); scheduleRender(); updateBadges(); }, 120); }
 async function nextNo() { const { data, error } = await SB.rpc('next_ticket'); if (error) throw new Error('Could not get a ticket number: ' + error.message); return data; }
-function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {}, midTicket: new Map(), convTicket: new Map() }; }
+function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {}, midTicket: new Map(), convTicket: new Map(), outState: new Map() }; }
+// the Outlook PC's "sent / error" confirmation can be replayed BEFORE the reply itself (an agent PC clock ahead of the server, or a
+// slow save) – keep it and apply it whenever the reply shows up, so a sent reply never stays "Waiting for the Outlook PC"
+function applyOutState(m, st) { m.state = st.status; m.error = st.error || ''; m.sentAt = st.sentAt || st.ts; }
 // conversation keys of a message -> its ticket (Message-ID like Outlook/Freshdesk, and Outlook's ConversationID)
 const normMid = s => String(s || '').trim().toLowerCase().replace(/^<|>$/g, '');
 function threadKeys(S, no, d) {
@@ -844,10 +855,16 @@ function applyEv(S, e) {
         break;
       }
       t.msgs.push({ kind: 'out', id: e.id, at: e.ts, by: d.auto ? 'Auto-acknowledgement' : e.by, state: 'queued', ...d }); if (!t.firstResponseAt && !d.auto) t.firstResponseAt = e.ts; t.lastOut = e.ts; t.updated = e.ts;
+      { const st = d.outId && S.outState && S.outState.get(d.outId); if (st) applyOutState(t.msgs[t.msgs.length - 1], st); }
       if (d.reminder) { t.remindersSent = (t.remindersSent || 0) + 1; t.lastReminderAt = e.ts; }
       if (!d.auto) clearCR(t); break;
     }
-    case 'out.status': { if (!t) return; threadKeys(S, t.no, d); const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m) { m.state = d.status; m.error = d.error || ''; m.sentAt = d.sentAt || e.ts; } if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break; }
+    case 'out.status': {
+      const st = { status: d.status, error: d.error || '', sentAt: d.sentAt || e.ts, ts: e.ts };
+      if (d.outId) { const prev = S.outState && S.outState.get(d.outId); if (!prev || prev.status !== 'sent') (S.outState || (S.outState = new Map())).set(d.outId, st); }   // "sent" wins over an earlier error
+      if (!t) return; threadKeys(S, t.no, d); const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m && (m.state !== 'sent' || d.status === 'sent')) applyOutState(m, st);
+      if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break;
+    }
     case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; if (!d.auto) clearCR(t); break;
     case 'update': {
       if (!t) return;
@@ -966,7 +983,8 @@ async function poll() {
   try {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
-    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); portalTick().catch(() => { });
+    await syncClock();
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -1287,6 +1305,7 @@ const VIEW_DEFS = {
   overdue: { label: 'Overdue tickets', f: (t, s) => s.overdue },
   today: { label: 'Due today', f: (t, s) => s.dueToday },
   responded: { label: 'Provider responded', f: t => t.status !== 'Closed' && t.lastIn && (!t.lastOut || t.lastIn > t.lastOut) && t.msgs.some(m => m.kind === 'in' && !m.initial) },
+  notsent: { label: 'Replies not sent', desc: 'Our last reply could not be sent by Outlook – open the ticket and press Try again', f: t => replyFailed(t) },
   custresp: { label: 'Customer response', desc: 'Was pending (or closed) – the customer replied. Open, tagged customer_response, until an agent picks it up', f: t => !!t.custResp && openT(t) && !t.mergedInto },
   pendall: { label: 'Pending – all', desc: 'Every pending ticket (SLA paused)', f: t => !!pendingReasonOf(t) && !t.mergedInto },
   remind: { label: 'Pending – reminder due', desc: 'Waiting for the customer longer than the reminder rule – send the reminder (Reply All)', f: t => !t.mergedInto && /^remind/.test(pendingStage(t)) },
@@ -1365,6 +1384,7 @@ function folderPane(view) {
     link('mine', 'Mine', cnt(t => VIEW_DEFS.mine.f(t)), { icon: '◔' }),
     link('unassigned', 'Unassigned', cnt(t => VIEW_DEFS.unassigned.f(t) && !t.mergedInto), { icon: '○' }),
     link('custresp', 'Customer response', cnt(t => VIEW_DEFS.custresp.f(t)), { icon: '✉', tone: 'warn', title: VIEW_DEFS.custresp.desc }),
+    (() => { const n = cnt(t => VIEW_DEFS.notsent.f(t)); return n ? link('notsent', 'Replies not sent', n, { icon: '✕', tone: 'bad', title: VIEW_DEFS.notsent.desc }) : null; })(),
     link('responded', 'Provider responded', cnt(t => VIEW_DEFS.responded.f(t) && openT(t)), { icon: '↘' }),
     link('overdue', 'Overdue', cnt((t, s) => s.overdue), { icon: '!', tone: 'bad' }),
     link('today', 'Due today', cnt((t, s) => s.dueToday), { icon: '◷', tone: 'warn' }),
@@ -1675,7 +1695,7 @@ const VIEWED = new Map();
 async function logView(no) {   // quietly, at most once per agent per ticket every 15 minutes – no redraw
   if (!ME || !SB) return; const k = no, now = Date.now(); if (now - (VIEWED.get(k) || 0) < 15 * 60000) return; VIEWED.set(k, now);
   const t = DB.tickets.get(no); const mine = (t && t.views || []).filter(v => v.by === me()).pop(); if (mine && now - new Date(mine.ts) < 15 * 60000) return;
-  const ts = new Date().toISOString(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6); const e = { id, ts, by: me(), pc: MACHINE, type: 'view', t: no, d: {} };
+  const ts = nowIso(); const id = ts.replace(/\D/g, '').slice(0, 17) + '_' + rand(6); const e = { id, ts, by: me(), pc: MACHINE, type: 'view', t: no, d: {} };
   const { error } = await SB.from('events').insert({ id, ts, actor: e.by, pc: e.pc, type: 'view', t: no, d: {} }); if (error) return;
   STORE.events.set(id, e); applyEv(DB, e);
 }
@@ -3820,6 +3840,22 @@ async function cycleHousekeeping() {
   }
 }
 const pendingStageOk = t => pendingStage(t);
+// Safeguard for the send cycle: a banner for everyone when replies wait for the Outlook PC longer than 15 minutes (Outlook closed,
+// disconnected, PC off) or when a reply could not be sent (open the ticket › Try again). Checked every poll, at most every 2 minutes.
+const lastOutOf = t => t.msgs.filter(m => m.kind === 'out' && !m.outlook && !m.auto).sort((a, b) => a.at < b.at ? -1 : 1).pop();
+const replyFailed = t => { const m = lastOutOf(t); return !!m && m.state === 'error' && !t.mergedInto; };
+async function outboxWatch() {
+  if (!SB || !STORE.connected || Date.now() - (outboxWatch.at || 0) < 120000) return; outboxWatch.at = Date.now();
+  const since = new Date(Date.now() + CLOCK.off - 15 * 60000).toISOString();
+  const { data } = await SB.from('outbox').select('id,ticket,created_at').eq('status', 'queued').lt('created_at', since).limit(50);
+  const stuck = data || [], failed = [...DB.tickets.values()].filter(replyFailed);
+  let box = document.getElementById('outboxAlert');
+  if (!stuck.length && !failed.length) { if (box) box.remove(); return; }
+  if (!box) { box = el('div', { id: 'outboxAlert', class: 'banner', role: 'alert', style: 'margin:0;border-radius:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }); const v = document.querySelector('.view'); if (v) v.before(box); }
+  box.replaceChildren(
+    stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 15 min'), ' – check that Outlook is open and connected on the Chronic PC (' + [...new Set(stuck.map(x => x.ticket))].slice(0, 6).join(', ') + ')') : null,
+    failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null);
+}
 function decisionDialog(t, d, preset) {
   if (isPortal(t)) return portalDecisionDialog(t, d, preset);   // portal request: the decision goes back through the portal
   if (d === 'Pending') return pendingDialog(t, preset, { decision: true });   // one Pending flow: reason → sub-folder, request email
@@ -4661,7 +4697,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22c';
+const APP_VERSION = '2026-11-22d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
