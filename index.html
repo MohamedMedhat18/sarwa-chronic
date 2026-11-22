@@ -1037,7 +1037,9 @@ async function runImporter() {
         setSync('busy', `Importing email ${i + 1} of ${data.length}…`);
         try {
           const meta = row.meta || {}, historical = meta.folder === 'Done' || meta.historical === true, re = historical && meta.reimport === true;
-          if (!DB.processed.has(row.path) || re) await importFile(row.path, { receivedAt: row.received_at, dir: row.direction || 'in', meta, historical, force: re });
+          // recovered emails (e.g. skipped before as "no attachments"): ticket created now, without an acknowledgement email
+          const recover = meta.recover === true;
+          if (!DB.processed.has(row.path) || re || recover) await importFile(row.path, { receivedAt: row.received_at, dir: row.direction || 'in', meta, historical, force: re || recover, noAck: recover });
           await SB.from('mail_inbox').update({ status: 'done', error: null }).eq('id', row.id);
         } catch (e) {
           console.error(e);
@@ -1152,6 +1154,12 @@ async function autoEOB(no, counted, saved) {
     } catch (x) { console.warn('EOB check', a.name, x); }
   }
 }
+// automatic mail that should not become a ticket (the same checks also stop the auto-acknowledgement)
+function isAutomatedMail(email) {
+  const s = String(email.subject || ''), f = String(email.fromEmail || '').toLowerCase();
+  return /^\s*(automatic reply|auto(matic)?[- ]?reply|out of (the )?office|رد تلقائي|undeliver|delivery (status|failure|has failed)|mail delivery|returned mail|ticket received|read:|تمت القراءة)/i.test(s)
+    || /no reply mail|survey request for chronic@/i.test(s) || /^(no-?reply|do-?not-?reply|mailer-daemon|postmaster)@/.test(f);
+}
 async function importFile(name, opts) {
   let email;
   const f = await FS.file(name); const buf = await f.arrayBuffer();   // download problems: retried later
@@ -1177,8 +1185,11 @@ async function importFile(name, opts) {
     await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || ''), historical: !!opts.historical }); await autoEOB(th.t.no, counted, d.atts);
     return;
   }
-  if (!counted.length && !DB.settings.general.noAttachTickets && !opts.force && !opts.historical) {
-    await emit('email.ignored', null, { key: name, file: name, mid, why: atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
+  // Every real email becomes a ticket – also without attachments (renewals, report requests, follow-ups; e.g. "#Systics Trade
+  // 50048941 #Chronic Renewal" was skipped 4 times as "no attachments"). Only automatic mail is kept out (list "Emails not turned
+  // into tickets"): out of office, delivery reports, "ticket received" receipts, no-reply notifications, survey spam.
+  if (!counted.length && !opts.force && !opts.historical && (isAutomatedMail(email) || DB.settings.general.skipNoAttach === true)) {
+    await emit('email.ignored', null, { key: name, file: name, mid, why: isAutomatedMail(email) ? 'automatic message' : atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
   }
   const G = DB.settings.general;
   const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: senderGroupOf(email.fromEmail) || G.defaultGroup, agent: '', tags: [] };
@@ -1188,7 +1199,7 @@ async function importFile(name, opts) {
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '', historical: !!opts.historical });
   const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || ''; if (opts.historical) d.historical = true;
   await emit('msg.in', no, d); await autoEOB(no, counted, d.atts);
-  if (!opts.historical) await maybeAutoAck(no, email);
+  if (!opts.historical && !opts.noAck && !isAutomatedMail(email)) await maybeAutoAck(no, email);
 }
 /* Automatic acknowledgement: tells the sender the ticket number right away (sent by Outlook like any reply) */
 function ackEligible(email, A) {
@@ -4647,7 +4658,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-21a';
+const APP_VERSION = '2026-11-22a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
