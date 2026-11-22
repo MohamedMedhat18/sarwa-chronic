@@ -86,3 +86,27 @@ Settings > Portal: dry run OFF, Live requests = the approved request numbers; "L
 A decision or message is "sent" only when the bridge sees the new entry in the portal's Request Timeline. Failures are
 retried (1, 2, 4, 8, 16 min); then the job goes to "Portal - Sync failed" and an admin alert email is queued. A request
 changed on the portal by someone else is never overwritten ("Changed on the portal").
+
+## Stuck replies: safeguards (22 Nov 2026)
+
+Incident: CHR-000361 / request 38219 (Rejected) showed "Waiting for the portal" for 10 h. The server marked the job
+`sending` while the bridge's connection to Supabase dropped (09:42-09:49 UTC, "fetch failed"), so the bridge never got it;
+the bridge only looks at `queued` jobs and nothing timed it out. Fixed by one retry on 22 Nov 20:19 UTC (portal Timeline
+checked first; confirmed Rejected, WhatsApp by the portal).
+
+What prevents it now:
+| Safeguard | Where |
+|---|---|
+| Lease: a claimed reply with no answer for 5 min goes back to the queue; the retry is attempt 2+, so the bridge checks the Request Timeline before Save (never twice) | `sweep()` in the portal function, `portal_claim_*` |
+| At most 3 tries (back-off 1 min, 3 min), then Sync failed + admin email | `MAX_ATTEMPTS`, `RETRY_MIN` |
+| 15-minute timeout: not confirmed -> `dead` (http 408) with the cause (bridge silent, sign-in expired, last error); one alert email; ticket shows "Failed - not confirmed in 15 min" + Try again | `sweep()` step 2 |
+| Status sync: the app's view (portal.status events) is compared with the queue every minute and corrected | `sweep()` step 3 |
+| Late confirmation: for 48 h the bridge looks for timed-out replies in the portal Timeline (read only) and marks the ones that arrived as sent | `bridge_unconfirmed`, `lateConfirm()` |
+| Results are kept in state.json on the bridge PC until Sarwa Chronic receives them; network calls are retried 3 times | `reportResult()`, `call()` |
+| Bridge silent 6+ min or portal sign-in expired: shown in Settings > Portal > Portal health and emailed (hourly); replies stay queued | `bridgeProblem()` |
+| Old bridge copies (and the old in-page agent) cannot claim replies (version 6+) | `BRIDGE_MIN_VERSION` |
+| Daily list (07:00 Cairo) of every reply not confirmed in the last 7 days, to the admins | `sweep()` step 5 |
+
+The sweep runs inside the portal function at most once a minute, triggered by the bridge's polls and by every open app's
+tick, so it also runs while the bridge PC is down. One job per ticket while open (`portal_outbox_one_open`), job id =
+idempotency key.

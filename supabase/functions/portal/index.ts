@@ -558,7 +558,7 @@ async function sweep(c: Cfg, force = false) {
   }
   // 5) daily list (from 07:00 Cairo): every reply not confirmed and not cancelled in the last 7 days
   if (new Date(now).getUTCHours() >= 5) {
-    const { data: go } = await db.rpc('portal_try_lock', { p_key: 'daily_check', p_secs: 20 * 3600 });
+    const { data: go } = await db.rpc('portal_try_lock', { p_key: 'daily_check:' + new Date(now).toISOString().slice(0, 10), p_secs: 20 * 3600 });   // once per date (new key each day)
     if (go) {
       const { data: open } = await db.from('portal_outbox').select('id,ticket,request_id,status,error,waiting_since,job').in('status', ['queued', 'sending', 'dead', 'error', 'conflict']).gte('created_at', new Date(now - 7 * 86400000).toISOString()).order('waiting_since');
       const list = (open || []) as any[]; out.daily = list.length;
