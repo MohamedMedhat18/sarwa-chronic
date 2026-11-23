@@ -1709,7 +1709,24 @@ function removedFrom(prop, to, cc) {
   const typed = recipTokens([to, cc].join(';')); const keys = new Set(typed.map(recipKey)), names = new Set(typed.map(x => String(x.name || '').toLowerCase()).filter(Boolean));
   return [...prop.toList, ...prop.ccList].filter(x => !keys.has(recipKey(x)) && !(x.name && names.has(x.name.toLowerCase())));
 }
-async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder, exact, removed }) {
+// the same email to the same people with the same text within 2 minutes is a double click / second tab / retry - never sent twice
+const sameReplySig = (to, html) => String(to || '').toLowerCase().replace(/\s+/g, '') + '|' + htmlToPlain(html || '').replace(/\s+/g, ' ').trim();
+function recentSameReply(t, to, html) {
+  const sig = sameReplySig(to, html), now = Date.now();
+  const all = [t, ...(t.mergedFrom || []).map(n => DB.tickets.get(n)).filter(Boolean)].flatMap(x => x.msgs);
+  return all.find(m => m.kind === 'out' && !m.portal && !m.auto && now - Date.parse(m.at) < 120000 && m.state !== 'error' && sameReplySig(m.to, m.html) === sig) || null;
+}
+// after sending: the same email to the same people twice within 30 min (shown on the ticket; also in the daily portal check)
+function dupSendsOf(t) {
+  const outs = t.msgs.filter(m => m.kind === 'out' && !m.portal && !m.auto && !m.forward && m.state !== 'error'); const res = [];
+  for (let i = 0; i < outs.length; i++) for (let j = i + 1; j < outs.length; j++) {
+    const a = outs[i], b = outs[j];
+    if (Math.abs(Date.parse(a.at) - Date.parse(b.at)) < 1800000 && sameReplySig(a.to, a.html) === sameReplySig(b.to, b.html)) res.push([a, b]);
+  }
+  return res;
+}
+async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder, exact, removed, replyId }) {
+  if (!forward) { const dup = recentSameReply(t, to, html); if (dup) throw new Error('This exact reply already went to the same people ' + rel(dup.at) + ' – not sent twice'); }
   // Reply All: the Outlook PC keeps Outlook's own Reply All list and adds what is typed here. Only people an agent REMOVED in the
   // reply box are left out (job.removed) – "Try again", reminders and the acknowledgement never remove anyone.
   // "exact": only the people typed (e.g. the people an earlier reply missed) – used only when an agent asks for it.
@@ -1728,7 +1745,7 @@ async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, 
     ...(forward ? { forward: true, fwdHtml: forward.html, fwdPaths: fwdAtts.map(a => a.path) } : {}) };
   const { error } = await SB.from('outbox').insert({ id: outId, ticket: t.no, job, status: 'queued' });
   if (error) { toast((forward ? 'Forward' : 'Reply') + ' not queued: ' + error.message); throw new Error(error.message); }
-  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(removed.length ? { removed } : {}), ...(exact ? { exact: true } : {}), ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
+  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(replyId ? { replyId } : {}), ...(removed.length ? { removed } : {}), ...(exact ? { exact: true } : {}), ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
 }
 /* ---- Activity: every action on a ticket with its details (also who opened it) ---- */
@@ -1794,7 +1811,7 @@ function ticketView(r) {
   const layout = () => newestFirst() ? left.replaceChildren(top, edHost, thread) : left.replaceChildren(top, thread, edHost);
   layout();
   let mode = 'reply'; const files = [];
-  let chMail = true, chPortal = true;   // email + portal ticket: which channels this reply goes to
+  let chMail = null, chPortal = true;   // email + portal ticket: which channels this reply goes to (email: decided on first draw)
   const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
   // To / Cc like Outlook's Reply All: the sender of the newest email + everyone who was in its To / Cc (the agent can remove people)
   const toIn = el('input', { type: 'text', 'aria-label': 'To', placeholder: 'name@company.com; …' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'everyone in copy' });
@@ -1897,6 +1914,8 @@ function ticketView(r) {
   // email + portal ticket: tick the channels; who receives it is shown before sending
   function channelBox(t) {
     const p = t.portal; const fin = PORTAL_FINAL.includes(+p.statusCode);
+    const overlap = portalMailOverlap(t, toIn.value, ccIn.value);
+    if (chMail === null) chMail = !overlap;   // the portal already emails the broker: our email would be a 2nd copy - off by default
     const cb = (on, label, set) => el('label', { class: 'row', style: 'gap:6px;align-items:center;font-weight:600;cursor:pointer' }, el('input', { type: 'checkbox', checked: on, onchange: e => { set(e.target.checked); drawEditor(); } }), label);
     return [el('div', { class: 'row', style: 'gap:16px;padding:8px 12px 0;flex-wrap:wrap;align-items:center' }, el('span', { class: 'small muted' }, 'Send to:'),
         cb(chMail, '✉ Email (Reply All)', v => { chMail = v; }),
@@ -1904,6 +1923,7 @@ function ticketView(r) {
       // email: the same To / Cc boxes and recipients line as any email reply (everyone who receives it, before sending)
       chMail ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       chPortal ? el('div', { class: 'small', style: 'padding:4px 12px 0;color:#1d5c52;font-weight:600' }, '⇄ Portal request #' + p.requestId + ' (now ' + (p.statusName || '—') + ') → ' + portalRecipient(t) + ', sent by the portal' + (fin ? ' – already decided on the portal: this goes as a message only.' : '.') + ' Approved / Rejected / Pending: use the Decision buttons (they can email too).') : null,
+      chMail && chPortal && overlap ? el('div', { class: 'small', style: 'padding:4px 12px 0;color:var(--bad);font-weight:600' }, '⚠ ' + overlap + ' would get this twice: the portal emails them too. Untick one channel.') : null,
       !chMail && !chPortal ? el('div', { class: 'small', style: 'padding:4px 12px 0;color:var(--bad);font-weight:600' }, 'Tick at least one channel') : null];
   }
   async function send() {
@@ -1932,16 +1952,18 @@ function ticketView(r) {
         if (!chMail && !chPortal) { toast('Tick at least one channel (Email / Portal).'); sendBtn.disabled = false; return; }
         if (chPortal && after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
         const to = toIn.value.trim(); if (chMail && !/@/.test(to)) { toast('Enter the email address in "To" (or untick Email).'); toIn.focus(); sendBtn.disabled = false; return; }
-        const sent = [];
+        if (chMail && chPortal && portalMailOverlap(t, to, ccIn.value) && !confirm(portalMailOverlap(t, to, ccIn.value) + ' will receive this twice (from the portal and from our email). Send to both anyway?')) { sendBtn.disabled = false; return; }
+        const mPlain = htmlToPlain(body); const mLang = isAr(mPlain) ? 'AR' : /[A-Za-z]{3}/.test(mPlain) ? 'EN' : t.lang;
+        const mailHtml = `<div dir="${mLang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br><br>${fillPlaceholders(DB.settings.signature[mLang] || '', t)}</div>`;
+        if (chMail) { const dup = recentSameReply(t, to, mailHtml); if (dup) { toast('This exact reply already went to the same people ' + rel(dup.at) + ' – not sent twice'); sendBtn.disabled = false; return; } }   // checked before ANY channel goes
+        const sent = []; const replyId = replyIdNew();
         if (chPortal) {
-          if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: chMail ? {} : (after || {}) }) === 'dry') { sendBtn.disabled = false; return; }
+          if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: chMail ? {} : (after || {}), replyId }) === 'dry') { sendBtn.disabled = false; return; }
           sent.push('portal (' + portalRecipient(t) + ')');
         }
         if (chMail) {
-          const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
-          const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br><br>${fillPlaceholders(DB.settings.signature[lang] || '', t)}</div>`;
           const rem = removedFrom(replyAllOf(t), to, ccIn.value.trim());
-          try { await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), inline: B.inline, removed: rem.map(x => x.email || x.name) }); sent.push('email (' + (recipTokens(to).length + recipTokens(ccIn.value).length) + ' recipients)'); }
+          try { await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html: mailHtml, files: files.slice(), inline: B.inline, removed: rem.map(x => x.email || x.name), replyId }); sent.push('email (' + (recipTokens(to).length + recipTokens(ccIn.value).length) + ' recipients)'); }
           catch (x) { toast((sent.length ? 'Portal: queued. ' : '') + 'Email: not queued – ' + x.message); throw x; }
           if (after) await emit('update', no, after);
         }
@@ -1987,6 +2009,7 @@ function ticketView(r) {
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
       t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
       recipMissAt(t).length ? el('div', { class: 'banner', role: 'alert', style: 'border-radius:8px' }, '⚠ ', el('b', {}, 'Reply All check: ' + recipMissAt(t).length + ' repl' + (recipMissAt(t).length > 1 ? 'ies' : 'y') + ' did not reach everyone'), ' – not received by ' + [...new Set(recipMissAt(t).flatMap(m => recipMissing(m).map(recipText)))].join('; ') + '. See the reply below (nothing is re-sent automatically).') : null,
+      ...dupSendsOf(t).slice(0, 2).map(([a, b]) => el('div', { class: 'banner', role: 'alert', style: 'border-radius:8px' }, '⚠ ', el('b', {}, 'The same email went twice'), ' to ' + a.to + ' (' + fmtDate(a.at) + ' and ' + fmtDate(b.at) + '). Nothing is sent automatically – decide whether the client needs a note.')),
       // not certain enough to merge by itself: shown for the team to confirm (certain ones are merged by the server)
       ...dupHints(t).map(h => el('div', { class: 'banner', style: 'border-radius:8px;background:var(--warn-bg);color:inherit' },
         el('b', {}, h.file ? '⚠ Same request? ' : 'Possible duplicate: '), el('a', { href: '#/t/' + h.o.no }, h.o.no), ' (' + h.o.status + (isPortal(h.o) ? ' · portal #' + h.o.portal.requestId : '') + ') – ' + h.why + (h.file ? ' and a file of the same size ("' + h.file + '")' : ', within 3 days') + '.',
@@ -3303,6 +3326,9 @@ const isPortal = t => !!(t && t.portal && t.portal.requestId);   // created from
 // email AND portal in one ticket (the same request came both ways): one reply can go to the chosen channels
 const isDual = t => isPortal(t) && (t.source !== 'portal' || !!t.portalLinked || (t.mergedFrom || []).some(n => ((DB.tickets.get(n) || {}).source || 'portal') !== 'portal'));
 const mailTarget = t => { const R = replyAllOf(t); return /@/.test(R.to || '') ? R : null; };
+// the portal already EMAILS this person (a broker request: the portal's Reply mails the broker) - our email would be a 2nd copy
+const portalMailOverlap = (t, to, cc) => { const b = String(((t && t.portal) || {}).brokerMail || '').toLowerCase().trim(); return b && String((to || '') + ';' + (cc || '')).toLowerCase().includes(b) ? b : ''; };
+const replyIdNew = () => 'r_' + Date.now().toString(36) + rand(4);   // one id per reply, shared by every channel it goes to
 const PORTAL_FINAL = [4, 5, 7, 8];
 const portalBusy = t => !!(t && t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state));
 function portalRecipient(t) {
@@ -3410,17 +3436,17 @@ function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
   return 'dry';
 }
 // queue one decision / message for the portal (the only way a portal ticket answers the requester)
-async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {} }) {
+async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {}, replyId = '' }) {
   if (!isPortal(t)) throw new Error('Not a portal request');
   if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
   if (PORTAL_DRY || !portalLiveOk(t)) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   const html = textToHtml(text || '');
-  const job = { decision, text: text || '', html, reason, missing, lang: t.lang === 'EN' ? 'EN' : 'AR', agent: me(), agentEmail: (ME && ME.email) || '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), ticketUpdate, queuedAt: new Date().toISOString() };
+  const job = { decision, text: text || '', html, reason, missing, lang: t.lang === 'EN' ? 'EN' : 'AR', agent: me(), agentEmail: (ME && ME.email) || '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), ticketUpdate, queuedAt: new Date().toISOString(), ...(replyId ? { replyId } : {}) };
   const { error } = await SB.from('portal_outbox').insert({ id, ticket: t.no, request_id: t.portal.requestId, job, status: 'queued' });
   if (error) throw new Error(/portal_outbox_one_open/.test(error.message) ? 'A decision for this ticket is already on its way to the portal' : 'Not queued: ' + error.message);
-  await emit('portal.queued', t.no, { jobId: id, decision, reason, text: text || '', html, atts, to: portalRecipient(t), channel: t.portal.brokerMail ? 'email' : 'whatsapp' });
+  await emit('portal.queued', t.no, { jobId: id, decision, reason, text: text || '', html, atts, to: portalRecipient(t), channel: t.portal.brokerMail ? 'email' : 'whatsapp', ...(replyId ? { replyId } : {}) });
   portalCall({ action: 'push' }).catch(e => console.warn('portal push', e));   // the server also retries on its own
   return id;
 }
@@ -3458,9 +3484,12 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
     el('div', {}, el('div', { class: 'small muted' }, 'Attachments (screenshots, approval letter…) – also paste a screenshot with Ctrl+V'), fileIn, filesBox)].filter(Boolean));
   // the same request also came by email: the same answer can go to the email thread too (Reply All), in one step
   const MT = isDual(t) ? mailTarget(t) : null;
-  const alsoMail = MT ? el('input', { type: 'checkbox', checked: !opts.noMail }) : null;
-  const mailRow = MT ? el('label', { class: 'row', style: 'gap:6px;align-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:6px 8px' }, alsoMail,
-    el('span', {}, el('b', {}, '✉ Also by email (Reply All)'), ' to ' + MT.to + (MT.cc ? ' + ' + MT.cc.split(';').filter(x => x.trim()).length + ' in Cc' : '') + ' – the same message, from ' + DB.settings.general.mailbox)) : null;
+  const overlap = MT ? portalMailOverlap(t, MT.to, MT.cc) : '';
+  const alsoMail = MT ? el('input', { type: 'checkbox', checked: !opts.noMail && !overlap }) : null;
+  const mailRow = MT ? el('div', { style: 'display:grid;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:6px 8px' },
+    el('label', { class: 'row', style: 'gap:6px;align-items:center' }, alsoMail,
+      el('span', {}, el('b', {}, '✉ Also by email (Reply All)'), ' to ' + MT.to + (MT.cc ? ' + ' + MT.cc.split(';').filter(x => x.trim()).length + ' in Cc' : '') + ' – only YOUR text below (the portal\'s own template stays on the portal), with our signature')),
+    overlap ? el('div', { class: 'small', style: 'color:var(--bad);font-weight:600' }, '⚠ The portal already emails ' + overlap + ' with this decision – ticking this sends them a second copy.') : null) : null;
   const body = el('div', { style: 'display:grid;gap:8px' }, hint, mailRow, d === 'Approved' ? null : el('label', {}, d === 'Pending' ? 'Pending reason' : 'Reason', reason), el('label', {}, 'Note', note), msgBox);
   body.addEventListener('paste', e => { const fl = [...((e.clipboardData && e.clipboardData.items) || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean); if (!fl.length) return; e.preventDefault(); for (const f of fl) files.push(new File([f], f.name && !/^image\.\w+$/.test(f.name) ? f.name : 'screenshot-' + new Date().toISOString().slice(0, 19).replace(/\D/g, '') + '.' + ((f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')), { type: f.type })); drawFiles(); });
   refresh();
@@ -3476,15 +3505,22 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
       try {
         if (internal()) { await emit('update', t.no, { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec }); closeDialog(); toast(t.no + ': Pending – ' + reason.value + ' (internal)'); return; }
         const ticketUpdate = d === 'Pending' ? { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec } : { ...dec, status: D.status };
-        const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate });
+        // the email carries the agent's OWN text only (a full letter already has its greeting and closing). The portal's
+        // template is NOT put in front of it - that made the client read the greeting and the approval twice (CHR-000348,
+        // 23/11). Only when the agent wrote nothing does the email use the portal's text, so it is never empty.
+        const wantMail = !!(alsoMail && alsoMail.checked); const own = msg.value.trim();
+        const mLang = own ? (isAr(own) ? 'AR' : 'EN') : t.lang === 'EN' ? 'EN' : 'AR';
+        const mailHtml = wantMail ? `<div dir="${mLang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${textToHtml(own || portalPreview(t, PORTAL_STATUS_OF[d], ''))}<br><br>${fillPlaceholders(DB.settings.signature[mLang] || '', t)}</div>` : '';
+        if (wantMail) { const dup = recentSameReply(t, MT.to, mailHtml); if (dup) { e.target.disabled = false; return toast('This exact email already went to the same people ' + rel(dup.at) + ' – untick "Also by email" or wait'); } }
+        if (wantMail && overlap && !confirm(overlap + ' will receive this twice (the portal emails them too). Send the email as well?')) { e.target.disabled = false; return; }
+        const replyId = replyIdNew();
+        const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate, replyId });
         if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
-        if (alsoMail && alsoMail.checked) {   // the email gets exactly what the portal sends (its template + our text), with our signature
-          const full = portalPreview(t, PORTAL_STATUS_OF[d], msg.value.trim()); const lang = t.lang === 'EN' ? 'EN' : 'AR';
-          const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${textToHtml(full)}<br><br>${fillPlaceholders(DB.settings.signature[lang] || '', t)}</div>`;
-          try { await queueReply(t, { to: MT.to, cc: MT.cc, subject: replySubject(t), html, files: files.slice() }); }
+        if (wantMail) {
+          try { await queueReply(t, { to: MT.to, cc: MT.cc, subject: replySubject(t), html: mailHtml, files: files.slice(), replyId }); }
           catch (x) { toast('Portal: queued. Email: not queued – ' + x.message + ' (send it from the reply box)'); }
         }
-        closeDialog(); toast(t.no + ': ' + d + ' sent to the portal' + (alsoMail && alsoMail.checked ? ' and by email' : '') + ' – the ticket updates when the portal confirms');
+        closeDialog(); toast(t.no + ': ' + d + ' sent to the portal' + (wantMail ? ' and by email' : '') + ' – the ticket updates when the portal confirms');
         if (opts.after) opts.after();
       } catch (x) { e.target.disabled = false; toast(x.message); }
     } }, (PORTAL_DRY && !internal() ? 'Preview (dry run) – ' : 'Send – ') + d)]);
@@ -4892,7 +4928,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-23b';
+const APP_VERSION = '2026-11-23c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

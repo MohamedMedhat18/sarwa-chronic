@@ -655,8 +655,18 @@ async function sweep(c: Cfg, force = false) {
     if (go) {
       const { data: open } = await db.from('portal_outbox').select('id,ticket,request_id,status,error,waiting_since,job').in('status', ['queued', 'sending', 'dead', 'error', 'conflict']).gte('created_at', new Date(now - 7 * 86400000).toISOString()).order('waiting_since');
       const list = (open || []) as any[]; out.daily = list.length;
-      await log({ direction: 'system', action: 'daily_check', ok: list.length === 0, detail: { open: list.map((x) => [x.ticket, x.request_id, x.status]) } });
-      if (list.length) await internalMail(c, '', `[Portal] daily check: ${list.length} repl${list.length > 1 ? 'ies' : 'y'} not confirmed`, `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>`).catch(() => {});
+      // duplicate sends of the last 24 h: the same email (same text) to the same people within 30 minutes
+      const { data: outs } = await db.from('events').select('t,ts,actor,d').eq('type', 'msg.out').gte('ts', new Date(now - DAY).toISOString()).limit(5000);
+      const sig = (d: any) => String(d?.to || '').toLowerCase().replace(/\s+/g, '') + '|' + String(d?.html || '').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+      const real = ((outs || []) as any[]).filter((o) => !o.d?.auto && !o.d?.forward);
+      const dups: any[] = [];
+      for (let i = 0; i < real.length; i++) for (let j = i + 1; j < real.length; j++) {
+        const a = real[i], b = real[j];
+        if (a.t === b.t && Math.abs(Date.parse(a.ts) - Date.parse(b.ts)) < 1800000 && sig(a.d) === sig(b.d)) dups.push({ t: a.t, to: a.d?.to, t1: a.ts, t2: b.ts, by: b.actor });
+      }
+      await log({ direction: 'system', action: 'daily_check', ok: list.length === 0 && dups.length === 0, detail: { open: list.map((x) => [x.ticket, x.request_id, x.status]), duplicate_sends: dups.map((x) => [x.t, x.t1, x.t2]) } });
+      const dupHtml = dups.length ? `<p><b>The same email went twice</b> (last 24 h; nothing was sent to anyone about it):</p><ul>${dups.map((x) => `<li><b>${x.t}</b> to ${String(x.to || '').replace(/</g, '&lt;')} - ${String(x.t1).slice(11, 16)} and ${String(x.t2).slice(11, 16)} UTC (${String(x.by || '').replace(/</g, '&lt;')})</li>`).join('')}</ul>` : '';
+      if (list.length || dups.length) await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s)`, (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
     }
   }
   // 6) one request = one ticket: certain duplicates among new tickets are merged (every 5 min)
