@@ -110,3 +110,24 @@ What prevents it now:
 The sweep runs inside the portal function at most once a minute, triggered by the bridge's polls and by every open app's
 tick, so it also runs while the bridge PC is down. One job per ticket while open (`portal_outbox_one_open`), job id =
 idempotency key.
+
+## One request = one ticket: email + portal in the same ticket (23 Nov 2026)
+
+CHR-000348 (email) and portal request #38210 (WhatsApp, same member, same day) were linked on 21 Nov by a one-off data
+update the app did not read: the ticket stayed "email only", was answered and closed by email, and #38210 stayed Pending on
+the portal with no way to answer it from the ticket. Now:
+
+* `portal.link` event: a portal request linked to an email ticket gives that ticket the full portal channel (`t.portal`).
+  A merge carries the portal request to the target ticket; the server sends later portal updates to the ticket a request
+  was merged into (`finalTicket()`).
+* Reply box of an email + portal ticket: tick **Email (Reply All)** and/or **Portal -> WhatsApp / broker email**; the
+  recipients of each channel show before sending; each channel shows its own status (email: Outlook; portal: confirmed in
+  the portal Timeline; never "waiting" for more than 15 min). WhatsApp is the portal's own delivery for WhatsApp requests
+  (no second, unofficial WhatsApp).
+* Decision buttons on such a ticket send the decision through the portal and, ticked by default, the same text by email.
+* Portal panel: **Close portal request: Approved / Partially approved / Rejected**, also when the ticket is already closed
+  (warning "Closed here, but still Pending on the portal"). An already decided request shows why nothing can be closed.
+* Duplicate rule: merged / linked automatically only when certain - same member card AND a byte-identical file (SHA-256,
+  table `file_hashes`) AND within 3 days; only tickets created after 23 Nov 09:05 UTC, never one already answered, never
+  two different portal requests (each needs its own answer). A new portal request that is already here by email is linked
+  to that ticket on arrival. Anything less: a "Possible duplicate / Same request?" banner with Merge... for the team.
