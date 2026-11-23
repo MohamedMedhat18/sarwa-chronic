@@ -285,7 +285,7 @@ async function linkPortal(q: Req, hash: string, no: string, why: string): Promis
 // every 5 minutes: a NEW ticket that is certainly the same request as an older one (same card + identical file, 3 days) is
 // merged into the older one - only tickets created after this rule went live, and never one somebody already answered
 async function dedupe(now: number) {
-  const { data: go } = await db.rpc('portal_try_lock', { p_key: 'dedupe', p_secs: 280 }); if (!go) return 0;
+  const { data: go } = await db.rpc('portal_try_lock', { p_key: 'lock:dedupe', p_secs: 280 }); if (!go) return 0;
   const st0 = await getState('dedupe'); if (!st0.since) { await setState('dedupe', { since: new Date(now).toISOString() }); return 0; }
   const from = new Date(Math.max(Date.parse(st0.since), now - 6 * 3600000)).toISOString();
   const { data: fresh } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').gte('ts', from).order('ts').limit(60);
