@@ -786,7 +786,7 @@ async function nextNo() { const { data, error } = await SB.rpc('next_ticket'); i
 function newState() { return { tickets: new Map(), reqs: new Map(), ignored: new Map(), processed: new Set(), mids: new Set(), settings: clone(DEFAULTS), maxSeq: 0, avail: {}, midTicket: new Map(), convTicket: new Map(), outState: new Map() }; }
 // the Outlook PC's "sent / error" confirmation can be replayed BEFORE the reply itself (an agent PC clock ahead of the server, or a
 // slow save) – keep it and apply it whenever the reply shows up, so a sent reply never stays "Waiting for the Outlook PC"
-function applyOutState(m, st) { m.state = st.status; m.error = st.error || ''; m.sentAt = st.sentAt || st.ts; }
+function applyOutState(m, st) { m.state = st.status; m.error = st.error || ''; m.sentAt = st.sentAt || st.ts; if (st.recips) { m.recips = st.recips; m.missing = st.missing || []; } }
 // conversation keys of a message -> its ticket (Message-ID like Outlook/Freshdesk, and Outlook's ConversationID)
 const normMid = s => String(s || '').trim().toLowerCase().replace(/^<|>$/g, '');
 function threadKeys(S, no, d) {
@@ -871,12 +871,15 @@ function applyEv(S, e) {
       if (!d.auto) clearCR(t); break;
     }
     case 'out.status': {
-      const st = { status: d.status, error: d.error || '', sentAt: d.sentAt || e.ts, ts: e.ts };
+      const st = { status: d.status, error: d.error || '', sentAt: d.sentAt || e.ts, ts: e.ts, ...(Array.isArray(d.recips) ? { recips: d.recips, missing: d.missing || [] } : {}) };
       if (d.outId) { const prev = S.outState && S.outState.get(d.outId); if (!prev || prev.status !== 'sent') (S.outState || (S.outState = new Map())).set(d.outId, st); }   // "sent" wins over an earlier error
       if (!t) return; threadKeys(S, t.no, d); const m = t.msgs.find(x => x.kind === 'out' && x.outId === d.outId); if (m && (m.state !== 'sent' || d.status === 'sent')) applyOutState(m, st);
       if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break;
     }
-    case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; if (!d.auto) clearCR(t); break;
+    // real addresses of an incoming email's To / Cc (Outlook's own text has display names only) – added later by the bridge
+    case 'msg.recips': { if (!t) return; const m = t.msgs.find(x => x.kind === 'in' && ((d.mid && normMid(x.mid) === normMid(d.mid)) || (d.key && x.key === d.key))); if (m) { if (d.to) m.to = d.to; if (d.cc != null) m.cc = d.cc; } break; }
+    case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; if (!d.auto) clearCR(t);
+      if (d.missFixFor) { const o = t.msgs.find(x => x.kind === 'out' && x.outId === d.missFixFor); if (o) o.missFixed = e.ts; } break;
     case 'update': {
       if (!t) return;
       // an agent picking the ticket up (status change, "Start working") ends "customer response"; system updates do not
@@ -1198,6 +1201,8 @@ async function importFile(name, opts) {
   try {
     email = /\.msg$/i.test(name) ? parseMsg(buf) : parseEml(new Uint8Array(buf));
     if (!email.date) email.date = opts.receivedAt || new Date().toISOString();
+    // the bridge sends the real addresses of To / Cc (the .msg itself only names them: "Portfolio Management; Local Med Life")
+    const mm = opts.meta || {}; if (mm.toAddr) email.to = mm.toAddr; if (mm.ccAddr) email.cc = mm.ccAddr;
   } catch (e) { await emit('email.ignored', null, { key: name, file: name, why: 'could not be read: ' + e.message }); return; }
   const flat = flatten(email); const atts = flat.atts.map(a => ({ ...a, ...classify(a) })); const counted = atts.filter(a => a.cls !== 'ignore');
   const mid = String(email.messageId || '').toLowerCase();
@@ -1249,9 +1254,8 @@ async function maybeAutoAck(no, email) {
   const body = sanitize(fillPlaceholders(A[lang] || A.AR || '', t)); const sig = fillPlaceholders(String(DB.settings.signature[lang] || '').replace(/\{\{\s*agent\.name\s*\}\}/g, lang === 'AR' ? 'فريق الأدوية المزمنة' : 'Chronic Medication Team'), t);
   const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br>${sig}</div>`;
   // Reply All: everyone who was in To / Cc of the request also gets the ticket number
-  const mb = String(DB.settings.general.mailbox || '').toLowerCase(), from = String(email.fromEmail || '').toLowerCase();
-  const cc = [...new Set(emailsIn([email.to, email.cc].join(' ')).map(x => x.toLowerCase()))].filter(x => x !== mb && x !== from).join('; ');
-  await queueReply(t, { to: email.fromEmail, cc, subject: replySubject(t), html, files: [], auto: true });
+  const R = replyAllOf(t);
+  await queueReply(t, { to: R.to || email.fromEmail, cc: R.cc, subject: replySubject(t), html, files: [], auto: true });
 }
 async function createManual(d, requestId, by) {
   const { seq, no } = await nextNo();
@@ -1317,6 +1321,7 @@ const VIEW_DEFS = {
   today: { label: 'Due today', f: (t, s) => s.dueToday },
   responded: { label: 'Provider responded', f: t => t.status !== 'Closed' && t.lastIn && (!t.lastOut || t.lastIn > t.lastOut) && t.msgs.some(m => m.kind === 'in' && !m.initial) },
   notsent: { label: 'Replies not sent', desc: 'Our last reply could not be sent by Outlook – open the ticket and press Try again', f: t => replyFailed(t) },
+  recipmiss: { label: 'Reply All check failed', desc: 'A reply did not reach everyone who was on the email (post-send check by the Outlook PC) – open the ticket, nothing is re-sent automatically', f: t => !t.mergedInto && recipMissAt(t).length > 0 },
   custresp: { label: 'Customer response', desc: 'Was pending (or closed) – the customer replied. Open, tagged customer_response, until an agent picks it up', f: t => !!t.custResp && openT(t) && !t.mergedInto },
   pendall: { label: 'Pending – all', desc: 'Every pending ticket (SLA paused)', f: t => !!pendingReasonOf(t) && !t.mergedInto },
   remind: { label: 'Pending – reminder due', desc: 'Waiting for the customer longer than the reminder rule – send the reminder (Reply All)', f: t => !t.mergedInto && /^remind/.test(pendingStage(t)) },
@@ -1658,7 +1663,13 @@ function msgCard(m, t, fromNo) {
       el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : m.forward ? ' forwarded to ' + (m.to || '') + ' ' : ' replied ', m.forward ? el('span', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0' }, '↪ Forward') : null, state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
       htmlBox(m),
       visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
-      m.state === 'error' ? el('div', { style: 'padding:0 14px 12px 54px' }, el('button', { class: 'btn sm', type: 'button', onclick: async () => { await queueReply(t, { to: m.to, cc: m.cc, subject: m.subject, html: m.html, files: [], reuseAtts: m.atts || [] }); toast('Queued again'); } }, 'Try again')) : null);
+      // post-send check (Outlook PC): who really received it, and an alert if anyone of the Reply All list is missing
+      m.recips ? el('div', { class: 'small muted', style: 'padding:0 14px 8px 54px;overflow-wrap:anywhere' }, '✔ Outlook sent it to ' + m.recips.length + ': ' + m.recips.map(r => (r.type === 'cc' ? 'Cc: ' : r.type === 'bcc' ? 'Bcc: ' : '') + (r.name && r.name.toLowerCase() !== r.email ? r.name + ' <' + r.email + '>' : r.email || r.name)).join('; ')) : null,
+      (() => { const miss = recipMissing(m); if (miss.length && m.missFixed) return el('div', { class: 'small muted', style: 'padding:0 14px 10px 54px' }, '↻ Sent again to the people it missed (' + fmtDate(m.missFixed) + ')');
+        return miss.length ? el('div', { class: 'banner', role: 'alert', style: 'margin:0 14px 12px 54px' },
+        el('b', {}, '⚠ Reply All check: NOT received by ' + miss.map(recipText).join('; ')), ' – they were on the email but are not on the reply Outlook sent.',
+        el('div', { style: 'margin-top:6px' }, el('button', { class: 'btn sm', type: 'button', onclick: () => sendMissingDialog(t, m, miss) }, 'Send this reply to them only…'))) : null; })(),
+      m.state === 'error' ? el('div', { style: 'padding:0 14px 12px 54px' }, el('button', { class: 'btn sm', type: 'button', onclick: async () => { await queueReply(t, { to: m.to, cc: m.cc, subject: m.subject, html: m.html, files: [], reuseAtts: m.atts || [], removed: m.removed || [], exact: !!m.exact }); toast('Queued again'); } }, 'Try again')) : null);
   }
   const [main, quoted] = splitQuoted(m.text || '');
   const qBox = quoted ? el('details', { class: 'quoted' }, el('summary', { class: 'small' }, 'Show quoted text'), el('div', { dir: 'auto' }, quoted)) : null;
@@ -1685,7 +1696,16 @@ function fillPlaceholders(html, t) {
   return String(html).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (x, k) => esc(map[k] ?? x));
 }
 function replySubject(t) { let s = String(t.subject || '').trim(); if (!/^(re|رد)\s*:/i.test(s)) s = 'RE: ' + s; if (!s.includes(t.no)) s += ` [${t.no}]`; return s; }
-async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder }) {
+// who of the proposed Reply All list is not in the typed To / Cc (the agent removed them in the reply box)
+function removedFrom(prop, to, cc) {
+  const typed = recipTokens([to, cc].join(';')); const keys = new Set(typed.map(recipKey)), names = new Set(typed.map(x => String(x.name || '').toLowerCase()).filter(Boolean));
+  return [...prop.toList, ...prop.ccList].filter(x => !keys.has(recipKey(x)) && !(x.name && names.has(x.name.toLowerCase())));
+}
+async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder, exact, removed }) {
+  // Reply All: the Outlook PC keeps Outlook's own Reply All list and adds what is typed here. Only people an agent REMOVED in the
+  // reply box are left out (job.removed) – "Try again", reminders and the acknowledgement never remove anyone.
+  // "exact": only the people typed (e.g. the people an earlier reply missed) – used only when an agent asks for it.
+  const prop = forward || exact ? null : replyAllOf(t); removed = forward || exact ? [] : (removed || []);
   const outId = 'out_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files || []) { const p = `${HD}/outbox/${outId}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   // pictures pasted into the text: inline attachments (Content-ID) that the HTML shows with <img src="cid:…">
@@ -1696,11 +1716,11 @@ async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, 
   // copy of the original text (fwdHtml) and its attachments (fwdPaths)
   const fwdAtts = forward ? (forward.msg.atts || []).filter(a => a.path && !a.inline) : [];
   for (const a of fwdAtts) atts.push(a);
-  const job = { outId, ticket: t.no, to, cc: cc || '', replyAll: true, subject, html, replyToMid: forward ? forward.msg.mid || '' : lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), attachmentCids: atts.map(a => a.cid || ''), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString(),
+  const job = { outId, ticket: t.no, to, cc: cc || '', replyAll: !exact, ...(exact ? { exact: true } : {}), proposed: prop ? { to: prop.to, cc: prop.cc } : null, removed, subject, html, replyToMid: forward ? forward.msg.mid || '' : lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), attachmentCids: atts.map(a => a.cid || ''), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString(),
     ...(forward ? { forward: true, fwdHtml: forward.html, fwdPaths: fwdAtts.map(a => a.path) } : {}) };
   const { error } = await SB.from('outbox').insert({ id: outId, ticket: t.no, job, status: 'queued' });
   if (error) { toast((forward ? 'Forward' : 'Reply') + ' not queued: ' + error.message); throw new Error(error.message); }
-  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
+  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(removed.length ? { removed } : {}), ...(exact ? { exact: true } : {}), ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
 }
 /* ---- Activity: every action on a ticket with its details (also who opened it) ---- */
@@ -1771,7 +1791,15 @@ function ticketView(r) {
   const toIn = el('input', { type: 'text', 'aria-label': 'To', placeholder: 'name@company.com; …' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'everyone in copy' });
   let recipFor = '';   // the newest incoming email the recipients were filled from
   const fillRecipients = (force) => { const t = DB.tickets.get(no); const last = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? 1 : -1)[0]; const key = last ? last.id : 'none';
-    if (!force && recipFor === key) return; recipFor = key; const R = replyAllOf(t); toIn.value = R.to || t.requester.email || ''; ccIn.value = R.cc; };
+    if (!force && recipFor === key) return; recipFor = key; const R = replyAllOf(t); toIn.value = R.to || t.requester.email || ''; ccIn.value = R.cc; drawRecips(); };
+  // the full recipient list, visible BEFORE sending, and a warning for anyone removed from the Reply All list
+  const recipLine = el('div', { class: 'small', style: 'padding:4px 12px 0;overflow-wrap:anywhere', 'aria-live': 'polite' });
+  const drawRecips = () => { const t = DB.tickets.get(no); if (!t) return;
+    const to = recipTokens(toIn.value), cc = recipTokens(ccIn.value), rem = removedFrom(replyAllOf(t), toIn.value, ccIn.value), n = to.length + cc.length;
+    const show = l => l.map(x => x.email ? recipText(x) : x.name + ' (address from Outlook)').join('; ') || '—';
+    recipLine.replaceChildren(el('div', { class: 'muted' }, el('b', {}, 'Reply All – ' + n + ' recipient' + (n === 1 ? '' : 's') + ': '), 'To: ' + show(to) + ' · Cc: ' + show(cc)),
+      rem.length ? el('div', { style: 'color:var(--bad)' }, '⚠ Removed from Reply All – will NOT get this reply: ' + rem.map(recipText).join('; ')) : null); };
+  toIn.addEventListener('input', drawRecips); ccIn.addEventListener('input', drawRecips);
   // attachments of any type; screenshots pasted (Ctrl+V) or dropped into the text go INSIDE the email (inline, like Outlook)
   const MAX_TOTAL = 20 * 1048576;   // Exchange / most mail servers accept about 20–25 MB per email
   const inlineImgs = new Map();     // cid -> File
@@ -1848,7 +1876,7 @@ function ticketView(r) {
     const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
       mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
-      : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
+      : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       mode === 'forward' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), fwdTo), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn),
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
@@ -1887,9 +1915,11 @@ function ticketView(r) {
         const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
         const sig = fillPlaceholders(DB.settings.signature[lang] || '', t);
         const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br><br>${sig}</div>`;
-        await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), inline: B.inline });
+        const rem = removedFrom(replyAllOf(t), to, ccIn.value.trim());
+        if (rem.length && !confirm('These people were on the email and will NOT get this reply:\n\n' + rem.map(recipText).join('\n') + '\n\nSend without them?')) { sendBtn.disabled = false; return; }
+        await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), inline: B.inline, removed: rem.map(x => x.email || x.name) });
         if (after) await emit('update', no, after);
-        toast('Reply queued' + (ccIn.value.trim() ? ' (Reply All: ' + (ccIn.value.split(';').filter(x => x.trim()).length) + ' in copy)' : '') + ' – Outlook sends it within a few minutes');
+        toast('Reply queued (Reply All: ' + (recipTokens(to).length + recipTokens(ccIn.value).length) + ' recipients) – Outlook sends it within a few minutes');
       }
       const doneAfter = isDone(after && after.status);
       ce.innerHTML = ''; files.length = 0; inlineImgs.clear(); drawFiles(); afterSel.value = ''; fillRecipients(true);
@@ -1916,6 +1946,7 @@ function ticketView(r) {
         el('div', { style: 'flex:1' }),
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
       t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
+      recipMissAt(t).length ? el('div', { class: 'banner', role: 'alert', style: 'border-radius:8px' }, '⚠ ', el('b', {}, 'Reply All check: ' + recipMissAt(t).length + ' repl' + (recipMissAt(t).length > 1 ? 'ies' : 'y') + ' did not reach everyone'), ' – not received by ' + [...new Set(recipMissAt(t).flatMap(m => recipMissing(m).map(recipText)))].join('; ') + '. See the reply below (nothing is re-sent automatically).') : null,
       el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'muted' }, t.no), el('span', { class: stCls(t.status) }, t.status), el('span', { class: 'pri pri-' + t.priority }, t.priority), t.tags.map(x => el('span', { class: 'tag' }, '#' + x))),
       el('h2', { class: 'tsub', dir: 'auto' }, t.subject));
   }
@@ -3629,21 +3660,73 @@ function pendingStage(t) {   // '' | 'remind1' | 'remind2' | 'close'
   if (n === 0 && since >= R.remind1) return 'remind1';
   return '';
 }
-// Reply All: who receives our reply – the sender of the newest incoming email in To, everyone else of that email in Cc
-// (like Outlook's Reply All). Our own mailbox is never included.
+// one person per ';' of a To / Cc text: "Name <a@b.c>", "a@b.c", or a display name only. Outlook's To / Cc text holds display
+// names only ("Portfolio Management; Local Med Life") – that is how CHR-000432's reply lost everyone in copy (23/11). The bridge now
+// also stores the real addresses, and a name is never dropped: the Outlook PC keeps Outlook's own Reply All list.
+function recipTokens(s) {
+  const out = [];
+  for (let p of String(s || '').split(';')) {
+    p = p.trim(); if (!p) continue;
+    const ms = p.match(/[\w.+'%-]+@[\w-]+(\.[\w-]+)+/g);
+    if (ms && ms.length === 1) out.push({ email: ms[0].toLowerCase(), name: p.replace(ms[0], '').replace(/<\s*>|\(\s*\)|\[\s*\]|"/g, ' ').replace(/\s+/g, ' ').trim() });
+    else if (ms) ms.forEach(x => out.push({ email: x.toLowerCase(), name: '' }));
+    else { const n = p.replace(/["<>]/g, '').replace(/\s+/g, ' ').trim(); if (n) out.push({ email: '', name: n }); }
+  }
+  return out;
+}
+const recipKey = x => x.email || 'name:' + String(x.name || '').toLowerCase();
+const recipText = x => x.email ? (x.name && x.name.toLowerCase() !== x.email ? x.name + ' <' + x.email + '>' : x.email) : x.name;
+const ownMailbox = () => String(DB.settings.general.mailbox || '').toLowerCase();
+const isOwnRecip = x => { const mb = ownMailbox(); return x.email ? x.email === mb : /^chronic$/i.test(x.name) || (!!mb && String(x.name).toLowerCase() === mb); };
+// REAL Reply All (like Outlook): To = the sender of the newest incoming email + everyone else in its To; Cc = everyone in its Cc +
+// people added in copy EARLIER in the conversation (by the customer or by us), unless an agent removed them on purpose.
+// Only exact duplicates and our own mailbox are left out. A name without an address stays (Outlook knows who it is).
 function replyAllOf(t) {
-  const mb = String(DB.settings.general.mailbox || '').toLowerCase(); const own = x => x === mb;
-  const last = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? 1 : -1)[0];
-  const from = String((last && last.fromEmail) || t.requester.email || '').toLowerCase();
-  const others = last ? emailsIn([last.to, last.cc].join(' ')) : [];
-  const cc = [...new Set(others.map(x => x.toLowerCase()))].filter(x => x && x !== from && !own(x));
-  return { to: from, cc: cc.join('; ') };
+  const ins = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? -1 : 1); const last = ins[ins.length - 1];
+  const known = new Map();   // display name -> address, from anywhere in the conversation
+  const learn = x => { if (x.email && x.name) known.set(x.name.toLowerCase(), x.email); };
+  for (const m of t.msgs) { if (m.fromEmail && m.fromName) learn({ email: String(m.fromEmail).toLowerCase(), name: String(m.fromName) }); recipTokens([m.to, m.cc].join(';')).forEach(learn); }
+  const fix = x => !x.email && known.has(x.name.toLowerCase()) ? { email: known.get(x.name.toLowerCase()), name: x.name } : x;
+  const removed = new Set(); for (const m of t.msgs) if (m.kind === 'out' && Array.isArray(m.removed)) m.removed.forEach(r => removed.add(String(r).toLowerCase()));
+  const seen = new Set(), to = [], cc = [];
+  const put = (list, x, hist) => { x = fix(x); if ((!x.email && !x.name) || isOwnRecip(x)) return; const k = recipKey(x); if (seen.has(k)) return;   // exact duplicates only (a name-only entry matches the same name with an address)
+    if (hist && (removed.has(k) || removed.has(String(x.name || '').toLowerCase()))) return; seen.add(k); if (x.name) seen.add('name:' + x.name.toLowerCase()); list.push(x); };
+  put(to, last ? { email: String(last.fromEmail || '').toLowerCase(), name: last.fromName || '' } : { email: String(t.requester.email || '').toLowerCase(), name: t.requester.name || '' });
+  if (last) { recipTokens(last.to).forEach(x => put(to, x)); recipTokens(last.cc).forEach(x => put(cc, x)); }
+  for (const m of t.msgs) if (m !== last && (m.kind === 'in' || (m.kind === 'out' && !m.auto && !m.forward && !m.portal))) recipTokens(m.cc).forEach(x => put(cc, x, true));
+  return { to: to.map(recipText).join('; '), cc: cc.map(recipText).join('; '), toList: to, ccList: cc };
+}
+// post-send check: who Outlook reported as recipients vs who should have received it (the bridge's own Reply All list of the
+// original email + what the agent typed). Returns the people missing.
+function recipMissing(m) {
+  if (!m || m.kind !== 'out' || !Array.isArray(m.recips)) return [];
+  const got = new Set(m.recips.map(r => String(r.email || '').toLowerCase()).filter(Boolean)); const out = new Map();
+  for (const x of m.missing || []) if (x.email && !got.has(x.email)) out.set(x.email, x);
+  for (const x of recipTokens([m.to, m.cc].join(';'))) if (x.email && !got.has(x.email) && !isOwnRecip(x)) out.set(x.email, x);
+  return [...out.values()];
+}
+const recipMissAt = t => t.msgs.filter(m => recipMissing(m).length && !m.missFixed);
+// the same reply, only to the people an earlier reply missed (those who received it do not get it twice). Never automatic.
+function sendMissingDialog(t, m, miss) {
+  const list = el('textarea', { rows: 3, style: 'width:100%', dir: 'ltr' }, miss.map(recipText).join('; '));
+  openDialog('✉ Send the reply to the people it missed – ' + t.no, [
+    el('div', { class: 'small' }, 'The reply of ' + fmtDate(m.sentAt || m.at) + ' by ' + (m.by || '') + ' did not reach the people below. It goes again, in the same email thread, ', el('b', {}, 'ONLY'), ' to them – the people who already received it do not get it twice.'),
+    el('label', {}, 'Send to (only these)', list),
+    el('div', { class: 'small muted' }, 'Subject: ' + (m.subject || replySubject(t)))],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => {
+      const to = list.value.trim(); if (!/@/.test(to)) return toast('Enter at least one email address');
+      e.target.disabled = true;
+      try { await queueReply(t, { to, cc: '', subject: m.subject || replySubject(t), html: m.html, files: [], reuseAtts: m.atts || [], exact: true }); await emit('note', t.no, { html: textToHtml('Reply of ' + fmtDate(m.sentAt || m.at) + ' sent again to the people it missed: ' + to), auto: true, missFixFor: m.outId || '' }); closeDialog(); toast('Queued – only to ' + recipTokens(to).length + ' recipient(s)'); }
+      catch (x) { e.target.disabled = false; toast(x.message); }
+    } }, 'Send to these people')]);
 }
 // everyone who took part in the conversation (shown in the sidebar)
 function participantsOf(t) {
-  const mb = String(DB.settings.general.mailbox || '').toLowerCase(); const S = new Map();
+  const S = new Map();
   for (const m of t.msgs) {
-    if (m.kind === 'in') { const f = String(m.fromEmail || '').toLowerCase(); if (f && f !== mb) S.set(f, m.fromName || f); for (const x of emailsIn([m.to, m.cc].join(' '))) if (x.toLowerCase() !== mb && !S.has(x.toLowerCase())) S.set(x.toLowerCase(), ''); }
+    if (m.kind !== 'in') continue;
+    const f = { email: String(m.fromEmail || '').toLowerCase(), name: m.fromName || '' }; if (f.email && !isOwnRecip(f)) S.set(f.email, f.name || f.email);
+    for (const x of recipTokens([m.to, m.cc].join(';'))) { if (isOwnRecip(x)) continue; const k = x.email || x.name; if (!S.has(k) && ![...S.values()].includes(x.name)) S.set(k, x.email ? x.name : ''); }
   }
   return [...S.entries()];
 }
@@ -3869,12 +3952,14 @@ async function outboxWatch() {
   const { data: recent } = await SB.from('mail_inbox').select('path,subject').eq('status', 'done').gt('created_at', new Date(Date.now() + CLOCK.off - 2 * DAY).toISOString()).lt('created_at', since10).limit(1000);
   const lost = (recent || []).filter(r => !DB.processed.has(r.path));
   const stuck = data || [], failed = [...DB.tickets.values()].filter(replyFailed), waitIn = mq || [];
+  const missed = [...DB.tickets.values()].filter(t => !t.mergedInto && recipMissAt(t).length);   // Reply All post-send check
   let box = document.getElementById('outboxAlert');
-  if (!stuck.length && !failed.length && !waitIn.length && !lost.length) { if (box) box.remove(); return; }
+  if (!stuck.length && !failed.length && !waitIn.length && !lost.length && !missed.length) { if (box) box.remove(); return; }
   if (!box) { box = el('div', { id: 'outboxAlert', class: 'banner', role: 'alert', style: 'margin:0;border-radius:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }); const v = document.querySelector('.view'); if (v) v.before(box); }
   box.replaceChildren(
     stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 15 min'), ' – check that Outlook is open and connected on the Chronic PC (' + [...new Set(stuck.map(x => x.ticket))].slice(0, 6).join(', ') + ')') : null,
     failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null,
+    missed.length ? el('a', { href: '#/tickets?view=recipmiss', style: 'font-weight:600' }, '⚠ Reply All check: ' + missed.length + ' ticket(s) with a reply that did not reach everyone in copy') : null,
     waitIn.length ? el('span', {}, '⚠ ', el('b', {}, waitIn.length + ' email(s) not turned into tickets for 10+ min'), waitIn.some(x => x.status === 'error') ? ' (import error: ' + waitIn.filter(x => x.status === 'error').length + ')' : ' – keep this page open a minute; if it stays, tell the admin') : null,
     lost.length ? el('span', {}, '⚠ ', el('b', {}, lost.length + ' email(s) received but not filed'), ' – tell the admin (', lost.slice(0, 3).map(x => x.subject || '(no subject)').join('; '), ')') : null);
 }
@@ -4719,7 +4804,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-22h';
+const APP_VERSION = '2026-11-23a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
