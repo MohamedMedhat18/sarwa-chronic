@@ -557,7 +557,7 @@ function htmlToText(html) {
 function parseEml(u8, depth = 0) {
   const bin = bytesToLatin1(u8); const { headers } = splitMsg(bin); const ctx = { texts: [], htmls: [], atts: [], forwarded: [] };
   walkPart(bin, ctx, depth);
-  let body = ctx.texts.join('\n').trim(); const html = ctx.htmls.join('\n'); if (!body && html) body = htmlToText(html);
+  let body = ctx.texts.join('\n').trim(); const html = ctx.htmls.join('\n'); if (!body && html) body = htmlToText(html); fixInline(ctx.atts, html);
   return { subject: decodeHeader(headers.subject || ''), ...splitFrom(decodeHeader(headers.from || '')), to: decodeHeader(headers.to || ''), cc: decodeHeader(headers.cc || ''), date: parseDate(headers.date), messageId: (headers['message-id'] || '').trim(), inReplyTo: (headers['in-reply-to'] || '').trim(), refs: (headers.references || '').trim(), body, html, atts: ctx.atts, forwarded: ctx.forwarded };
 }
 function readCFB(buf) {
@@ -607,8 +607,10 @@ function parseMsgAt(cfb, idx, hdrSize, depth, cp) {
     if (embIdx != null && depth < 6) { forwarded.push(parseMsgAt(cfb, embIdx, 24, depth + 1, n.cp)); continue; }
     const data = a.raw('37010102'); if (!data) continue;
     const fname = a.str('3707') || a.str('3704') || a.str('3001') || 'attachment'; const cid = a.str('3712');
-    atts.push({ name: fname, mime: (a.str('370E') || mimeFromName(fname)).toLowerCase(), bytes: data, inline: !!(a.props['7FFE000B'] && a.props['7FFE000B'].lo) || !!cid, cid });
+    const hidden = !!(a.props['7FFE000B'] && a.props['7FFE000B'].lo);
+    atts.push({ name: fname, mime: (a.str('370E') || mimeFromName(fname)).toLowerCase(), bytes: data, inline: hidden || !!cid, hidden, cid });
   }
+  fixInline(atts, html);
   const inReplyTo = n.str('1042') || (th['in-reply-to'] || '').trim(); const refs = n.str('1039') || (th.references || '').trim();
   return { subject, fromName, fromEmail, to: n.str('0E04'), cc: n.str('0E03'), date, messageId, inReplyTo, refs, body: body.trim(), html, atts, forwarded };
 }
@@ -625,6 +627,16 @@ function flatten(email, depth = 0, out = { atts: [], bodies: [] }) {
 }
 const READABLE_EXT = ['pdf', 'jpg', 'jpeg', 'png', 'webp', 'gif'];
 const READABLE_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+// a picture is "inline" only when the email text really shows it (hidden by Outlook, or its Content-ID is used by the HTML).
+// Zoho Desk and other help desks give NORMAL attachments a Content-ID too: CHR-000570's prescription photo (43 KB) was taken for a
+// signature logo and dropped. Without HTML (Outlook keeps many emails as RTF) only Outlook's own "hidden" flag counts.
+function fixInline(atts, html) {
+  const h = String(html || '').toLowerCase();
+  for (const a of atts) if (!a.hidden && a.cid) a.inline = !!h && h.includes('cid:' + String(a.cid).toLowerCase());
+  return atts;
+}
+// EVERY attachment is saved with its email. "ignore" only means: not shown in the list by default (signature logo, calendar
+// file) and not sent to the AI reader – the file is still kept in the ticket ("hidden" files, one click away).
 function classify(a) {
   const ext = extOf(a.name), size = a.bytes.length; const isImg = a.mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp'].includes(ext);
   if (['ics', 'vcs', 'vcf', 'p7s', 'p7m', 'asc', 'sig'].includes(ext) || /^(text\/calendar|text\/x-vcard|application\/(x-)?pkcs7)/.test(a.mime)) return { cls: 'ignore', why: 'calendar / signature file' };
@@ -877,6 +889,20 @@ function applyEv(S, e) {
       if (d.status === 'error') t.timeline.push({ ts: e.ts, by: 'Outlook', text: 'Reply could not be sent: ' + (d.error || '') }); break;
     }
     // real addresses of an incoming email's To / Cc (Outlook's own text has display names only) – added later by the bridge
+    // attachments recovered later from Outlook (attachment check) / one failed file saved again (Retry) / a check that found files
+    // Outlook has but the ticket does not – all on the email they belong to (d.msg = that email's event id)
+    case 'att.add': case 'att.fix': case 'att.check': {
+      if (!t) return; const m = t.msgs.find(x => x.id === d.msg) || (d.mid ? t.msgs.find(x => x.kind === 'in' && normMid(x.mid) === normMid(d.mid)) : null); if (!m) return;
+      m.atts = m.atts ? m.atts.slice() : [];
+      if (e.type === 'att.check') { m.attCheck = { outlook: (d.outlook || []).length, missing: d.missing || [], why: d.why || '', at: e.ts, by: 'Outlook PC' }; break; }
+      for (const a of d.atts || []) {
+        const i = e.type === 'att.fix' ? m.atts.findIndex(x => x.failed && x.name === a.name) : -1;
+        if (i >= 0) m.atts[i] = a; else if (!m.atts.some(x => x.path && x.path === a.path)) m.atts.push(a);
+        if (m.attCheck && m.attCheck.missing) { const mi = m.attCheck.missing.findIndex(x => String(x.name).toLowerCase() === String(a.name).toLowerCase()); if (mi >= 0) m.attCheck = { ...m.attCheck, missing: m.attCheck.missing.filter((_, j) => j !== mi) }; }
+      }
+      t.timeline.push({ ts: e.ts, by: e.by, text: (e.type === 'att.fix' ? 'Attachment saved again: ' : 'Attachment recovered from Outlook: ') + (d.atts || []).map(a => a.name).join(', ') });
+      t.updated = e.ts; break;
+    }
     case 'msg.recips': { if (!t) return; const m = t.msgs.find(x => x.kind === 'in' && ((d.mid && normMid(x.mid) === normMid(d.mid)) || (d.key && x.key === d.key))); if (m) { if (d.to) m.to = d.to; if (d.cc != null) m.cc = d.cc; } break; }
     case 'note': if (!t) return; t.msgs.push({ kind: 'note', id: e.id, at: e.ts, by: e.by, html: d.html, desc: !!d.desc, atts: d.atts || [] }); t.updated = e.ts; if (!d.auto) clearCR(t);
       if (d.missFixFor) { const o = t.msgs.find(x => x.kind === 'out' && x.outId === d.missFixFor); if (o) o.missFixed = e.ts; } break;
@@ -1142,17 +1168,41 @@ function applyRules(base, email, hasAtt) {
   if (!out.agent) { const a = pickAgent(out.group); if (a) { out.agent = a; used.push('Auto-assign'); } }
   out.ruleNames = used; return out;
 }
+// every attachment of the email is saved (3 tries); one that still cannot be saved is KEPT as a record (name, size, reason) with
+// failed:true – the ticket shows "Attachment missing or failed to load" with a Retry button. Never silently dropped.
 async function saveAtts(no, list) {
   const out = [];
   for (const a of list) {
-    const path = `${HD}/files/${no}/${rand(5)}_${safeName(a.name)}`;
-    await FS.write(path, new Blob([a.bytes], { type: a.mime || 'application/octet-stream' }));
-    out.push({ name: a.name, mime: attMime(a), size: a.bytes.length, path, cls: a.cls, why: a.why, inline: !!a.inline, via: a.via || '' });
+    const size = a.bytes ? a.bytes.length : 0;
+    const rec = { name: a.name, mime: attMime(a), size, cls: a.cls, why: a.why, inline: !!a.inline, via: a.via || '', ...(a.cls === 'ignore' ? { hidden: true } : {}) };
+    if (!size) { out.push({ ...rec, hidden: true, why: 'empty file (0 bytes) in the email' }); continue; }
+    const path = `${HD}/files/${no}/${rand(5)}_${safeName(a.name)}`; let err = null;
+    for (let i = 0; i < 3; i++) {
+      try { await FS.write(path, new Blob([a.bytes], { type: a.mime || 'application/octet-stream' })); err = null; break; }
+      catch (e) { err = e; await new Promise(r => setTimeout(r, 1500 * (i + 1))); }
+    }
+    out.push(err ? { ...rec, failed: true, why: 'could not be saved: ' + String(err.message || err).slice(0, 200) + (size > 50 * 1048576 ? ' (larger than the 50 MB storage limit)' : '') } : { ...rec, path });
   }
   return out;
 }
-async function buildMsgIn(no, key, email, flat, atts, counted) {
-  const d = { key, mid: email.messageId || '', fromName: email.fromName, fromEmail: email.fromEmail, to: email.to || '', cc: email.cc || '', date: email.date, subject: email.subject, text: flat.bodies.join('\n').trim().slice(0, 120000), atts: await saveAtts(no, counted), ignoredAtts: atts.length - counted.length };
+// OneDrive / SharePoint / Google Drive / Dropbox / WeTransfer links in the email: shown as links in the ticket
+const CLOUD_LINK = /https?:\/\/[^\s"'<>()]*(?:sharepoint\.com|1drv\.ms|onedrive\.live\.com|drive\.google\.com|docs\.google\.com|dropbox\.com|wetransfer\.com|we\.tl)[^\s"'<>()]*/gi;
+function cloudLinks(text, html) { return [...new Set((String(text || '') + ' ' + String(html || '').replace(/&amp;/g, '&')).match(CLOUD_LINK) || [])].map(u => u.replace(/[.,;]+$/, '')).slice(0, 10); }
+// automatic check after every import: the attachments Outlook lists for the email (sent by the Outlook PC) vs the files saved.
+// Attached emails (.msg / .eml) are opened as forwarded emails, so they are not counted.
+function attCheckOf(meta, saved) {
+  const ol = Array.isArray(meta && meta.atts) ? meta.atts.filter(x => x && x.name && +x.type !== 5 && !/\.(msg|eml)$/i.test(x.name)) : null;
+  if (!ol) return null;
+  const have = new Map(); for (const a of saved) if (!a.failed) { const k = String(a.name || '').toLowerCase(); have.set(k, (have.get(k) || 0) + 1); }
+  const missing = [];
+  for (const x of ol) { const k = String(x.name).toLowerCase(); if (have.get(k) > 0) have.set(k, have.get(k) - 1); else missing.push({ name: x.name, size: +x.size || 0, inline: !!x.inline }); }
+  return { outlook: ol.length, saved: saved.filter(a => !a.failed).length, missing };
+}
+async function buildMsgIn(no, key, email, flat, atts, counted, meta) {
+  const saved = await saveAtts(no, atts);   // ALL attachments (hidden ones included) – see saveAtts
+  const d = { key, mid: email.messageId || '', fromName: email.fromName, fromEmail: email.fromEmail, to: email.to || '', cc: email.cc || '', date: email.date, subject: email.subject, text: flat.bodies.join('\n').trim().slice(0, 120000), atts: saved, ignoredAtts: atts.length - counted.length };
+  const links = cloudLinks(d.text, email.html); if (links.length) d.links = links;
+  const chk = attCheckOf(meta, saved); if (chk) d.attCheck = chk;
   if (email.html && email.html.length < 3e6) { const p = `${HD}/files/${no}/${rand(5)}_original.html`; await FS.write(p, new Blob([email.html], { type: 'text/html' })); d.htmlPath = p; }
   return d;
 }
@@ -1221,13 +1271,13 @@ async function importFile(name, opts) {
     if (!th) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'sent from Outlook – not part of any ticket', silent: true }); return; }
     const dupe = th.t.msgs.some(x => x.kind === 'out' && !x.outlook && Math.abs(Date.parse(x.sentAt || x.at) - Date.parse(email.date)) < 20 * 60000);
     if (dupe) { await emit('email.ignored', null, { key: name, file: name, mid, why: 'helpdesk reply – already in the ticket', silent: true }); return; }
-    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
+    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted, meta);
     await emit('msg.out', th.t.no, { ...d, outlook: true, sender: meta.sender || email.fromName || 'Chronic', conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how });
     return;
   }
   if (th) {
-    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted);
-    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || ''), historical: !!opts.historical, ...(isAutomatedMail(email) ? { automated: true } : {}) }); await autoEOB(th.t.no, counted, d.atts);
+    const d = await buildMsgIn(th.t.no, name, email, flat, atts, counted, meta);
+    await emit('msg.in', th.t.no, { ...d, conv: meta.conv || '', threadBy: th.how === 'ticket number' ? '' : th.how, internal: /@sarwa\.life$/i.test(email.fromEmail || ''), historical: !!opts.historical, ...(isAutomatedMail(email) ? { automated: true } : {}) }); await autoEOB(th.t.no, atts, d.atts);
     return;
   }
   // Every real email becomes a ticket – also without attachments (renewals, report requests, follow-ups; e.g. "#Systics Trade
@@ -1242,8 +1292,8 @@ async function importFile(name, opts) {
   const fields = opts.historical ? { ...base, status: 'Closed', tags: ['Historical Import'], ruleNames: [] } : applyRules(base, email, counted.length > 0);
   const { seq, no } = await nextNo();
   await emit('ticket.create', no, { no, seq, source: 'email', ...fields, createdAt: email.date, fromKey: name, requestId: opts.requestId || '', historical: !!opts.historical });
-  const d = await buildMsgIn(no, name, email, flat, atts, counted); d.initial = true; d.conv = meta.conv || ''; if (opts.historical) d.historical = true;
-  await emit('msg.in', no, d); await autoEOB(no, counted, d.atts);
+  const d = await buildMsgIn(no, name, email, flat, atts, counted, meta); d.initial = true; d.conv = meta.conv || ''; if (opts.historical) d.historical = true;
+  await emit('msg.in', no, d); await autoEOB(no, atts, d.atts);
   if (!opts.historical && !opts.noAck && !isAutomatedMail(email)) await maybeAutoAck(no, email);
 }
 /* Automatic acknowledgement: tells the sender the ticket number right away (sent by Outlook like any reply) */
@@ -1330,6 +1380,7 @@ const VIEW_DEFS = {
   responded: { label: 'Provider responded', f: t => t.status !== 'Closed' && t.lastIn && (!t.lastOut || t.lastIn > t.lastOut) && t.msgs.some(m => m.kind === 'in' && !m.initial) },
   notsent: { label: 'Replies not sent', desc: 'Our last reply could not be sent by Outlook – open the ticket and press Try again', f: t => replyFailed(t) },
   recipmiss: { label: 'Reply All check failed', desc: 'A reply did not reach everyone who was on the email (post-send check by the Outlook PC) – open the ticket, nothing is re-sent automatically', f: t => !t.mergedInto && recipMissAt(t).length > 0 },
+  attmiss: { label: 'Attachments missing', desc: 'An email has a file in Outlook that is not in the ticket, or a file that failed to save – open the ticket › Retry (the daily attachment check also recovers them from Outlook)', f: t => !t.mergedInto && attMissAt(t).length > 0 },
   custresp: { label: 'Customer response', desc: 'Was pending (or closed) – the customer replied. Open, tagged customer_response, until an agent picks it up', f: t => !!t.custResp && openT(t) && !t.mergedInto },
   pendall: { label: 'Pending – all', desc: 'Every pending ticket (SLA paused)', f: t => !!pendingReasonOf(t) && !t.mergedInto },
   remind: { label: 'Pending – reminder due', desc: 'Waiting for the customer longer than the reminder rule – send the reminder (Reply All)', f: t => !t.mergedInto && /^remind/.test(pendingStage(t)) },
@@ -1687,8 +1738,13 @@ function msgCard(m, t, fromNo) {
       el('div', { class: 'small muted', dir: 'auto' }, (m.to ? 'To: ' + m.to + ' · ' : '') + fmtDate(m.at) + ' (' + rel(m.at) + ')'),
       el('div', { class: 'small muted', dir: 'auto' }, m.subject))),
     el('div', { class: 'mb', dir: 'auto' }, main || '(no text)', qBox),
-    m.atts && m.atts.length ? el('div', { class: 'atts' }, m.atts.map(attChip)) : null,
-    el('div', { style: 'padding:0 14px 10px 54px' }, m.ignoredAtts ? el('span', { class: 'small muted' }, `${m.ignoredAtts} signature/calendar file(s) hidden. `) : null,
+    (() => { const vis = (m.atts || []).filter(a => a.path && !a.hidden); return vis.length ? el('div', { class: 'atts' }, vis.map(attChip)) : null; })(),
+    m.links && m.links.length ? el('div', { class: 'small', style: 'padding:0 14px 8px 54px;overflow-wrap:anywhere' }, '🔗 Files shared as a link (OneDrive / SharePoint / cloud): ', m.links.map((u, i) => [i ? ' · ' : '', el('a', { href: u, target: '_blank', rel: 'noopener noreferrer' }, u.length > 70 ? u.slice(0, 67) + '…' : u)])) : null,
+    attProblemBox(m, t),
+    el('div', { style: 'padding:0 14px 10px 54px' },
+      (() => { const hid = (m.atts || []).filter(a => a.path && a.hidden); const n = hid.length || m.ignoredAtts || 0;
+        if (!n) return null; if (!hid.length) return el('span', { class: 'small muted' }, `${n} signature/calendar file(s) hidden. `);
+        return el('details', { style: 'display:inline-block;margin-right:8px' }, el('summary', { class: 'small muted', style: 'cursor:pointer' }, `${n} small picture(s) / signature file(s) hidden – show`), el('div', { class: 'atts', style: 'padding:6px 0 0' }, hid.map(attChip))); })(),
       m.htmlPath ? el('button', { class: 'btn sm ghost', type: 'button', onclick: () => showOriginal(m) }, 'View original email') : null));
 }
 async function showOriginal(m) {
@@ -1766,6 +1822,9 @@ function describeEv(e) {
     case 'msg.in': return ['message', d.internal ? 'Email from a Sarwa colleague' : 'Email received', `From: ${d.fromName || ''} <${d.fromEmail || ''}>\nSubject: ${d.subject || ''}${(d.atts || []).length ? `\nAttachments: ${d.atts.length}` : ''}\n${clip(d.text || stripHtml(d.html))}`];
     case 'msg.out': return ['message', d.outlook ? 'Reply sent from Outlook' : d.auto ? 'Auto-acknowledgement sent' : d.forward ? 'Forwarded' : 'Reply sent', `To: ${d.to || ''}${d.cc ? '  Cc: ' + d.cc : ''}\nSubject: ${d.subject || ''}\n${clip(d.text || stripHtml(d.html))}`];
     case 'out.status': return ['message', 'Email ' + (d.status === 'error' ? 'could not be sent' : d.status || 'status'), d.error || (d.sentAt ? 'Sent ' + fmtDate(d.sentAt) : '')];
+    case 'att.add': return ['message', 'Attachment recovered' + (d.source === 'retry' ? ' (Retry)' : ' from Outlook'), (d.atts || []).map(a => a.name + ' (' + fmtSize(a.size || 0) + ')').join('\n')];
+    case 'att.fix': return ['message', 'Attachment saved again (Retry)', (d.atts || []).map(a => a.name).join('\n')];
+    case 'att.check': return ['message', 'Attachment check: file(s) missing', (d.missing || []).map(a => a.name).join('\n') + (d.why ? '\n' + d.why : '')];
     case 'note': return ['message', d.desc ? 'Description added' : 'Private note', clip(stripHtml(d.html))];
     case 'msg.sms': return ['message', (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' – sent directly' : d.via === 'manual' ? ' – opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS app') : ''), (d.toName ? d.toName + '\n' : '') + (d.from ? 'From: ' + d.from + '\n' : '') + clip(d.text)];
     case 'msg.sms.state': return ['message', 'SMS delivery: ' + d.state, d.error || ''];
@@ -2015,6 +2074,7 @@ function ticketView(r) {
         el('b', {}, h.file ? '⚠ Same request? ' : 'Possible duplicate: '), el('a', { href: '#/t/' + h.o.no }, h.o.no), ' (' + h.o.status + (isPortal(h.o) ? ' · portal #' + h.o.portal.requestId : '') + ') – ' + h.why + (h.file ? ' and a file of the same size ("' + h.file + '")' : ', within 3 days') + '.',
         h.bothPortal ? el('span', { class: 'small' }, ' Two portal requests: each needs its own answer on the portal (e.g. Rejected – "Duplicate request" on the newer one); not merged.')
           : el('button', { class: 'btn sm', style: 'margin-left:8px', type: 'button', onclick: () => mergeDialog([t.no, h.o.no]) }, 'Merge…'))),
+      attMissAt(t).length ? el('div', { class: 'banner', role: 'alert', style: 'border-radius:8px' }, '⚠ ', el('b', {}, 'Attachment missing or failed to load'), ' – ' + attMissAt(t).flatMap(m => attProblems(m).map(p => p.name)).join(', ') + '. See the email below (Retry), nothing was deleted.') : null,
       el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'muted' }, t.no), el('span', { class: stCls(t.status) }, t.status), el('span', { class: 'pri pri-' + t.priority }, t.priority), t.tags.map(x => el('span', { class: 'tag' }, '#' + x))),
       el('h2', { class: 'tsub', dir: 'auto' }, t.subject));
   }
@@ -3658,7 +3718,7 @@ const phPill = s => { const n = String(s || ''); const bg = /reject/i.test(n) ? 
 let PORTAL_LEVELS = { missing_docs: 2, approve: 2, reject: 2, partial: 3, duplicate: 3, medical_team: 3, review: 3 };
 function portalSuggestion(t) {
   const r = t.portalRules; const srv = r && r.suggestion;
-  const hasFiles = t.msgs.some(m => m.kind === 'in' && (m.atts || []).some(a => a.path && a.source !== 'Sarwa'));
+  const hasFiles = t.msgs.some(m => m.kind === 'in' && (m.atts || []).some(a => a.path && !a.hidden && a.source !== 'Sarwa'));
   if (srv && srv.kind === 'missing_docs' && !hasFiles) return { d: 'Pending', reason: 'Missing documents', why: 'No prescription or document on the portal', conf: srv.confidence, kind: 'missing_docs' };
   if (srv && srv.kind === 'duplicate') return { d: null, why: srv.reason, conf: srv.confidence, kind: 'duplicate' };
   // the AI reader found files but no prescription in them -> the prescription itself is missing
@@ -3812,6 +3872,43 @@ function recipMissing(m) {
   return [...out.values()];
 }
 const recipMissAt = t => t.msgs.filter(m => recipMissing(m).length && !m.missFixed);
+// attachments of an incoming email that are missing: a file that could not be saved, or one Outlook has that the ticket does not
+// (automatic check after the import, and the daily check by the Outlook PC). Pictures shown inside the email text are not counted.
+function attProblems(m) {
+  if (!m || m.kind !== 'in') return [];
+  const out = (m.atts || []).filter(a => a.failed).map(a => ({ name: a.name, size: a.size, why: a.why || 'could not be saved', failed: true }));
+  for (const x of (m.attCheck && m.attCheck.missing) || []) if (!x.inline && !out.some(o => o.name === x.name)) out.push({ name: x.name, size: +x.size || 0, why: m.attCheck.why || 'in the email in Outlook, not saved in the ticket' });
+  return out;
+}
+const attMissAt = t => t.msgs.filter(m => attProblems(m).length);
+function attProblemBox(m, t) {
+  const P = attProblems(m); if (!P.length) return null;
+  return el('div', { class: 'banner', role: 'alert', style: 'margin:0 14px 10px 54px' },
+    el('b', {}, '⚠ Attachment missing or failed to load: '), P.map(p => p.name + (p.size ? ' (' + fmtSize(p.size) + ')' : '') + ' – ' + p.why).join('; '),
+    el('div', { style: 'margin-top:6px' }, m.key ? el('button', { class: 'btn sm', type: 'button', onclick: e => retryAtts(e.target, t, m) }, '↻ Retry – load it again from the email') : null,
+      el('span', { class: 'small muted', style: 'margin-left:8px' }, 'The daily attachment check also recovers it from Outlook. Nothing is deleted.')));
+}
+// Retry: the original email (.msg kept in storage) is opened again and the missing files are saved from it
+async function retryAtts(btn, t, m) {
+  btn.disabled = true; const prev = btn.textContent; btn.textContent = 'Loading…';
+  try {
+    const f = await FS.file(m.key); const buf = await f.arrayBuffer();
+    const email = /\.msg$/i.test(m.key) ? parseMsg(buf) : parseEml(new Uint8Array(buf));
+    const all = flatten(email).atts.map(a => ({ ...a, ...classify(a) }));
+    const want = attProblems(m); const fixed = [], added = [], still = [];
+    for (const p of want) {
+      const a = all.find(x => String(x.name).toLowerCase() === String(p.name).toLowerCase() && !fixed.concat(added).some(y => y._src === x));
+      if (!a) { still.push(p.name); continue; }
+      const [rec] = await saveAtts(t.no, [a]); if (rec.failed || !rec.path) { still.push(p.name); continue; }
+      (p.failed ? fixed : added).push({ ...rec, _src: a });
+    }
+    const strip = l => l.map(({ _src, ...r }) => r);
+    if (fixed.length) await emit('att.fix', t.no, { msg: m.id, mid: m.mid || '', atts: strip(fixed) });
+    if (added.length) await emit('att.add', t.no, { msg: m.id, mid: m.mid || '', atts: strip(added), source: 'retry' });
+    toast(fixed.length + added.length ? 'Saved: ' + fixed.concat(added).map(x => x.name).join(', ') + (still.length ? ' · still missing: ' + still.join(', ') : '') : 'Not in the saved email – the daily check takes it from Outlook (' + still.join(', ') + ')');
+  } catch (x) { toast('Retry failed: ' + x.message); }
+  btn.disabled = false; btn.textContent = prev;
+}
 // the same reply, only to the people an earlier reply missed (those who received it do not get it twice). Never automatic.
 function sendMissingDialog(t, m, miss) {
   const list = el('textarea', { rows: 3, style: 'width:100%', dir: 'ltr' }, miss.map(recipText).join('; '));
@@ -4077,13 +4174,15 @@ async function outboxWatch() {
   const lost = (recent || []).filter(r => !DB.processed.has(r.path));
   const stuck = data || [], failed = [...DB.tickets.values()].filter(replyFailed), waitIn = mq || [];
   const missed = [...DB.tickets.values()].filter(t => !t.mergedInto && recipMissAt(t).length);   // Reply All post-send check
+  const attMiss = [...DB.tickets.values()].filter(t => !t.mergedInto && t.status !== 'Closed' && attMissAt(t).length);   // attachment check
   let box = document.getElementById('outboxAlert');
-  if (!stuck.length && !failed.length && !waitIn.length && !lost.length && !missed.length) { if (box) box.remove(); return; }
+  if (!stuck.length && !failed.length && !waitIn.length && !lost.length && !missed.length && !attMiss.length) { if (box) box.remove(); return; }
   if (!box) { box = el('div', { id: 'outboxAlert', class: 'banner', role: 'alert', style: 'margin:0;border-radius:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }); const v = document.querySelector('.view'); if (v) v.before(box); }
   box.replaceChildren(
     stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 15 min'), ' – check that Outlook is open and connected on the Chronic PC (' + [...new Set(stuck.map(x => x.ticket))].slice(0, 6).join(', ') + ')') : null,
     failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null,
     missed.length ? el('a', { href: '#/tickets?view=recipmiss', style: 'font-weight:600' }, '⚠ Reply All check: ' + missed.length + ' ticket(s) with a reply that did not reach everyone in copy') : null,
+    attMiss.length ? el('a', { href: '#/tickets?view=attmiss', style: 'font-weight:600' }, '⚠ Attachments: ' + attMiss.length + ' open ticket(s) with a file missing or failed to load') : null,
     waitIn.length ? el('span', {}, '⚠ ', el('b', {}, waitIn.length + ' email(s) not turned into tickets for 10+ min'), waitIn.some(x => x.status === 'error') ? ' (import error: ' + waitIn.filter(x => x.status === 'error').length + ')' : ' – keep this page open a minute; if it stays, tell the admin') : null,
     lost.length ? el('span', {}, '⚠ ', el('b', {}, lost.length + ' email(s) received but not filed'), ' – tell the admin (', lost.slice(0, 3).map(x => x.subject || '(no subject)').join('; '), ')') : null);
 }
@@ -4928,7 +5027,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-23c';
+const APP_VERSION = '2026-11-23d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
