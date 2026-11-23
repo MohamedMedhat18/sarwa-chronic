@@ -3867,7 +3867,7 @@ function replyAllOf(t) {
 function recipMissing(m) {
   if (!m || m.kind !== 'out' || !Array.isArray(m.recips)) return [];
   const got = new Set(m.recips.map(r => String(r.email || '').toLowerCase()).filter(Boolean)); const out = new Map();
-  for (const x of m.missing || []) if (x.email && !got.has(x.email)) out.set(x.email, x);
+  for (const x of m.missing || []) if (x.email ? !got.has(x.email) : x.name) out.set(x.email || 'name:' + x.name, x);   // a name with no address found: flagged too
   for (const x of recipTokens([m.to, m.cc].join(';'))) if (x.email && !got.has(x.email) && !isOwnRecip(x)) out.set(x.email, x);
   return [...out.values()];
 }
@@ -5027,7 +5027,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-23d';
+const APP_VERSION = '2026-11-23e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
