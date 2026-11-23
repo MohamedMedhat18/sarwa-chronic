@@ -895,7 +895,15 @@ function applyEv(S, e) {
       }
       t.updated = e.ts; break;
     }
-    case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' }); tgt.updated = e.ts; break; }
+    case 'merge': { const tgt = S.tickets.get(d.into); if (!t || !tgt) return; t.mergedInto = d.into; setStatus(t, 'Closed', e.ts, e.by); t.timeline.push({ ts: e.ts, by: e.by, text: 'Merged into ' + d.into }); tgt.mergedFrom.push(t.no); tgt.timeline.push({ ts: e.ts, by: e.by, text: 'Merged ' + t.no + ' into this ticket' + (d.auto ? ' (automatic: ' + (d.why || 'same request') + ')' : '') }); tgt.updated = e.ts;
+      // the portal request goes with it: the merged ticket answers it (portal updates follow the merge on the server too)
+      if (t.portal && t.portal.requestId && !tgt.portal) { tgt.portal = { ...t.portal }; tgt.portalLinked = tgt.source !== 'portal'; if (t.portalSync) tgt.portalSync = { ...t.portalSync }; }
+      if (t.source !== tgt.source) tgt.channels = [...new Set([...(tgt.channels || [tgt.source]), t.source])];
+      break; }
+    case 'portal.link': {   // the same request also on the portal, added to this (email) ticket: one ticket, both channels
+      if (!t) return; t.portal = { ...(d.portal || {}), ...(t.portal || {}), requestId: String(d.requestId) }; t.portalLinked = t.source !== 'portal';
+      t.timeline.push({ ts: e.ts, by: e.by, text: 'Portal request #' + d.requestId + ' added to this ticket' + (d.why ? ' – ' + d.why : '') }); t.updated = e.ts; break;
+    }
     case 'msg.sms': if (!t) return; t.msgs.push({ kind: 'sms', id: e.id, at: e.ts, by: e.by, ...d }); t.timeline.push({ ts: e.ts, by: e.by, text: (d.channel === 'whatsapp' ? 'WhatsApp' : 'SMS') + ' to ' + d.to + (d.via === 'direct' ? ' (sent directly' + (d.from ? ' from ' + d.from : '') + ')' : d.via === 'manual' ? ' (opened in ' + (d.channel === 'whatsapp' ? 'WhatsApp' : 'the SMS app') + ')' : ''), detail: d.text }); t.updated = e.ts; break;
     case 'msg.sms.state': { if (!t) return; const m = t.msgs.find(x => x.kind === 'sms' && x.id === d.ref); if (m) { m.state = d.state; m.error = d.error || ''; } if (/fail/i.test(d.state)) t.timeline.push({ ts: e.ts, by: 'SMS gateway', text: 'SMS to ' + (m ? m.to : '') + ' failed', detail: d.error || d.state }); break; }
     case 'view': if (!t) return; (t.views = t.views || []).push({ ts: e.ts, by: e.by }); break;
@@ -1786,6 +1794,7 @@ function ticketView(r) {
   const layout = () => newestFirst() ? left.replaceChildren(top, edHost, thread) : left.replaceChildren(top, thread, edHost);
   layout();
   let mode = 'reply'; const files = [];
+  let chMail = true, chPortal = true;   // email + portal ticket: which channels this reply goes to
   const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
   // To / Cc like Outlook's Reply All: the sender of the newest email + everyone who was in its To / Cc (the agent can remove people)
   const toIn = el('input', { type: 'text', 'aria-label': 'To', placeholder: 'name@company.com; …' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'everyone in copy' });
@@ -1875,15 +1884,28 @@ function ticketView(r) {
     sendBtn.textContent = mode === 'reply' ? 'Send' : mode === 'forward' ? 'Forward' : 'Add note';
     const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
-      mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
+      mode === 'reply' && isDual(t) ? channelBox(t)
+      : mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
       : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       mode === 'forward' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), fwdTo), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn),
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isDual(t) ? 'Each channel shows its own status in the conversation (email: Outlook · portal: confirmed in the portal Timeline). Nothing stays waiting: after 15 min it shows Failed with Try again.' : mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   fwdSel.addEventListener('change', () => drawEditor());
+  // email + portal ticket: tick the channels; who receives it is shown before sending
+  function channelBox(t) {
+    const p = t.portal; const fin = PORTAL_FINAL.includes(+p.statusCode);
+    const cb = (on, label, set) => el('label', { class: 'row', style: 'gap:6px;align-items:center;font-weight:600;cursor:pointer' }, el('input', { type: 'checkbox', checked: on, onchange: e => { set(e.target.checked); drawEditor(); } }), label);
+    return [el('div', { class: 'row', style: 'gap:16px;padding:8px 12px 0;flex-wrap:wrap;align-items:center' }, el('span', { class: 'small muted' }, 'Send to:'),
+        cb(chMail, '✉ Email (Reply All)', v => { chMail = v; }),
+        cb(chPortal, '⇄ Portal #' + p.requestId + (p.brokerMail ? ' → broker email' : ' → WhatsApp'), v => { chPortal = v; })),
+      // email: the same To / Cc boxes and recipients line as any email reply (everyone who receives it, before sending)
+      chMail ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
+      chPortal ? el('div', { class: 'small', style: 'padding:4px 12px 0;color:#1d5c52;font-weight:600' }, '⇄ Portal request #' + p.requestId + ' (now ' + (p.statusName || '—') + ') → ' + portalRecipient(t) + ', sent by the portal' + (fin ? ' – already decided on the portal: this goes as a message only.' : '.') + ' Approved / Rejected / Pending: use the Decision buttons (they can email too).') : null,
+      !chMail && !chPortal ? el('div', { class: 'small', style: 'padding:4px 12px 0;color:var(--bad);font-weight:600' }, 'Tick at least one channel') : null];
+  }
   async function send() {
     const t = DB.tickets.get(no); drawFiles(); const B = bodyForSend(); const body = B.html;
     if (mode !== 'forward' && !htmlToPlain(body) && !files.length && !B.inline.length) { toast('Write something first.'); ce.focus(); return; }
@@ -1906,6 +1928,24 @@ function ticketView(r) {
         await queueReply(t, { to, cc: ccIn.value.trim(), subject: fwdSubject(m), html, files: files.slice(), inline: B.inline, forward: { msg: m, html: quoteOf(m) } });
         if (after) await emit('update', no, after);
         fwdTo.value = ''; toast('Forward queued – Outlook sends it within a minute');
+      } else if (isDual(t)) {   // email + portal ticket: the same reply to every ticked channel; each shows its own delivery status
+        if (!chMail && !chPortal) { toast('Tick at least one channel (Email / Portal).'); sendBtn.disabled = false; return; }
+        if (chPortal && after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
+        const to = toIn.value.trim(); if (chMail && !/@/.test(to)) { toast('Enter the email address in "To" (or untick Email).'); toIn.focus(); sendBtn.disabled = false; return; }
+        const sent = [];
+        if (chPortal) {
+          if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: chMail ? {} : (after || {}) }) === 'dry') { sendBtn.disabled = false; return; }
+          sent.push('portal (' + portalRecipient(t) + ')');
+        }
+        if (chMail) {
+          const plain = htmlToPlain(body); const lang = isAr(plain) ? 'AR' : /[A-Za-z]{3}/.test(plain) ? 'EN' : t.lang;
+          const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${body}<br><br>${fillPlaceholders(DB.settings.signature[lang] || '', t)}</div>`;
+          const rem = removedFrom(replyAllOf(t), to, ccIn.value.trim());
+          try { await queueReply(t, { to, cc: ccIn.value.trim(), subject: replySubject(t), html, files: files.slice(), inline: B.inline, removed: rem.map(x => x.email || x.name) }); sent.push('email (' + (recipTokens(to).length + recipTokens(ccIn.value).length) + ' recipients)'); }
+          catch (x) { toast((sent.length ? 'Portal: queued. ' : '') + 'Email: not queued – ' + x.message); throw x; }
+          if (after) await emit('update', no, after);
+        }
+        toast('Sent to ' + sent.join(' + ') + ' – each shows its status in the conversation');
       } else if (isPortal(t)) {   // portal request: a message through the portal (WhatsApp / broker email); status after the portal confirms
         if (after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
         if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} }) === 'dry') { sendBtn.disabled = false; return; }   // preview only; the editor keeps the text
@@ -1947,6 +1987,11 @@ function ticketView(r) {
         prev ? el('a', { class: 'btn sm', href: '#/t/' + prev, title: 'Previous ticket' }, '‹') : null, next ? el('a', { class: 'btn sm', href: '#/t/' + next, title: 'Next ticket' }, '›') : null),
       t.mergedInto ? el('div', { class: 'banner', style: 'border-radius:8px' }, 'This ticket was merged into ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto)) : null,
       recipMissAt(t).length ? el('div', { class: 'banner', role: 'alert', style: 'border-radius:8px' }, '⚠ ', el('b', {}, 'Reply All check: ' + recipMissAt(t).length + ' repl' + (recipMissAt(t).length > 1 ? 'ies' : 'y') + ' did not reach everyone'), ' – not received by ' + [...new Set(recipMissAt(t).flatMap(m => recipMissing(m).map(recipText)))].join('; ') + '. See the reply below (nothing is re-sent automatically).') : null,
+      // not certain enough to merge by itself: shown for the team to confirm (certain ones are merged by the server)
+      ...dupHints(t).map(h => el('div', { class: 'banner', style: 'border-radius:8px;background:var(--warn-bg);color:inherit' },
+        el('b', {}, h.file ? '⚠ Same request? ' : 'Possible duplicate: '), el('a', { href: '#/t/' + h.o.no }, h.o.no), ' (' + h.o.status + (isPortal(h.o) ? ' · portal #' + h.o.portal.requestId : '') + ') – ' + h.why + (h.file ? ' and a file of the same size ("' + h.file + '")' : ', within 3 days') + '.',
+        h.bothPortal ? el('span', { class: 'small' }, ' Two portal requests: each needs its own answer on the portal (e.g. Rejected – "Duplicate request" on the newer one); not merged.')
+          : el('button', { class: 'btn sm', style: 'margin-left:8px', type: 'button', onclick: () => mergeDialog([t.no, h.o.no]) }, 'Merge…'))),
       el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'muted' }, t.no), el('span', { class: stCls(t.status) }, t.status), el('span', { class: 'pri pri-' + t.priority }, t.priority), t.tags.map(x => el('span', { class: 'tag' }, '#' + x))),
       el('h2', { class: 'tsub', dir: 'auto' }, t.subject));
   }
@@ -3254,7 +3299,10 @@ function icarePanel(t) {
    is queued for the portal, which runs its own Reply logic (status, Request Timeline, WhatsApp to the member or email to
    the broker with every Cc). The ticket closes / goes pending only when the portal confirmed.
    ===================================================================== */
-const isPortal = t => !!(t && t.source === 'portal' && t.portal);
+const isPortal = t => !!(t && t.portal && t.portal.requestId);   // created from the portal, or a portal request linked / merged into it
+// email AND portal in one ticket (the same request came both ways): one reply can go to the chosen channels
+const isDual = t => isPortal(t) && (t.source !== 'portal' || !!t.portalLinked || (t.mergedFrom || []).some(n => ((DB.tickets.get(n) || {}).source || 'portal') !== 'portal'));
+const mailTarget = t => { const R = replyAllOf(t); return /@/.test(R.to || '') ? R : null; };
 const PORTAL_FINAL = [4, 5, 7, 8];
 const portalBusy = t => !!(t && t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state));
 function portalRecipient(t) {
@@ -3408,7 +3456,12 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
     el('label', {}, d === 'Approved' ? 'Optional note (the portal\'s approval text is sent as is)' : 'Your text – it goes into the portal\'s own message (the portal adds the greeting and closing)', msg),
     el('div', {}, el('div', { class: 'small muted' }, 'What the requester receives (portal template, ' + (t.lang === 'EN' ? 'English' : 'Arabic') + '):'), prev),
     el('div', {}, el('div', { class: 'small muted' }, 'Attachments (screenshots, approval letter…) – also paste a screenshot with Ctrl+V'), fileIn, filesBox)].filter(Boolean));
-  const body = el('div', { style: 'display:grid;gap:8px' }, hint, d === 'Approved' ? null : el('label', {}, d === 'Pending' ? 'Pending reason' : 'Reason', reason), el('label', {}, 'Note', note), msgBox);
+  // the same request also came by email: the same answer can go to the email thread too (Reply All), in one step
+  const MT = isDual(t) ? mailTarget(t) : null;
+  const alsoMail = MT ? el('input', { type: 'checkbox', checked: !opts.noMail }) : null;
+  const mailRow = MT ? el('label', { class: 'row', style: 'gap:6px;align-items:center;background:var(--surface-2);border:1px solid var(--border);border-radius:6px;padding:6px 8px' }, alsoMail,
+    el('span', {}, el('b', {}, '✉ Also by email (Reply All)'), ' to ' + MT.to + (MT.cc ? ' + ' + MT.cc.split(';').filter(x => x.trim()).length + ' in Cc' : '') + ' – the same message, from ' + DB.settings.general.mailbox)) : null;
+  const body = el('div', { style: 'display:grid;gap:8px' }, hint, mailRow, d === 'Approved' ? null : el('label', {}, d === 'Pending' ? 'Pending reason' : 'Reason', reason), el('label', {}, 'Note', note), msgBox);
   body.addEventListener('paste', e => { const fl = [...((e.clipboardData && e.clipboardData.items) || [])].filter(i => i.kind === 'file').map(i => i.getAsFile()).filter(Boolean); if (!fl.length) return; e.preventDefault(); for (const f of fl) files.push(new File([f], f.name && !/^image\.\w+$/.test(f.name) ? f.name : 'screenshot-' + new Date().toISOString().slice(0, 19).replace(/\D/g, '') + '.' + ((f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')), { type: f.type })); drawFiles(); });
   refresh();
   openDialog(D.icon + ' ' + d + ' – ' + t.no + ' · portal #' + t.portal.requestId, [body],
@@ -3425,7 +3478,13 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
         const ticketUpdate = d === 'Pending' ? { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(), ...dec } : { ...dec, status: D.status };
         const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate });
         if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
-        closeDialog(); toast(t.no + ': ' + d + ' sent to the portal – the ticket updates when the portal confirms');
+        if (alsoMail && alsoMail.checked) {   // the email gets exactly what the portal sends (its template + our text), with our signature
+          const full = portalPreview(t, PORTAL_STATUS_OF[d], msg.value.trim()); const lang = t.lang === 'EN' ? 'EN' : 'AR';
+          const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${textToHtml(full)}<br><br>${fillPlaceholders(DB.settings.signature[lang] || '', t)}</div>`;
+          try { await queueReply(t, { to: MT.to, cc: MT.cc, subject: replySubject(t), html, files: files.slice() }); }
+          catch (x) { toast('Portal: queued. Email: not queued – ' + x.message + ' (send it from the reply box)'); }
+        }
+        closeDialog(); toast(t.no + ': ' + d + ' sent to the portal' + (alsoMail && alsoMail.checked ? ' and by email' : '') + ' – the ticket updates when the portal confirms');
         if (opts.after) opts.after();
       } catch (x) { e.target.disabled = false; toast(x.message); }
     } }, (PORTAL_DRY && !internal() ? 'Preview (dry run) – ' : 'Send – ') + d)]);
@@ -3449,7 +3508,14 @@ function portalPanel(t) {
     t.portalDirect && openT(t) ? el('div', { style: 'color:#8a5200;font-weight:600' }, '! Decided on the portal' + (t.portalDirect.by ? ' by ' + t.portalDirect.by : '') + ': ' + t.portalDirect.status + ' – check, then close here') : null,
     sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Answer with the Decision buttons or Reply – it goes back through the portal to ' + portalRecipient(t) + '.'),
     failed && s.error ? el('div', { class: 'small', style: 'color:var(--bad)' }, s.error) : null,
-    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null);
+    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null,
+    // close the portal request from here - also when the ticket is already closed (e.g. answered by email only)
+    t.mergedInto ? el('div', { class: 'small muted' }, 'Answer it in ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto), ' (this ticket was merged).')
+      : !final && !portalBusy(t) ? el('div', { style: 'display:grid;gap:4px;margin-top:4px;border-top:1px solid var(--border);padding-top:6px' },
+        t.status === 'Closed' ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Closed here, but still ' + (p.statusName || 'open') + ' on the portal – ' + (p.brokerMail ? 'the broker' : 'the member') + ' has no answer through the portal yet.') : null,
+        el('div', { class: 'row', style: 'gap:6px;flex-wrap:wrap;align-items:center' }, el('span', { class: 'muted' }, 'Close portal request:'),
+          ['Approved', 'Partially approved', 'Rejected'].map(d => el('button', { class: 'btn sm', type: 'button', title: 'Sends the decision through the portal (' + portalRecipient(t) + ') and closes request #' + p.requestId + ' there; confirmed from the portal Timeline' + (isDual(t) ? '. Can email the same text too.' : ''), onclick: () => portalDecisionDialog(t, d, '') }, d))))
+      : final ? el('div', { class: 'small muted', style: 'margin-top:4px' }, 'Already ' + p.statusName + ' on the portal – nothing to close there. You can still send a message through the portal (Reply) or answer by email. Only the requester can reopen it on the portal (by sending the request again).') : null);
 }
 // Portal health (Settings › Portal): replies waiting, how long a send takes, failures - straight from the outbox (last 24 h)
 function portalHealthBox(s) {
@@ -3682,18 +3748,22 @@ const isOwnRecip = x => { const mb = ownMailbox(); return x.email ? x.email === 
 // people added in copy EARLIER in the conversation (by the customer or by us), unless an agent removed them on purpose.
 // Only exact duplicates and our own mailbox are left out. A name without an address stays (Outlook knows who it is).
 function replyAllOf(t) {
-  const ins = t.msgs.filter(m => m.kind === 'in').sort((a, b) => a.at < b.at ? -1 : 1); const last = ins[ins.length - 1];
+  // the conversation includes tickets merged into this one; "newest email" = the newest real EMAIL (a portal / WhatsApp
+  // message has no email thread and no To / Cc) - so a ticket with email + portal still answers the email people
+  const pool = [t, ...(t.mergedFrom || []).map(n => DB.tickets.get(n)).filter(Boolean)].flatMap(x => x.msgs);
+  const allIns = pool.filter(m => m.kind === 'in'); const mails = allIns.filter(m => !m.portal && m.fromEmail);
+  const ins = (mails.length ? mails : allIns).sort((a, b) => a.at < b.at ? -1 : 1); const last = ins[ins.length - 1];
   const known = new Map();   // display name -> address, from anywhere in the conversation
   const learn = x => { if (x.email && x.name) known.set(x.name.toLowerCase(), x.email); };
-  for (const m of t.msgs) { if (m.fromEmail && m.fromName) learn({ email: String(m.fromEmail).toLowerCase(), name: String(m.fromName) }); recipTokens([m.to, m.cc].join(';')).forEach(learn); }
+  for (const m of pool) { if (m.fromEmail && m.fromName) learn({ email: String(m.fromEmail).toLowerCase(), name: String(m.fromName) }); recipTokens([m.to, m.cc].join(';')).forEach(learn); }
   const fix = x => !x.email && known.has(x.name.toLowerCase()) ? { email: known.get(x.name.toLowerCase()), name: x.name } : x;
-  const removed = new Set(); for (const m of t.msgs) if (m.kind === 'out' && Array.isArray(m.removed)) m.removed.forEach(r => removed.add(String(r).toLowerCase()));
+  const removed = new Set(); for (const m of pool) if (m.kind === 'out' && Array.isArray(m.removed)) m.removed.forEach(r => removed.add(String(r).toLowerCase()));
   const seen = new Set(), to = [], cc = [];
   const put = (list, x, hist) => { x = fix(x); if ((!x.email && !x.name) || isOwnRecip(x)) return; const k = recipKey(x); if (seen.has(k)) return;   // exact duplicates only (a name-only entry matches the same name with an address)
     if (hist && (removed.has(k) || removed.has(String(x.name || '').toLowerCase()))) return; seen.add(k); if (x.name) seen.add('name:' + x.name.toLowerCase()); list.push(x); };
   put(to, last ? { email: String(last.fromEmail || '').toLowerCase(), name: last.fromName || '' } : { email: String(t.requester.email || '').toLowerCase(), name: t.requester.name || '' });
   if (last) { recipTokens(last.to).forEach(x => put(to, x)); recipTokens(last.cc).forEach(x => put(cc, x)); }
-  for (const m of t.msgs) if (m !== last && (m.kind === 'in' || (m.kind === 'out' && !m.auto && !m.forward && !m.portal))) recipTokens(m.cc).forEach(x => put(cc, x, true));
+  for (const m of pool) if (m !== last && !m.portal && (m.kind === 'in' || (m.kind === 'out' && !m.auto && !m.forward))) recipTokens(m.cc).forEach(x => put(cc, x, true));
   return { to: to.map(recipText).join('; '), cc: cc.map(recipText).join('; '), toList: to, ccList: cc };
 }
 // post-send check: who Outlook reported as recipients vs who should have received it (the bridge's own Reply All list of the
@@ -3719,6 +3789,24 @@ function sendMissingDialog(t, m, miss) {
       try { await queueReply(t, { to, cc: '', subject: m.subject || replySubject(t), html: m.html, files: [], reuseAtts: m.atts || [], exact: true }); await emit('note', t.no, { html: textToHtml('Reply of ' + fmtDate(m.sentAt || m.at) + ' sent again to the people it missed: ' + to), auto: true, missFixFor: m.outId || '' }); closeDialog(); toast('Queued – only to ' + recipTokens(to).length + ' recipient(s)'); }
       catch (x) { e.target.disabled = false; toast(x.message); }
     } }, 'Send to these people')]);
+}
+// possible duplicates of a ticket: same member card / sender email / mobile within 3 days (+ a file of the same size = strong).
+// In-memory only (no server call). Two plain portal tickets are never merged: each portal request needs its own answer.
+const filesOf = t => t.msgs.flatMap(m => m.kind === 'in' ? (m.atts || []) : []).filter(a => a.path && !a.inline && +a.size > 20000);
+function dupHints(t) {
+  if (!t || t.mergedInto || t.historical) return [];
+  const m0 = t.member || '', e0 = String((t.requester || {}).email || '').toLowerCase(), p0 = String((t.portal || {}).mobile || '');
+  if (!m0 && !e0 && !p0) return [];
+  const c0 = Date.parse(t.created) || 0, mine = filesOf(t), out = [];
+  for (const o of DB.tickets.values()) {
+    if (o.no === t.no || Math.abs((Date.parse(o.created) || 0) - c0) > 3 * 864e5 || o.mergedInto || o.historical || (t.mergedFrom || []).includes(o.no) || (o.mergedFrom || []).includes(t.no)) continue;
+    if (m0 && o.member && o.member !== m0) continue;   // a different member card is never the same request
+    const sameM = m0 && o.member === m0, sameE = e0 && String((o.requester || {}).email || '').toLowerCase() === e0, sameP = p0 && String((o.portal || {}).mobile || '') === p0;
+    if (!sameM && !sameE && !sameP) continue;
+    const theirs = filesOf(o); const f = mine.find(x => theirs.some(y => +y.size === +x.size));
+    out.push({ o, file: f ? f.name : '', why: sameM ? 'same member card ' + m0 : sameE ? 'same sender ' + e0 : 'same mobile ' + p0, bothPortal: isPortal(t) && isPortal(o) });
+  }
+  return out.sort((a, b) => (b.file ? 1 : 0) - (a.file ? 1 : 0)).slice(0, 3);
 }
 // everyone who took part in the conversation (shown in the sidebar)
 function participantsOf(t) {
@@ -4804,7 +4892,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-23a';
+const APP_VERSION = '2026-11-23b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

@@ -221,10 +221,103 @@ async function syncOne(c: Cfg, id: string, lastUpdate?: string): Promise<'create
 }
 const reqHash = (q: Req) => sha256(JSON.stringify([q.status_code, q.last_update || '', (q.attachments || []).map((a) => String(a.id)).sort(), (q.timeline || []).map((x) => String(x.id)).sort()]));
 
+// ---------- one request = one ticket (duplicate rule, 23 Nov 2026) ----------
+// Merged / linked automatically ONLY when it is certain: the same member card on both AND at least one byte-identical file
+// (SHA-256) AND within 3 days. Anything less is only shown in the app as "Possible duplicate" for the team to confirm.
+// A ticket answers ONE portal request: two different portal requests are never merged (each needs its own answer).
+const DAY = 86400000;
+const shaBytes = async (b: Uint8Array) => [...new Uint8Array(await crypto.subtle.digest('SHA-256', b))].map((x) => x.toString(16).padStart(2, '0')).join('');
+async function fileHash(path: string): Promise<string> {
+  const { data: h } = await db.from('file_hashes').select('sha256').eq('path', path).maybeSingle();
+  if (h) return h.sha256;
+  const { data, error } = await db.storage.from(BUCKET).download(path); if (error || !data) return '';
+  const bytes = new Uint8Array(await data.arrayBuffer()); const sha = await shaBytes(bytes);
+  await db.from('file_hashes').upsert({ path, size: bytes.length, sha256: sha });
+  return sha;
+}
+async function mergedInto(no: string): Promise<string> { const { data } = await db.from('events').select('d').eq('type', 'merge').eq('t', no).limit(1); return (data && data[0]?.d?.into) || ''; }
+async function finalTicket(no: string) { let n = no; for (let i = 0; i < 5; i++) { const nx = await mergedInto(n); if (!nx) break; n = nx; } return n; }   // portal updates follow a merge
+async function portalOf(no: string): Promise<string> { const { data } = await db.from('portal_links').select('request_id').eq('ticket', no).limit(1); return (data && data[0]?.request_id) || ''; }
+async function ticketFiles(no: string) {   // the member's own files (no inline logos / signatures, nothing tiny)
+  const { data } = await db.from('events').select('d').eq('t', no).eq('type', 'msg.in');
+  return ((data || []) as any[]).flatMap((m) => m.d?.atts || []).filter((a: any) => a.path && !a.inline && +a.size > 20000 && a.source !== 'Sarwa');
+}
+async function sameFile(a: any[], b: any[]): Promise<string> {
+  for (const x of a) for (const y of b) if (+x.size === +y.size && x.path !== y.path) { const [h1, h2] = [await fileHash(x.path), await fileHash(y.path)]; if (h1 && h1 === h2) return x.name || y.name || 'file'; }
+  return '';
+}
+// a new portal request that is already here by email (same card + identical file): linked to that ticket, no second ticket
+async function linkToEmailTicket(q: Req, hash: string): Promise<'updated' | 'skipped' | null> {
+  const member = String(q.individual_number || ''); if (!member) return null;
+  const at = Date.parse(q.creation_date || '') || Date.now();
+  const mine = new Map<string, string>();   // sha -> file name (the portal's files, already in this request)
+  for (const a of (q.attachments || []) as InlineAtt[]) {
+    if (!a.content_base64 || /sarwa/i.test(String(a.source || ''))) continue;
+    const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0)); if (bytes.length > 20000) mine.set(await shaBytes(bytes), a.file_name || String(a.id));
+  }
+  if (!mine.size) return null;
+  const { data: cands } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).neq('d->>source', 'portal')
+    .gte('ts', new Date(at - 3 * DAY).toISOString()).lte('ts', new Date(at + 3 * DAY).toISOString()).order('ts', { ascending: false }).limit(10);
+  for (const cnd of (cands || []) as any[]) {
+    const no = await finalTicket(cnd.t);
+    if (await portalOf(no)) continue;   // that ticket already answers another portal request
+    for (const f of await ticketFiles(no)) {
+      const sha = await fileHash(f.path);
+      if (sha && mine.has(sha)) return await linkPortal(q, hash, no, `same member card ${member} and the identical file "${f.name}"`);
+    }
+  }
+  return null;
+}
+async function linkPortal(q: Req, hash: string, no: string, why: string): Promise<'updated' | 'skipped'> {
+  const id = String(q.request_id);
+  const { error } = await db.from('portal_links').insert({ request_id: id, ticket: no, last_hash: '', status_code: q.status_code, status_name: statusName(q), portal_updated_at: q.last_update || null });
+  if (error) { if (/duplicate|unique/i.test(error.message)) return 'skipped'; throw new Error(error.message); }
+  const { data: hd } = await db.rpc('portal_holder_day', { p_holder: q.policy_holder || q.policy_holder_name || '', p_member: q.individual_number || '' });
+  const p = portalInfo(q, hd);
+  const atts = await saveInlineAtts(no, (q.attachments || []) as InlineAtt[]);
+  await insertEv('Portal sync', 'portal.link', no, { requestId: id, portal: p, why, auto: true });
+  await insertEv('Portal sync', 'msg.in', no, { key: `portal:${id}:init`, portal: true, channel: p.channel, fromName: q.individual_name || p.broker || '', fromEmail: p.brokerMail, to: '', cc: (q.cc || []).join('; '), date: q.creation_date || new Date().toISOString(), subject: `Chronic Attach #${id}`, text: requestText(q, p), atts });
+  await insertEv('Portal sync', 'note', no, { auto: true, html: `<b>The same request also came on the portal</b> (Chronic Attach #${id}, ${String(p.channel || 'portal').replace(/</g, '&lt;')}): ${why.replace(/</g, '&lt;')}. It was added to this ticket instead of opening a second one. Answer once here: in the reply box tick <b>Email</b> and/or <b>Portal</b> (the portal sends it by ${p.brokerMail ? 'email to the broker' : 'WhatsApp'}).` });
+  await db.from('portal_links').update({ last_hash: hash, att_ids: (q.attachments || []).map((a) => String(a.id)), timeline_ids: (q.timeline || []).map((x) => String(x.id)), synced_at: new Date().toISOString() }).eq('request_id', id);
+  await log({ direction: 'in', action: 'link_ticket', request_id: id, ticket: no, detail: { why, files: atts.length } });
+  return 'updated';
+}
+// every 5 minutes: a NEW ticket that is certainly the same request as an older one (same card + identical file, 3 days) is
+// merged into the older one - only tickets created after this rule went live, and never one somebody already answered
+async function dedupe(now: number) {
+  const { data: go } = await db.rpc('portal_try_lock', { p_key: 'dedupe', p_secs: 280 }); if (!go) return 0;
+  const st0 = await getState('dedupe'); if (!st0.since) { await setState('dedupe', { since: new Date(now).toISOString() }); return 0; }
+  const from = new Date(Math.max(Date.parse(st0.since), now - 6 * 3600000)).toISOString();
+  const { data: fresh } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').gte('ts', from).order('ts').limit(60);
+  let merged = 0;
+  for (const n of (fresh || []) as any[]) {
+    const no = n.t, member = String(n.d?.member || ''); if (!member || await mergedInto(no)) continue;
+    const { count: acted } = await db.from('events').select('id', { count: 'exact', head: true }).eq('t', no).in('type', ['msg.out', 'portal.queued']);
+    if (acted) continue;
+    const { data: olds } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).lt('ts', n.ts).gte('ts', new Date(Date.parse(n.ts) - 3 * DAY).toISOString()).neq('t', no).order('ts', { ascending: false }).limit(10);
+    if (!olds || !olds.length) continue;
+    const mine = await ticketFiles(no); if (!mine.length) continue;
+    const myPortal = await portalOf(no);
+    for (const o of olds as any[]) {
+      const target = await finalTicket(o.t); if (target === no) continue;
+      if (myPortal && await portalOf(target)) continue;   // two portal requests: each keeps its own ticket (suggestion only)
+      const file = await sameFile(mine, await ticketFiles(target)); if (!file) continue;
+      const why = `same member card ${member} and the identical file "${file}"`;
+      await insertEv('Duplicate check', 'merge', no, { into: target, auto: true, why });
+      await insertEv('Duplicate check', 'note', target, { auto: true, html: `<b>${no} was merged into this ticket automatically</b>: ${why.replace(/</g, '&lt;')}. Its messages${myPortal ? ' and portal request #' + myPortal : ''} show here with their original dates; nothing was deleted.` });
+      await log({ direction: 'system', action: 'auto_merge', ticket: target, detail: { from: no, into: target, why, portal: myPortal || null } });
+      merged++; break;
+    }
+  }
+  return merged;
+}
+
 async function createTicket(c: Cfg, q: Req, hash: string, attFn: AttFn): Promise<'created' | 'skipped'> {
   const id = String(q.request_id);
   // a request that is already decided in the portal and was never in the helpdesk is not imported (history before go-live)
   if (FINAL.has(+q.status_code)) { await log({ direction: 'in', action: 'skip_final', request_id: id, detail: { status: statusName(q) } }); return 'skipped'; }
+  const linked = await linkToEmailTicket(q, hash).catch((e) => { console.warn('link check', errMsg(e)); return null; });
+  if (linked) return linked as any;
   const { data: hd } = await db.rpc('portal_holder_day', { p_holder: q.policy_holder || q.policy_holder_name || '', p_member: q.individual_number || '' });
   const { data: nt, error: e1 } = await db.rpc('portal_next_ticket');
   if (e1 || !nt) throw new Error('ticket number: ' + (e1?.message || 'none'));
@@ -258,8 +351,8 @@ async function createTicket(c: Cfg, q: Req, hash: string, attFn: AttFn): Promise
 }
 
 async function updateTicket(c: Cfg, q: Req, link: any, hash: string, attFn: AttFn): Promise<'updated' | 'same'> {
-  const id = String(q.request_id), no = link.ticket as string;
-  const { data: created } = await db.from('events').select('id').eq('type', 'ticket.create').eq('t', no).maybeSingle();
+  const id = String(q.request_id), no = await finalTicket(link.ticket as string);   // merged: updates go to the ticket it was merged into
+  const { data: created } = await db.from('events').select('id').eq('type', 'ticket.create').eq('t', link.ticket).maybeSingle();
   if (!created) { await db.from('portal_links').delete().eq('request_id', id); return await createTicket(c, q, hash, attFn) as any; }   // half-made earlier: start again
   const knownAtt = new Set<string>(link.att_ids || []), knownTl = new Set<string>(link.timeline_ids || []);
   const newAtts = (q.attachments || []).filter((a) => !knownAtt.has(String(a.id)) && !/sarwa/i.test(String(a.source || '')));
@@ -566,7 +659,9 @@ async function sweep(c: Cfg, force = false) {
       if (list.length) await internalMail(c, '', `[Portal] daily check: ${list.length} repl${list.length > 1 ? 'ies' : 'y'} not confirmed`, `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>`).catch(() => {});
     }
   }
-  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert) await setState('sweep', { at: new Date().toISOString(), ...out });
+  // 6) one request = one ticket: certain duplicates among new tickets are merged (every 5 min)
+  (out as any).merged = await dedupe(now).catch((e) => { console.warn('dedupe', errMsg(e)); return 0; });
+  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert || (out as any).merged) await setState('sweep', { at: new Date().toISOString(), ...out });
   return out;
 }
 // ---------- arrival checks (rules engine) ----------
