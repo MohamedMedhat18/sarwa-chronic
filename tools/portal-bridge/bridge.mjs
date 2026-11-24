@@ -674,7 +674,10 @@ async function newRequestsNow(page) {
 // ---------------- self-healing (24 Nov 2026: a portal call hung at 14:08 after "Failed to fetch"; the process stayed alive
 // and frozen for 1.5 h, replies piled up). Exit codes: 10 = needs a person (Start-PortalBridge.ps1 does not restart it),
 // anything else = Start-PortalBridge.ps1 starts the bridge again in 20 s; the task also starts it every 5 min if not running.
-let beat = Date.now(); const alive = () => { beat = Date.now(); };
+// alive(): progress mark for the watchdog AND (at most once a minute) "still working" to the server, so a long catch-up cycle
+// is not mistaken for an offline bridge; a frozen bridge stops calling alive() and the server sees it within 6 minutes
+let beat = Date.now(), lastHb = 0;
+const alive = () => { beat = Date.now(); if (beat - lastHb > 60000) { lastHb = beat; call('bridge_health', { ok: true, loggedIn: true, pageOk: true, working: true, pc: env.COMPUTERNAME || '' }).catch(() => { }); } };
 const WATCHDOG_MS = 8 * 60000;
 setInterval(() => { if (Date.now() - beat > WATCHDOG_MS) { log(`watchdog: no progress for ${WATCHDOG_MS / 60000} min (frozen on the portal or the network) - restarting`); process.exit(3); } }, 30000);
 const browserGone = (m) => /Target page, context or browser has been closed|Browser has been closed|browser has disconnected|Target closed/i.test(m);
