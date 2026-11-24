@@ -839,7 +839,7 @@ function applyEv(S, e) {
         history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: d.status === 'Closed' ? created : null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || [],
         historical: !!d.historical,   // handled in Outlook before it reached the helpdesk (Outlook "Done" folder): closed, no SLA
         // portal request (Chronic Attach): request no., channel, policy holder, Starting Day, items – replies go back through the portal
-        portal: d.portal || null, mobile: d.mobile || '', portalSync: null
+        portal: d.portal || null, mcc: d.mcc || null, mobile: d.mobile || '', portalSync: null
       });
       S.maxSeq = Math.max(S.maxSeq, d.seq || 0);
       if (d.fromKey) { S.processed.add(d.fromKey); S.ignored.delete(d.fromKey); }
@@ -951,7 +951,8 @@ function applyEv(S, e) {
       if (d.direct) t.portalDirect = { at: e.ts, by: d.by || '', status: d.statusName, comment: d.comment || '' };
       t.timeline.push({ ts: e.ts, by: 'Portal', text: 'Portal status: ' + (d.from ? d.from + ' → ' : '') + d.statusName + (d.direct ? ' (changed on the portal' + (d.by ? ' by ' + d.by : '') + ')' : '') }); t.updated = e.ts; break;
     }
-    case 'portal.rules': { if (!t) return; t.portalRules = { ...d, at: e.ts }; break; }   // arrival checks + suggested decision (server rules engine)
+    case 'portal.rules': { if (!t) return; t.portalRules = { ...d, at: e.ts }; break; }
+    case 'mcc.update': { if (!t) return; t.mcc = { ...(t.mcc || {}), ...(d.mcc || {}) }; break; }   // Info Desk: the Call Center request as read now   // arrival checks + suggested decision (server rules engine)
     case 'portal.queued': {   // an agent sent a decision / message: it is on its way to the portal (shown as "Waiting for the portal")
       if (!t) return;
       t.msgs.push({ kind: 'out', portal: true, id: e.id, at: e.ts, by: e.by, state: 'queued', jobId: d.jobId, decision: d.decision, reason: d.reason || '', html: d.html, text: d.text, atts: d.atts || [], to: d.to || '', cc: d.cc || '', channel: d.channel || '' });
@@ -1395,8 +1396,9 @@ const VIEW_DEFS = {
   nodecision: { label: 'Open without a decision', f: t => !t.decision && t.status !== 'Resolved' && t.status !== 'Closed' },
   unverified: { label: 'Open, not checked in i-CARE', f: t => !t.icare && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto },
   portal: { label: 'Portal – open requests', desc: 'Open tickets from the portal (Chronic Attach)', f: t => isPortal(t) && openT(t) && !t.mergedInto },
-  portalwait: { label: 'Portal – waiting for confirmation', desc: 'A decision is on its way to the portal (not confirmed yet)', f: t => isPortal(t) && !!t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state) },
-  portalfail: { label: 'Portal – sync failed', desc: 'The portal did not take the decision – try again or check the request on the portal', f: t => isPortal(t) && !!t.portalSync && ['conflict', 'error', 'dead'].includes(t.portalSync.state) },
+  infodesk: { label: 'Info Desk', desc: 'Call Center requests (portal Call Center > Chronic / Approval, MCC-…) – open or waiting for the Call Center', f: t => !!t.mcc && !t.mergedInto && !['Closed', 'Resolved'].includes(t.status) },
+  portalwait: { label: 'Portal – waiting for confirmation', desc: 'A decision is on its way to the portal (not confirmed yet)', f: t => (isPortal(t) || !!t.mcc) && !!t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state) },
+  portalfail: { label: 'Portal – sync failed', desc: 'The portal did not take the decision – try again or check the request on the portal', f: t => (isPortal(t) || !!t.mcc) && !!t.portalSync && ['conflict', 'error', 'dead'].includes(t.portalSync.state) },
   portaldirect: { label: 'Portal – changed on the portal', desc: 'Someone decided on the portal directly while the ticket was open here', f: t => isPortal(t) && !!t.portalDirect && openT(t) && !t.mergedInto },
   all: { label: 'All tickets', f: () => true }
 };
@@ -1478,6 +1480,7 @@ function folderPane(view) {
       link('portal', 'Open requests', cnt(t => VIEW_DEFS.portal.f(t)), { icon: '⇄', title: VIEW_DEFS.portal.desc }),
       link('portalwait', 'Waiting for portal', cnt(t => VIEW_DEFS.portalwait.f(t)), { icon: '⏳', title: VIEW_DEFS.portalwait.desc }),
       link('portalfail', 'Sync failed', cnt(t => VIEW_DEFS.portalfail.f(t)), { icon: '⚠', tone: 'bad', title: VIEW_DEFS.portalfail.desc }),
+      link('infodesk', 'Info Desk', cnt(t => VIEW_DEFS.infodesk.f(t)), { icon: '☎', title: VIEW_DEFS.infodesk.desc }),
       link('portaldirect', 'Changed on the portal', cnt(t => VIEW_DEFS.portaldirect.f(t)), { icon: '!', tone: 'warn', title: VIEW_DEFS.portaldirect.desc }),
       el('a', { href: '#/ph', title: 'Every portal request, old ones included' }, el('span', { class: 'ico', 'aria-hidden': 'true' }, '🗂'), el('span', { class: 'nm' }, 'Portal history'))] : null,
     el('h4', {}, 'Decisions'),
@@ -1709,7 +1712,7 @@ function msgCard(m, t, fromNo) {
     return el('div', { class: 'msg out', style: 'border-left:3px solid #1d5c52' },
       el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
         el('div', {}, el('span', { class: 'who' }, m.by), ' ', el('span', { class: 'pill', style: 'background:#e3f1ee;color:#1d5c52' }, '⇄ Portal'), ' ', el('b', {}, m.decision === 'Message' ? 'Message' : m.decision), m.reason ? ' – ' + m.reason : '', ' ', el('span', { class: 'pill ' + st[1], title: m.error || '' }, st[0]), fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null),
-        el('div', { class: 'small muted', dir: 'auto' }, (m.delivered ? 'Delivered by the portal: ' + m.delivered.channel + ' to ' + m.delivered.to + ((m.delivered.cc || []).length ? ' · Cc: ' + m.delivered.cc.join('; ') : '') : 'The portal sends it to ' + portalRecipient(t)) + ' · ' + fmtDate(m.at)),
+        el('div', { class: 'small muted', dir: 'auto' }, (m.delivered ? 'Delivered by the portal: ' + m.delivered.channel + ' to ' + m.delivered.to + ((m.delivered.cc || []).length ? ' · Cc: ' + m.delivered.cc.join('; ') : '') : t.mcc ? 'Team Status on Call Center request ' + t.mcc.requestNo + ' (the Call Center answers the member)' : 'The portal sends it to ' + portalRecipient(t)) + ' · ' + fmtDate(m.at)),
         m.error && failed ? el('div', { class: 'small', style: 'color:var(--bad)' }, m.error) : null)),
       htmlBox(m),
       visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
@@ -1871,7 +1874,9 @@ function ticketView(r) {
   const layout = () => newestFirst() ? left.replaceChildren(top, edHost, thread) : left.replaceChildren(top, thread, edHost);
   layout();
   let mode = 'reply'; const files = [];
-  let chMail = null, chPortal = true;   // email + portal ticket: which channels this reply goes to (email: decided on first draw)
+  let chMail = null, chPortal = true;
+  // Info Desk: the decision the portal requires on every Call Center reply (Team Status)
+  const mccDec = el('select', { 'aria-label': 'Call Center decision' }, opt('', '— decision (required by the portal) —'), MCC_DECISIONS.map(x => opt(x, x)));   // email + portal ticket: which channels this reply goes to (email: decided on first draw)
   const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
   // To / Cc like Outlook's Reply All: the sender of the newest email + everyone who was in its To / Cc (the agent can remove people)
   const toIn = el('input', { type: 'text', 'aria-label': 'To', placeholder: 'name@company.com; …' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'everyone in copy' });
@@ -1961,14 +1966,15 @@ function ticketView(r) {
     sendBtn.textContent = mode === 'reply' ? 'Send' : mode === 'forward' ? 'Forward' : 'Add note';
     const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
-      mode === 'reply' && isDual(t) ? channelBox(t)
+      mode === 'reply' && t.mcc ? el('div', { style: 'display:grid;gap:6px;padding:8px 12px 0' }, el('div', { class: 'small', style: 'color:#6b4fa0;font-weight:600' }, '☎ Goes to Call Center request ' + t.mcc.requestNo + ' on the portal (Team Status). The Call Center answers the member – nothing is sent to the member from here.'), el('label', { class: 'row', style: 'gap:8px;align-items:center' }, el('span', { class: 'small muted' }, 'Decision'), mccDec))
+      : mode === 'reply' && isDual(t) ? channelBox(t)
       : mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
       : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
       mode === 'forward' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), fwdTo), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn),
         el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Email'), fwdSel),
         el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + fwdSubject(fwdMsg) + (fwdMsg && (fwdMsg.atts || []).filter(a => !a.inline).length ? ' · the original attachments go with it' : ''))] : null,
       tool, ce, filesBox, fileIn,
-      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && isDual(t) ? 'Each channel shows its own status in the conversation (email: Outlook · portal: confirmed in the portal Timeline). Nothing stays waiting: after 15 min it shows Failed with Try again.' : mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
+      el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && t.mcc ? 'Posted on the request with your decision and confirmed from its Timeline; the ticket waits for the Call Center to close it (or choose Then set Closed).' : mode === 'reply' && isDual(t) ? 'Each channel shows its own status in the conversation (email: Outlook · portal: confirmed in the portal Timeline). Nothing stays waiting: after 15 min it shows Failed with Try again.' : mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   fwdSel.addEventListener('change', () => drawEditor());
   // email + portal ticket: tick the channels; who receives it is shown before sending
@@ -2008,6 +2014,11 @@ function ticketView(r) {
         await queueReply(t, { to, cc: ccIn.value.trim(), subject: fwdSubject(m), html, files: files.slice(), inline: B.inline, forward: { msg: m, html: quoteOf(m) } });
         if (after) await emit('update', no, after);
         fwdTo.value = ''; toast('Forward queued – Outlook sends it within a minute');
+      } else if (t.mcc) {   // Info Desk: Team Status (decision + comment) on the Call Center request
+        if (!mccDec.value) { toast('Choose the decision – the portal requires one on every reply'); mccDec.focus(); sendBtn.disabled = false; return; }
+        const txt = htmlToPlain(body).trim(); if (!txt) { toast('Write the comment for the Call Center'); sendBtn.disabled = false; return; }
+        await queueMcc(t, { teamStatus: mccDec.value, text: txt, after });
+        toast(mccDec.value + ' sent to Call Center request ' + t.mcc.requestNo + ' – confirmed from its Timeline in a moment'); mccDec.value = '';
       } else if (isDual(t)) {   // email + portal ticket: the same reply to every ticked channel; each shows its own delivery status
         if (!chMail && !chPortal) { toast('Tick at least one channel (Email / Portal).'); sendBtn.disabled = false; return; }
         if (chPortal && after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
@@ -2102,7 +2113,7 @@ function ticketView(r) {
     side.replaceChildren(
       el('h3', {}, 'Member'),
       patientInfo(t),
-      portalPanel(t),
+      portalPanel(t), mccPanel(t),
       portalRulesBox(t),
       portalHistoryBox(t),
       icarePanel(t),
@@ -3606,6 +3617,61 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
   refresh();   // label of the main button follows the chosen reason (internal Pending is applied, not previewed)
   (d === 'Approved' ? msg : reason).focus();
 }
+/* ---- Info Desk: Call Center requests (portal Call Center > Chronic / Approval, MCC-YYYY-NNNNN) ----
+   The Call Center creates and closes them and answers the member. Our team answers with Team Status on the portal: a
+   decision (required by the portal – a comment alone is refused, tested 25 Nov 2026 on MCC-2026-05976) and a comment. */
+const MCC_DECISIONS = ['Approved', 'Partially Approved Rejected', 'Rejected', 'Pending'];
+const APPROVAL_MAIL = 'Approval@sarwa.life';
+const MCC_FORWARD_LIVE = false;   // the Approval forward template is waiting for the admin's approval: preview only until then
+async function queueMcc(t, { teamStatus, text, after }) {
+  if (!t.mcc) throw new Error('Not a Call Center request');
+  if (!MCC_DECISIONS.includes(teamStatus)) throw new Error('Choose the decision – the portal requires one');
+  if (portalBusy(t)) throw new Error('A reply for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
+  const id = 'pd_' + Date.now().toString(36) + rand(4); const html = textToHtml(text || '');
+  const ticketUpdate = after && isDone(after.status) ? after : { status: 'Pending', pendingReason: 'Awaiting Call Center' };
+  const job = { kind: 'mcc', mccKind: t.mcc.kind, decision: teamStatus, teamStatus, text: text || '', html, agent: me(), agentEmail: (ME && ME.email) || '', attachments: [], attachmentNames: [], ticketUpdate, queuedAt: new Date().toISOString() };
+  const { error } = await SB.from('portal_outbox').insert({ id, ticket: t.no, request_id: t.mcc.requestNo, job, status: 'queued' });
+  if (error) throw new Error(/portal_outbox_one_open/.test(error.message) ? 'A reply for this ticket is already on its way' : 'Not queued: ' + error.message);
+  await emit('portal.queued', t.no, { jobId: id, decision: teamStatus, reason: '', text: text || '', html, atts: [], to: 'Call Center request ' + t.mcc.requestNo, channel: 'callcenter' });
+  return id;
+}
+// the request as the Call Center shows it + where it stands; Approval requests can also go to the Approval team by email
+function mccPanel(t) {
+  if (!t || !t.mcc) return null; const p = t.mcc, s = t.portalSync;
+  const row = (k, v) => v ? el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, k), el('span', { dir: 'auto', style: 'text-align:right;min-width:0;overflow-wrap:anywhere' }, String(v))) : null;
+  const sync = s ? ({ queued: ['⏳ Waiting for the portal', '#8a5200'], sending: ['⏳ Sending to the portal…', '#8a5200'], retrying: ['⏳ Portal not reachable – retrying', '#8a5200'], sent: ['✓ Posted on the request ' + rel(s.at), '#1b7344'], conflict: ['⚠ Refused by the portal', 'var(--bad)'], error: ['⚠ Refused by the portal', 'var(--bad)'], dead: ['⚠ Sync failed', 'var(--bad)'], cancelled: ['Cancelled', 'var(--muted)'], resolved: ['✓ No action needed', '#1b7344'] }[s.state] || [s.state, 'var(--muted)']) : null;
+  const other = [...DB.tickets.values()].filter(o => o.no !== t.no && !o.mergedInto && p.memberId && o.member === p.memberId && (isPortal(o) || o.mcc));
+  return el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px;border-left:3px solid #6b4fa0' },
+    el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '☎ Call Center ' + p.requestNo), el('span', { class: 'pill', style: 'background:' + (p.kind === 'approval' ? '#efe7fb' : 'var(--warn-bg)') }, p.kind === 'approval' ? 'Approval' : 'Chronic')),
+    row('Call', p.callType === 'WP' ? 'WhatsApp to the Call Center' : p.callType === 'INCOMING' ? 'Phone call' : p.callType), row('Request', [p.requestType, p.annex].filter(Boolean).join(' – ')), row('Priority', p.priority),
+    p.notes ? el('div', { dir: 'auto', style: 'white-space:pre-wrap;background:var(--surface-2);border-radius:6px;padding:4px 6px' }, p.notes) : null,
+    row('Member', [p.memberName, p.memberId].filter(Boolean).join(' · ')), row('Mobile', p.mobile), row('Policy holder', p.policyHolder), row('Policy', p.policyNumber), row('Plan', p.plan), row('Valid', [p.effective, p.expiry].filter(Boolean).join(' → ')),
+    row('Assigned (Call Center)', p.assignedTo), row('Call Center status', p.currentStatus), row('Our decision on the portal', p.teamStatus ? p.teamStatus + (p.teamComment ? ' – ' + p.teamComment.slice(0, 120) : '') : 'not yet'),
+    sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Reply with a decision + comment: it goes to this request on the portal (Team Status). The Call Center answers the member; nothing is sent to the member from here.'),
+    s && ['conflict', 'error', 'dead'].includes(s.state) ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved')) : null,
+    other.length ? el('div', { class: 'small' }, 'Same member: ', ...other.slice(0, 4).flatMap((o, i) => [i ? ', ' : '', el('a', { href: '#/t/' + o.no }, o.no + (o.mcc ? ' (Call Center)' : ' (Chronic Attach)'))]), ' – linked, not merged.') : null,
+    p.kind === 'approval' ? el('div', { class: 'row', style: 'gap:6px;margin-top:4px' }, el('button', { class: 'btn sm', type: 'button', title: 'Send this request (details + files) to ' + APPROVAL_MAIL + ' – only when you click', onclick: () => approvalForwardDialog(t) }, '✉ Forward to Approval team')) : null);
+}
+// the email to the Approval team: request number, member, request details and the files; replies come back to this ticket
+function approvalForwardHtml(t) {
+  const p = t.mcc; const r = (k, v) => v ? `<tr><td style="color:#555;padding:2px 10px 2px 0">${esc(k)}</td><td>${esc(v)}</td></tr>` : '';
+  return `<div style="font-family:Arial,sans-serif;font-size:11pt"><p>Dear Approval team,</p><p>Please review the following prior-approval request received through the Call Center and reply to this email (keep the ticket number in the subject).</p>
+<table style="border-collapse:collapse;font-size:10.5pt">${r('Call Center request', p.requestNo)}${r('Request', [p.requestType, p.annex].filter(Boolean).join(' – '))}${r('Priority', p.priority)}${r('Member', p.memberName)}${r('Member ID', p.memberId)}${r('Mobile', p.mobile)}${r('Policy holder', p.policyHolder)}${r('Policy number', p.policyNumber)}${r('Plan', p.plan)}${r('Valid', [p.effective, p.expiry].filter(Boolean).join(' – '))}${r('Call type', p.callType)}${r('Notes from the Call Center', p.notes)}</table>
+<p>The files received with the request are attached.</p><p>Sarwa Chronic – Info Desk (${esc(t.no)})</p></div>`;
+}
+function approvalForwardDialog(t) {
+  const p = t.mcc; const files = t.msgs.flatMap(m => m.kind === 'in' ? (m.atts || []) : []).filter(a => a.path && !a.inline);
+  const subject = `[Info Desk] Prior approval – ${p.requestNo} – ${p.memberName} [${t.no}]`;
+  const box = el('div', { style: 'border:1px solid var(--border);border-radius:6px;padding:8px;max-height:320px;overflow:auto' }); box.innerHTML = sanitize(approvalForwardHtml(t));
+  openDialog('✉ Forward to the Approval team – ' + t.no, [el('div', { style: 'display:grid;gap:8px' },
+    MCC_FORWARD_LIVE ? null : el('div', { class: 'small', style: 'color:#8a5200;font-weight:600' }, 'Preview – this template is waiting for approval. Nothing is sent yet.'),
+    el('div', { class: 'small' }, el('b', {}, 'To: '), APPROVAL_MAIL, el('br'), el('b', {}, 'Cc: '), '(none)', el('br'), el('b', {}, 'Subject: '), subject, el('br'), el('b', {}, 'Attachments: '), files.length ? files.map(a => a.name).join(', ') : 'none'),
+    box, el('div', { class: 'small muted' }, 'Sent only when you click Send. Not sent to the member. The Approval team’s reply joins this ticket (ticket number in the subject).'))],
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Close'), MCC_FORWARD_LIVE ? el('button', { class: 'btn primary', type: 'button', onclick: async e => {
+      e.target.disabled = true;
+      try { await queueReply(t, { to: APPROVAL_MAIL, cc: '', subject, html: approvalForwardHtml(t), files: [], reuseAtts: files, exact: true }); await emit('note', t.no, { auto: true, html: textToHtml('Forwarded to the Approval team (' + APPROVAL_MAIL + ') on ' + fmtDate(new Date().toISOString()) + ' by ' + me()) }); closeDialog(); toast('Forwarded to the Approval team'); }
+      catch (x) { e.target.disabled = false; toast(x.message); } } }, 'Send') : null], 'min(760px,96vw)');
+}
 // sidebar: the portal request (key data for the decision) and where the answer is
 function portalPanel(t) {
   if (!isPortal(t)) return null; const p = t.portal, s = t.portalSync;
@@ -3822,7 +3888,7 @@ const DECISIONS = {
 };
 /* ---- Pending cycle: Pending is always "Pending – <reason>"; the reason is mandatory and decides the sub-folder.
    Customer-facing reasons get a request email (Reply All), reminders and – with no answer – an automatic close. ---- */
-const PENDING_REASONS = ['Missing documents', 'Awaiting customer info', 'Awaiting medical team decision', 'Awaiting pharmacy & branch selection', 'Awaiting third party (GlobeMed / i-CARE / provider)', 'Awaiting EOB / PSP approval', 'Other'];
+const PENDING_REASONS = ['Missing documents', 'Awaiting customer info', 'Awaiting medical team decision', 'Awaiting pharmacy & branch selection', 'Awaiting third party (GlobeMed / i-CARE / provider)', 'Awaiting EOB / PSP approval', 'Awaiting Call Center', 'Other'];
 const PR_CUSTOMER = ['Missing documents', 'Awaiting customer info', 'Awaiting pharmacy & branch selection'];   // we wait for the customer
 const PR_LEGACY = { 'Missing documents (prescription / lab / scan)': 'Missing documents', 'Waiting for the member': 'Awaiting customer info', 'Under medical review': 'Awaiting medical team decision', 'Waiting for the provider / branch': 'Awaiting pharmacy & branch selection', 'Waiting for GlobeMed / i-CARE': 'Awaiting third party (GlobeMed / i-CARE / provider)', 'Waiting for the EOB approval (PSP)': 'Awaiting EOB / PSP approval' };
 const PR_AR = { 'Missing documents': 'مستندات ناقصة', 'Awaiting customer info': 'في انتظار بيانات من العميل', 'Awaiting medical team decision': 'في انتظار قرار الفريق الطبي', 'Awaiting pharmacy & branch selection': 'في انتظار تحديد الصيدلية والفرع', 'Awaiting third party (GlobeMed / i-CARE / provider)': 'في انتظار جهة خارجية', 'Awaiting EOB / PSP approval': 'في انتظار موافقة EOB / PSP', Other: 'أخرى' };
@@ -3837,7 +3903,7 @@ const PR_RULES = () => ({ remind1: 2, remind2: 5, close: 10, ...((DB && DB.setti
 // working days since a time (by the team's business hours)
 function workDaysSince(ts) { if (!ts) return 0; const cal = DB.settings.hours; const per = Math.max(1, (cal.end || 17) - (cal.start || 9)) * 3600e3; return bizBetween(Date.parse(ts), Date.now(), cal) / per; }
 function pendingStage(t) {   // '' | 'remind1' | 'remind2' | 'close'
-  if (t.status !== 'Pending' || !PR_CUSTOMER.includes(pendingReasonOf(t))) return '';
+  if (t.mcc || t.status !== 'Pending' || !PR_CUSTOMER.includes(pendingReasonOf(t))) return '';   // Info Desk: never reminders / auto-close to the member
   const R = PR_RULES(), n = t.remindersSent || 0, since = workDaysSince(t.pendingSince || t.updated);
   if (n >= 2 && workDaysSince(t.lastReminderAt) >= R.close - R.remind2) return 'close';
   if (n === 1 && since >= R.remind2) return 'remind2';
@@ -5049,7 +5115,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-25a';
+const APP_VERSION = '2026-11-25b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

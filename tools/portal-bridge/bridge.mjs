@@ -166,7 +166,9 @@ async function openChronicAttach(page, { reload = false } = {}) {
     await page.waitForLoadState('networkidle').catch(() => { });
   }
   if (await frameWith(page, 'input[type=password]')) { await ensureLoggedIn(page); return openChronicAttach(page); }   // session expired
-  await page.locator('#my_ir').waitFor({ timeout: 30000 });
+  await page.locator('#my_ir').waitFor({ timeout: 30000, state: 'attached' });
+  // the portal may reopen on the last tab (Call Center): the Chronic Attach list must be the one on screen
+  if (!(await page.locator('#my_ir').isVisible().catch(() => false))) await clickTab(page, 'Chronic Attach');
 }
 // APEX opens dialogs as iframes; find the one showing a given page number
 async function frameForPage(page, pageId, timeout = 20000) {
@@ -514,6 +516,7 @@ async function cycle(page, full) {
     try { const out = await lookupRequest(page, id, cards[id]); state._miss[id] = /^not found/.test(out) ? (state._miss[id] || 0) + 1 : 0; saveState(); log('changed on the portal?', id, out.slice(0, 120)); }
     catch (e) { log('lookup failed', id, String(e.message || e).slice(0, 200)); if (e instanceof Blocked) throw e; }
   }
+  await mccCycle(page).catch((e) => { log('info desk read failed:', String(e.message || e).slice(0, 200)); if (e instanceof Blocked) throw e; });   // Call Center requests (Info Desk)
   await call('bridge_health', { ok: true, loggedIn: true, pageOk: true, pc: env.COMPUTERNAME || '' });
 }
 // find one request with the portal's card filter (Individual Number) over ALL statuses - a member has only a few requests,
@@ -630,6 +633,7 @@ async function outboundNow(page) {
     firstSeen[j.id] ||= Date.now(); alive();
     const why = canWrite(j);
     if (why) {   // preview only (this PC is in dry run / not allowed): nothing saved
+      if (j.kind === 'mcc') { log('preview only (Info Desk)', j.id, j.request_id, '-', why); continue; }
       let p; try { p = await fillReply(page, j, 3, false); } catch (e) { p = { error: String(e.message || e) }; }
       writeFileSync(join(DATA, 'previews', `${j.id}.json`), JSON.stringify({ job: j.id, ticket: j.ticket, request: j.request_id, decision: j.decision, ...p, not_submitted_because: why, at: new Date().toISOString() }, null, 2));
       log('preview only', j.id, j.request_id, '-', why); continue;
@@ -638,7 +642,7 @@ async function outboundNow(page) {
     if (!claimed) continue;
     claimed.queued_s = ((Date.now() - firstSeen[j.id]) / 1000).toFixed(1);
     let res;
-    try { res = await submitReply(page, claimed); } catch (e) { res = e instanceof Blocked ? { result: 'error', error: e.message } : { result: 'retry', error: String(e.message || e).slice(0, 300) }; }
+    try { res = claimed.kind === 'mcc' ? await submitMcc(page, claimed) : await submitReply(page, claimed); } catch (e) { res = e instanceof Blocked ? { result: 'error', error: e.message } : { result: 'retry', error: String(e.message || e).slice(0, 300) }; }
     await reportResult(claimed.id, res); log('job', claimed.id, res.result, res.error || '');
     delete firstSeen[j.id];
     await pause(1500, 3000);
@@ -816,6 +820,176 @@ async function study(page) {
   await resetReport(page).catch(() => { });
 }
 
+// ---------------- Call Center (MCC) requests ----------------
+// main tab "Call Center" > sub-tab "Chronic" / "Approval"; each row: Request Number -> MCC Request Timeline (page 184, read),
+// Actions -> Team Status (page 6: P6_STATUS, P6_COMMENT, Save) = our team's only write on these requests
+async function clickTab(page, label) {
+  const r = await page.evaluate((label) => {
+    const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+    const all = [...document.querySelectorAll('[role=tab], .t-Tabs-link')].filter((a) => (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim() === label);
+    const el = all.filter(vis).pop() || all.pop(); if (!el) return false; el.click(); return true;
+  }, label);
+  await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500); return r;
+}
+async function openMcc(page, sub) {   // the Call Center list of one sub-tab, visible
+  await openChronicAttach(page);
+  if (!(await clickTab(page, 'Call Center'))) throw new Error('Call Center tab not found (page structure changed?)');
+  if (!(await clickTab(page, sub))) throw new Error('Call Center > ' + sub + ' tab not found');
+}
+// the visible Call Center report: rows by column name + the signed dialog addresses of Timeline and Actions
+const MCC_ROWS = () => {
+  const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+  const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); if (!r) return null;
+  const name = {}; for (const el of r.querySelectorAll('[id]')) { const t = el.textContent.trim(); if (/^[CB]\d/.test(el.id) && t && !name[el.id]) name[el.id] = t; }
+  const url = (a) => { const m = a && ((a.getAttribute('href') || '') + ' ' + (a.getAttribute('onclick') || '')).match(/dialog\('([^']+)'/); return m ? JSON.parse('"' + m[1] + '"') : ''; };
+  return [...r.querySelectorAll('.a-IRR-table tr')].filter((x) => x.querySelector('td[headers]')).map((tr) => {
+    const o = {}; for (const td of tr.querySelectorAll('td[headers]')) { const c = name[(td.getAttribute('headers') || '').split(/\s+/)[0]]; if (c) o[c] = td.innerText.trim(); }
+    const links = [...tr.querySelectorAll('a, button')];
+    o._timeline = url(links.find((a) => /P184_REQUEST/i.test(a.getAttribute('href') || '')));
+    o._actions = url(links.find((a) => /P6_REQ/i.test(a.getAttribute('href') || '')));
+    return o;
+  });
+};
+// the MCC Request Timeline (page 184) read with a GET: one line per change, newest first as the portal shows it
+async function mccTimeline(page, url) {
+  return await page.evaluate(async (url) => {
+    const d = new DOMParser().parseFromString(await (await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(30000) })).text(), 'text/html');
+    const nm = {}; for (const el of d.querySelectorAll('[id]')) { const t = el.textContent.trim(); if (/^[CB]\d/.test(el.id) && t && !nm[el.id]) nm[el.id] = t; }
+    const base = new URL((d.querySelector('base') || {}).getAttribute?.('href') || '/ords/', location.origin);
+    return [...d.querySelectorAll('.a-IRR-table tr')].filter((x) => x.querySelector('td[headers]')).map((x) => {
+      const o = {}; for (const td of x.querySelectorAll('td[headers]')) { const c = nm[(td.getAttribute('headers') || '').split(/\s+/)[0]]; if (!c) continue; o[c] = td.innerText.trim(); const a = td.querySelector('a[href]'); if (a && c === 'File Attach') o._file = new URL(a.getAttribute('href'), base).href; }
+      return o;
+    });
+  }, url);
+}
+// every page of the visible Call Center list
+async function mccAllRows(page) {
+  const out = [];
+  for (let i = 0; i < 30; i++) {
+    out.push(...((await page.evaluate(MCC_ROWS)) || []));
+    const moved = await page.evaluate(() => { const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)); const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); const b = r && r.querySelector('.a-IRR-pagination button[aria-label*="Next"], .a-IRR-button--paginationNext'); if (!b || b.disabled) return false; b.click(); return true; });
+    if (!moved) break;
+    await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(1200);
+  }
+  return out;
+}
+const MCC_KEEP = ['Request Number', 'Member Id', 'Member Name', 'Member Source', 'Call Type', 'Current Status', 'Effective Date', 'Expiry Date', 'Mobile', 'Plan Type', 'Policy Holder', 'Policy Number', 'Request Annex', 'Request Notes', 'Request Type', 'Request Priority', 'Assigned To', 'Team Action Status', 'Team Comment'];   // no national id / date of birth / gender
+const mccFileId = (url) => (String(url).match(/[?&]k1=([^&]+)/) || [])[1] || sha(String(url)).slice(0, 16);
+const mccLineIdOf = (no, l) => 'ml-' + sha([no, l['From Status'], l['To Status'], l['Reason'], l['Team Action Status'], l['Team Comment'], l['Update by'], l['Update Date'], l._fileId || ''].join('|')).slice(0, 20);
+// Info Desk read: both Call Center lists, every request's Timeline, new files only; then the list comparison (closed = left)
+async function mccCycle(page) {
+  const t0 = Date.now(); const known = {}; for (const k of ((await call('bridge_mcc_known')).known || [])) known[k.request_no] = k;
+  const open = []; let created = 0, updated = 0; const errors = [];
+  try {
+    for (const sub of ['Chronic', 'Approval']) {
+      await openMcc(page, sub);
+      const rows = await mccAllRows(page);
+      for (const row of rows) {
+        const no = row['Request Number']; if (!/^MCC-\d{4}-\d+$/.test(no || '')) continue; open.push(no); alive();
+        try {
+          const tl = (await mccTimeline(page, row._timeline)).map((l) => ({ ...l, _fileId: l._file ? mccFileId(l._file) : '' }));
+          const have = new Set((known[no] || {}).file_ids || []); const files = [];
+          for (const l of tl.filter((x) => x._file && !have.has('mcc-' + x._fileId))) {
+            const f = await page.evaluate(async (u) => { const r = await fetch(u, { credentials: 'include', signal: AbortSignal.timeout(90000) }); const type = (r.headers.get('content-type') || '').split(';')[0]; const cd = r.headers.get('content-disposition') || ''; const buf = new Uint8Array(await r.arrayBuffer()); if (/text\/html/.test(type) || buf.length > 20 * 1048576) return { error: /text\/html/.test(type) ? 'page instead of file' : 'over 20 MB', size: buf.length }; let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000)); return { mime: type, name: decodeURIComponent((cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i) || [])[1] || ''), b64: btoa(s), size: buf.length }; }, l._file).catch((e) => ({ error: String(e).slice(0, 80) }));
+            if (f.b64) files.push({ id: l._fileId, file_name: f.name || ('callcenter-file-' + l._fileId), mime_type: f.mime, content_base64: f.b64, source: 'Call Center' });
+          }
+          const kept = {}; for (const k of MCC_KEEP) if (row[k] != null) kept[k] = row[k];
+          const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind: sub === 'Approval' ? 'approval' : 'chronic', row: kept, timeline: tl.map(({ _file, ...l }) => l), files }] });
+          created += res.created || 0; updated += res.updated || 0; if ((res.errors || []).length) errors.push(res.errors[0]);
+          if (res.created) log('INFO DESK new ticket for', no);
+        } catch (e) { if (e instanceof Blocked || /session ended|not reachable/.test(String(e.message))) throw e; errors.push(no + ': ' + String(e.message || e).slice(0, 120)); }
+      }
+    }
+    const rec = await call('bridge_mcc_reconcile', { open_request_nos: open, shown: open.length });
+    log('info desk', JSON.stringify({ open: open.length, created, updated, closed_on_portal: rec.closed || 0, missing: (rec.missing || []).length, errors: errors.slice(0, 5), secs: Math.round((Date.now() - t0) / 1000) }));
+  } finally { await clickTab(page, 'Chronic Attach').catch(() => { }); }
+}
+// one Info Desk reply: Team Status (decision + comment) on the request's Actions form, confirmed from its Timeline
+const MCC_STATUS_VALUE = { Approved: '1', 'Partially Approved Rejected': '2', Rejected: '3', Pending: '4' };
+async function submitMcc(page, job) {
+  const no = String(job.request_id); const T = { start: Date.now() }; const core = norm(job.message);
+  const value = MCC_STATUS_VALUE[job.teamStatus]; if (!value) return { result: 'error', error: 'no team decision on this reply (the portal requires one)' };
+  try {
+    let row = null;
+    for (const sub of job.mccKind === 'approval' ? ['Approval', 'Chronic'] : ['Chronic', 'Approval']) { await openMcc(page, sub); row = (await mccAllRows(page)).find((r) => r['Request Number'] === no); if (row) break; }
+    if (!row) return { result: 'closed', error: 'the request is no longer in the Call Center lists (closed by the Call Center)' };
+    T.found = Date.now();
+    const tl0 = await mccTimeline(page, row._timeline);
+    const mine = (l) => l['Team Action Status'] === job.teamStatus && (!core || norm(l['Team Comment']).includes(core.slice(0, 40)));
+    if (job.attempt > 1) { const hit = tl0.find(mine); if (hit) return { result: 'sent', portal: { team_status: job.teamStatus, status_name: job.teamStatus, line_id: mccLineIdOf(no, hit), last_update: new Date().toISOString() } }; }
+    // the row's own Actions link (its page must be on screen)
+    let el = null;
+    for (let i = 0; i < 31 && !el; i++) {
+      const h = await page.evaluateHandle((no) => { const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)); const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); const tr = r && [...r.querySelectorAll('.a-IRR-table tr')].find((t) => (t.innerText || '').includes(no)); return tr && [...tr.querySelectorAll('a, button')].find((a) => /P6_REQ/i.test(a.getAttribute('href') || '')); }, no);
+      el = h.asElement();
+      if (!el) { const back = await page.evaluate(() => { const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)); const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); const b = r && r.querySelector('.a-IRR-pagination button[aria-label*="Previous"], .a-IRR-button--paginationPrev'); if (!b || b.disabled) return false; b.click(); return true; }); if (!back) break; await page.waitForTimeout(1200); }
+    }
+    if (!el) return { result: 'retry', error: 'the Actions link of ' + no + ' was not found on the list' };
+    await el.click();
+    const f = await frameForPage(page, '6');
+    if (await f.$eval('#P6_REQ_NO', (e) => e.value) !== no) { await closeDialogs(page); throw new Error('the Team Status form opened for another request - stopped'); }
+    await f.evaluate(([v, t]) => { apex.item('P6_STATUS').setValue(v); apex.item('P6_COMMENT').setValue(t); }, [value, String(job.message || '').slice(0, 3900)]);
+    await f.evaluate(() => apex.submit({ request: 'SAVE', validate: true }));
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(500);
+      const open = page.frames().some((fr) => { try { return /team-status/.test(fr.url()); } catch { return false; } });
+      const err = norm(await f.locator('.t-Alert--danger, .a-Notification--error, .apex-page-error, .t-Form-error, .a-Form-error').allInnerTexts().catch(() => []).then((a) => a.join(' ')));
+      if (err) { await closeDialogs(page); return { result: 'error', error: 'the portal refused the reply: ' + err.slice(0, 200) }; }
+      if (!open) break;
+    }
+    await closeDialogs(page); T.saved = Date.now();
+    const known = new Set(tl0.map((l) => mccLineIdOf(no, l)));
+    for (let i = 0; i < 10; i++) {
+      await page.waitForTimeout(i < 3 ? 1500 : 3000);
+      const tl1 = await mccTimeline(page, row._timeline).catch(() => []);
+      const hit = tl1.find((l) => !known.has(mccLineIdOf(no, l)) && mine(l));
+      if (hit) { log('timing', job.id, JSON.stringify({ find: ((T.found - T.start) / 1000).toFixed(1), save: ((T.saved - T.found) / 1000).toFixed(1), total: ((Date.now() - T.start) / 1000).toFixed(1), info_desk: true })); return { result: 'sent', portal: { team_status: job.teamStatus, status_name: job.teamStatus, line_id: mccLineIdOf(no, hit), last_update: new Date().toISOString() } }; }
+    }
+    return { result: 'retry', error: 'saved, but the Request Timeline did not show it yet - it is checked again before any resend' };
+  } finally { await clickTab(page, 'Chronic Attach').catch(() => { }); }
+}
+// the ONE approved test (25 Nov 2026, MCC-2026-05976): a comment only, no status; stops without saving if that could
+// touch an existing team decision. Writes mcc-test.json; changes nothing else.
+async function mccTest(page, reqNo, text) {
+  const out = { request: reqNo, at: new Date().toISOString() };
+  try {
+    let row = null;
+    for (const sub of ['Chronic', 'Approval']) { await openMcc(page, sub); const rows = await page.evaluate(MCC_ROWS); row = (rows || []).find((r) => r['Request Number'] === reqNo); if (row) { out.sub = sub; break; } }
+    if (!row) throw new Error(reqNo + ' is not in the Call Center lists');
+    out.before = { teamStatus: row['Team Action Status'] || '', teamCommentLength: (row['Team Comment'] || '').length };
+    const tl0 = await mccTimeline(page, row._timeline); out.before.timelineLines = tl0.length; out.before.linesWithText = tl0.filter((l) => (l['Team Comment'] || '').includes(text)).length;
+    // open the Team Status form exactly as the Actions link does
+    const h = await page.evaluateHandle((no) => { const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)); const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); const tr = [...r.querySelectorAll('.a-IRR-table tr')].find((t) => (t.innerText || '').includes(no)); return tr && [...tr.querySelectorAll('a, button')].find((a) => /P6_REQ/i.test(a.getAttribute('href') || '')); }, reqNo);
+    const el = h.asElement(); if (!el) throw new Error('Actions link not found for ' + reqNo);
+    await el.click();
+    const f = await frameForPage(page, '6');
+    const form = await f.evaluate(() => ({ reqNo: (document.querySelector('#P6_REQ_NO') || {}).value, status: (document.querySelector('#P6_STATUS') || {}).value, comment: (document.querySelector('#P6_COMMENT') || {}).value || '' }));
+    out.formOpened = { reqNoMatches: form.reqNo === reqNo, statusShown: form.status || '(empty)', commentShownLength: form.comment.length };
+    if (form.reqNo !== reqNo) { await closeDialogs(page); throw new Error('the form opened for another request - stopped, nothing saved'); }
+    if (out.before.teamStatus && !form.status) { await closeDialogs(page); out.result = 'NOT SAVED: the request already has a team decision (' + out.before.teamStatus + ') and the form does not show it - a comment-only Save could erase it'; return out; }
+    if (form.status) { await closeDialogs(page); out.result = 'NOT SAVED: the form opens with the status already filled (' + form.status + ') - a Save would re-send that decision, not a comment only'; return out; }
+    await f.evaluate((t) => apex.item('P6_COMMENT').setValue(t), text);
+    await f.evaluate(() => apex.submit({ request: 'SAVE', validate: true }));
+    let refused = '';
+    for (let i = 0; i < 40; i++) {
+      await page.waitForTimeout(500);
+      const open = page.frames().some((fr) => { try { return /team-status|p=\d+:6:/.test(fr.url()); } catch { return false; } });
+      const err = norm(await f.locator('.t-Alert--danger, .a-Notification--error, .apex-page-error, .t-Form-error, .a-Form-error').allInnerTexts().catch(() => []).then((a) => a.join(' ')));
+      if (err) { refused = err; break; }
+      if (!open) break;
+    }
+    if (refused) { await closeDialogs(page); out.result = 'REFUSED by the portal (nothing saved): ' + refused.slice(0, 200); return out; }
+    await closeDialogs(page);
+    // confirm: the same row and its Timeline again
+    await openMcc(page, out.sub); const rows2 = await page.evaluate(MCC_ROWS); const row2 = (rows2 || []).find((r) => r['Request Number'] === reqNo);
+    const tl1 = await mccTimeline(page, (row2 || row)._timeline);
+    out.after = { teamStatus: row2 ? row2['Team Action Status'] || '' : '(not in the list)', timelineLines: tl1.length, linesWithText: tl1.filter((l) => (l['Team Comment'] || '').includes(text)).length, newLine: tl1.length > tl0.length ? { from: tl1[0]['From Status'], to: tl1[0]['To Status'], team: tl1[0]['Team Action Status'] || '(empty)', hasComment: (tl1[0]['Team Comment'] || '').includes(text) } : null };
+    out.result = out.after.linesWithText === 1 && out.after.teamStatus === out.before.teamStatus ? 'ACCEPTED: the comment is on the Timeline exactly once; Team Action Status unchanged' : 'SAVED, check: ' + JSON.stringify(out.after);
+  } catch (e) { out.error = String(e.message || e).slice(0, 300); }
+  finally { writeFileSync(join(DATA, 'mcc-test.json'), JSON.stringify(out, null, 1)); log('mcc test', JSON.stringify(out)); await resetReport(page).catch(() => { }); }
+  return out;
+}
+
 // ---------------- self-healing (24 Nov 2026: a portal call hung at 14:08 after "Failed to fetch"; the process stayed alive
 // and frozen for 1.5 h, replies piled up). Exit codes: 10 = needs a person (Start-PortalBridge.ps1 does not restart it),
 // anything else = Start-PortalBridge.ps1 starts the bridge again in 20 s; the task also starts it every 5 min if not running.
@@ -836,6 +1010,7 @@ async function main() {
   if (HEADLESS) await ctx.route('**/*', (route) => (['image', 'font', 'media'].includes(route.request().resourceType()) ? route.abort() : route.continue()));
   const page = ctx.pages()[0] || await ctx.newPage();
   log(`portal bridge started - ${DRY ? 'DRY RUN (previews only, nothing saved)' : 'live writes for: ' + ([...ALLOW].join(',') || 'none')}`);
+  if (process.argv.includes('--mcc-test')) { await mccTest(page, process.argv[process.argv.indexOf('--mcc-test') + 1], 'اختبار من نظام Sarwa Chronic – برجاء التجاهل'); await ctx.close().catch(() => { }); process.exit(0); }
   if (process.argv.includes('--study')) { await study(page); await ctx.close().catch(() => { }); process.exit(0); }
   if (process.argv.includes('--recheck')) { await recheck(page, process.argv[process.argv.indexOf('--recheck') + 1]); await ctx.close(); return; }
   let lastNew = 0, lastChanged = 0, lastFull = 0, active = true, lastCfg = 0;

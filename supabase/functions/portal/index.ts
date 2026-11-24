@@ -256,7 +256,7 @@ async function linkToEmailTicket(q: Req, hash: string): Promise<'updated' | 'ski
     const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0)); if (bytes.length > 20000) mine.set(await shaBytes(bytes), a.file_name || String(a.id));
   }
   if (!mine.size) return null;
-  const { data: cands } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).neq('d->>source', 'portal')
+  const { data: cands } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).neq('d->>source', 'portal').neq('d->>source', 'callcenter')
     .gte('ts', new Date(at - 3 * DAY).toISOString()).lte('ts', new Date(at + 3 * DAY).toISOString()).order('ts', { ascending: false }).limit(10);
   for (const cnd of (cands || []) as any[]) {
     const no = await finalTicket(cnd.t);
@@ -291,7 +291,7 @@ async function dedupe(now: number) {
   const { data: fresh } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').gte('ts', from).order('ts').limit(60);
   let merged = 0;
   for (const n of (fresh || []) as any[]) {
-    const no = n.t, member = String(n.d?.member || ''); if (!member || await mergedInto(no)) continue;
+    const no = n.t, member = String(n.d?.member || ''); if (!member || n.d?.source === 'callcenter' || await mergedInto(no)) continue;   // Info Desk tickets are linked, never merged
     const { count: acted } = await db.from('events').select('id', { count: 'exact', head: true }).eq('t', no).in('type', ['msg.out', 'portal.queued']);
     if (acted) continue;
     const { data: olds } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).lt('ts', n.ts).gte('ts', new Date(Date.parse(n.ts) - 3 * DAY).toISOString()).neq('t', no).order('ts', { ascending: false }).limit(10);
@@ -299,6 +299,7 @@ async function dedupe(now: number) {
     const mine = await ticketFiles(no); if (!mine.length) continue;
     const myPortal = await portalOf(no);
     for (const o of olds as any[]) {
+      if (o.d?.source === 'callcenter') continue;
       const target = await finalTicket(o.t); if (target === no) continue;
       if (myPortal && await portalOf(target)) continue;   // two portal requests: each keeps its own ticket (suggestion only)
       const file = await sameFile(mine, await ticketFiles(target)); if (!file) continue;
@@ -494,7 +495,7 @@ async function statusOf(c: Cfg) {
     clientId: c.mode === 'live' ? c.clientId : '', hasSecret: !!c.clientSecret, intervalMin: c.intervalMin, group: c.group, alertTo: c.alertTo, since: c.since,
     cursor: cur.since || null, lastRun: cur.lastRun || null, lastOk: cur.lastOk || null, lastError: cur.lastError || null, last: cur.last || null, queue: counts, linked: links || 0, health,
     bridgeProblem: health ? bridgeProblem(c, health, Date.now()) : '', sweep: await getState('sweep'), timeoutMin: TIMEOUT_MIN, maxAttempts: MAX_ATTEMPTS,
-    reconcile: c.mode === 'browser' ? await getState('reconcile') : null };
+    reconcile: c.mode === 'browser' ? await getState('reconcile') : null, mccReconcile: c.mode === 'browser' ? await getState('mcc_reconcile') : null };
 }
 
 // ---------- mock helpers (only while the connection is in mock mode: TEST requests) ----------
@@ -540,7 +541,8 @@ async function jobViews(jobs: any[]) {
     if (paths.length) { const { data: su } = await db.storage.from(BUCKET).createSignedUrls(paths, 900); files = (su || []).map((s, i) => ({ name: (job.attachmentNames || [])[i] || paths[i].split('/').pop()!, url: s.signedUrl || '' })); }
     const { data: link } = await db.from('portal_links').select('portal_updated_at,status_name').eq('request_id', j.request_id).maybeSingle();
     out.push({ id: j.id, ticket: j.ticket, request_id: j.request_id, attempt: j.attempts, decision: job.decision, status_code: DECISION_MAP[job.decision]?.portalStatus ?? null,
-      message: job.text || '', reason: job.reason || '', missing: job.missing || [], lang: job.lang || 'AR', agent: job.agent || '', base_last_update: link?.portal_updated_at || null, portal_status_now: link?.status_name || null, files });
+      message: job.text || '', reason: job.reason || '', missing: job.missing || [], lang: job.lang || 'AR', agent: job.agent || '', base_last_update: link?.portal_updated_at || null, portal_status_now: link?.status_name || null, files,
+      kind: job.kind === 'mcc' ? 'mcc' : 'portal', teamStatus: job.teamStatus || '', mccKind: job.mccKind || '', queued_at: j.waiting_since || j.created_at });
   }
   return out;
 }
@@ -559,7 +561,23 @@ async function bridgeJobResult(b: any) {
     if (!upd || !upd.length) return { ok: true, already: 'changed meanwhile' };
     await insertEv('Portal sync', 'note', j.ticket, { auto: true, html: `<b>Portal confirmed this reply after a delay</b> (found in the Request Timeline${b.late_check ? ' by the automatic check' : ''}). It was sent once; nothing is sent again.` });
   }
-  if (result === 'sent') { await recordSent(j, link, { ...(b.portal || {}), via: 'browser' }, 200); return { ok: true, status: 'sent' }; }
+  // Info Desk: the Call Center already closed the request - the reply stays on the ticket only (a clear end state, not
+  // Waiting / Failed); the team sees it and can reopen with the Call Center if needed
+  if (result === 'closed' && j.job?.kind === 'mcc') {
+    const note = `Request closed by the Call Center – this reply was saved on the ticket only (it could not be posted on the portal). If it must reach the member, ask the Call Center to reopen ${j.request_id}.`;
+    await db.from('portal_outbox').update({ status: 'resolved', result: { resolved: note, by: 'automatic', at: new Date().toISOString(), was: 'sending' } }).eq('id', j.id);
+    await insertEv('Info Desk sync', 'portal.status', j.ticket, { jobId: j.id, status: 'resolved', auto: true, note });
+    await log({ direction: 'out', action: 'mcc_closed_reply_kept', request_id: j.request_id, ticket: j.ticket, ok: true, detail: { job: j.id } });
+    return { ok: true, status: 'resolved' };
+  }
+  if (result === 'sent') {
+    await recordSent(j, link, { ...(b.portal || {}), via: 'browser' }, 200);
+    if (j.job?.kind === 'mcc') {   // our own line: known, so the next read does not report it as someone else's decision
+      const { data: ml } = await db.from('mcc_links').select('line_ids').eq('request_no', j.request_id).maybeSingle();
+      await db.from('mcc_links').update({ team_status: j.job.teamStatus || null, line_ids: [...new Set([...(ml?.line_ids || []), ...(b.portal?.line_id ? [String(b.portal.line_id)] : [])])] }).eq('request_no', j.request_id);
+    }
+    return { ok: true, status: 'sent' };
+  }
   if (result === 'conflict') { await fail(j, 'conflict', 409, str(b.error || 'the request changed on the portal', 400)); return { ok: true, status: 'conflict' }; }
   if (result === 'retry' && j.attempts < MAX_ATTEMPTS) { await recordRetry(c, j, b.http || null, str(b.error || 'the bridge could not complete the submit', 400)); return { ok: true, status: 'retrying' }; }
   await fail(j, 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));
@@ -820,6 +838,108 @@ async function bridgeIngest(requests: (Req & { attachments?: InlineAtt[] })[], b
   return res;
 }
 // Portal history: one row per portal request (any status), upserted by request id - re-running the import is safe
+// ---------- Info Desk: Call Center requests (MCC-YYYY-NNNNN), 25 Nov 2026 ----------
+// The Call Center creates and closes them; our team only sets Team Status (decision + comment) on the portal. One request =
+// one ticket (mcc_links). Closed by the Call Center = the request left its list: a note, and the ticket closes when our team
+// had already decided. Reopened / follow-up / new file from the Call Center = the ticket reopens with a note.
+const MCC_REASON = 'Awaiting Call Center';
+const mccS = (o: any, k: string, n = 300) => str(o?.[k], n).trim();
+const mccLineId = async (no: string, l: any) => 'ml-' + (await sha256([no, l['From Status'], l['To Status'], l['Reason'], l['Team Action Status'], l['Team Comment'], l['Update by'], l['Update Date'], l._fileId || ''].join('|'))).slice(0, 20);
+function mccInfo(q: any) {
+  const r = q.row || {};
+  return { requestNo: String(q.request_no), kind: q.kind === 'approval' ? 'approval' : 'chronic', memberId: mccS(r, 'Member Id'), memberName: mccS(r, 'Member Name'), mobile: phoneLocal(mccS(r, 'Mobile')),
+    callType: mccS(r, 'Call Type'), currentStatus: mccS(r, 'Current Status'), teamStatus: mccS(r, 'Team Action Status'), teamComment: mccS(r, 'Team Comment', 1000), requestType: mccS(r, 'Request Type'),
+    annex: mccS(r, 'Request Annex'), notes: mccS(r, 'Request Notes', 2000), priority: mccS(r, 'Request Priority'), plan: mccS(r, 'Plan Type'), policyHolder: mccS(r, 'Policy Holder'),
+    policyNumber: mccS(r, 'Policy Number'), assignedTo: mccS(r, 'Assigned To'), effective: mccS(r, 'Effective Date'), expiry: mccS(r, 'Expiry Date'), memberSource: mccS(r, 'Member Source') };
+}
+const mccLineText = (l: any) => `${l['Update Date'] || ''} – ${l['From Status'] || '-'} → ${l['To Status'] || '-'}${l['Reason'] ? ': ' + l['Reason'] : ''}${l['Team Action Status'] ? ' · team decision: ' + l['Team Action Status'] : ''}${l['Team Comment'] ? ' · ' + l['Team Comment'] : ''}${l['Reply Mail'] ? ' · reply mail: ' + l['Reply Mail'] : ''}${l['Update by'] ? ' (' + l['Update by'] + ')' : ''}`;
+const cairo = (d = new Date()) => d.toLocaleString('en-GB', { timeZone: 'Africa/Cairo', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+async function ticketStatusOf(no: string) {
+  const { data } = await db.from('events').select('d').eq('t', no).eq('type', 'update').not('d->>status', 'is', null).order('ts', { ascending: false }).limit(1);
+  if (data && data[0]) return String(data[0].d.status);
+  const { data: c } = await db.from('events').select('d').eq('t', no).eq('type', 'ticket.create').maybeSingle(); return String(c?.d?.status || 'Open');
+}
+async function bridgeMccIngest(list: any[]) {
+  const c = await config(); const res = { created: 0, updated: 0, same: 0, errors: [] as string[] };
+  for (const q of list || []) {
+    const no = String(q.request_no || ''); if (!/^MCC-\d{4}-\d+$/.test(no)) { res.errors.push('bad request number'); continue; }
+    try {
+      const info = mccInfo(q); const lines = (q.timeline || []) as any[];
+      for (const l of lines) l._id = await mccLineId(no, l);
+      const files = ((q.files || []) as any[]).map((f) => ({ ...f, id: 'mcc-' + safe(String(f.id)) }));
+      const hash = await sha256(JSON.stringify([info, lines.map((l) => l._id).sort(), files.map((f) => f.id).sort()]));
+      const { data: link } = await db.from('mcc_links').select('*').eq('request_no', no).maybeSingle();
+      if (!link) {
+        const { data: nt, error: e1 } = await db.rpc('portal_next_ticket'); if (e1 || !nt) throw new Error('ticket number: ' + (e1?.message || 'none'));
+        const tno = (nt as any).no as string, seq = (nt as any).seq as number;
+        const { error: e2 } = await db.from('mcc_links').insert({ request_no: no, ticket: tno, kind: info.kind, member_id: info.memberId || null, current_status: info.currentStatus, team_status: info.teamStatus || null, last_hash: '' });
+        if (e2) { if (/duplicate|unique/i.test(e2.message)) { res.same++; continue; } throw new Error(e2.message); }
+        const atts = await saveInlineAtts(tno, files as any);
+        const created = new Date().toISOString();
+        const tags = ['info_desk', 'mcc', info.kind, ...(info.callType ? [info.callType.toLowerCase()] : [])];
+        await insertEv('Info Desk sync', 'ticket.create', tno, { no: tno, seq, source: 'callcenter', subject: `Info Desk ${no} – ${info.requestType || 'Call Center'}${info.annex ? ' – ' + info.annex : ''} – ${info.memberName}`.trim(),
+          requester: { name: info.memberName, email: '', phone: info.mobile }, member: info.memberId, memberName: info.memberName, lang: 'AR', status: 'Open', priority: /urgent|high/i.test(info.priority) ? 'High' : 'Medium',
+          type: info.kind === 'approval' ? 'Prior approval (Call Center)' : 'Call Center – chronic', group: c.group || 'Chronic review', agent: '', tags, ruleNames: [], createdAt: created, mcc: info, mobile: info.mobile });
+        const text = [`Call Center request ${no} (${info.kind === 'approval' ? 'Approval – ' : 'Chronic – '}${info.callType === 'WP' ? 'WhatsApp to the Call Center' : info.callType === 'INCOMING' ? 'phone call to the Call Center' : info.callType})`,
+          `Member: ${info.memberName} (${info.memberId})${info.mobile ? ' – mobile ' + info.mobile : ''}`, `Policy holder: ${info.policyHolder}${info.policyNumber ? ' – policy ' + info.policyNumber : ''}${info.plan ? ' – plan ' + info.plan : ''}`,
+          `Request: ${info.requestType}${info.annex ? ' – ' + info.annex : ''} · priority ${info.priority || '-'} · assigned to ${info.assignedTo || '-'}`, info.notes ? 'Request notes: ' + info.notes : '',
+          '', 'Request Timeline (portal):', ...lines.slice().reverse().map(mccLineText)].filter((x) => x !== '').join('\n');
+        await insertEv('Info Desk sync', 'msg.in', tno, { key: `mcc:${no}:init`, initial: true, mcc: true, channel: info.callType, fromName: info.memberName, fromEmail: '', to: '', cc: '', date: created, subject: `Call Center request ${no}`, text, atts });
+        if (info.teamStatus) {
+          await insertEv('Info Desk sync', 'note', tno, { auto: true, html: `<b>Our team already answered on the portal:</b> ${info.teamStatus.replace(/</g, '&lt;')}${info.teamComment ? ' – ' + info.teamComment.replace(/</g, '&lt;') : ''}. Waiting for the Call Center to close the request.` });
+          await insertEv('Info Desk sync', 'update', tno, { status: 'Pending', pendingReason: MCC_REASON });
+        }
+        await db.from('mcc_links').update({ last_hash: hash, line_ids: lines.map((l) => l._id), file_ids: files.map((f) => f.id), synced_at: new Date().toISOString() }).eq('request_no', no);
+        await log({ direction: 'in', action: 'mcc_create', request_id: no, ticket: tno, detail: { kind: info.kind, callType: info.callType, files: atts.length, teamStatus: info.teamStatus || null } });
+        res.created++; continue;
+      }
+      if (link.last_hash === hash && link.in_list) { await db.from('mcc_links').update({ synced_at: new Date().toISOString() }).eq('request_no', no); res.same++; continue; }
+      const tno = await finalTicket(link.ticket);
+      const known = new Set<string>(link.line_ids || []), knownF = new Set<string>(link.file_ids || []);
+      const newLines = lines.filter((l) => !known.has(l._id)); const newFiles = files.filter((f) => !knownF.has(f.id));
+      const ccLines = newLines.filter((l) => !l['Team Action Status']), teamLines = newLines.filter((l) => l['Team Action Status']);
+      const st0 = await ticketStatusOf(tno); const closedHere = ['Closed', 'Resolved'].includes(st0);
+      let reopen = '';
+      if (!link.in_list) reopen = `Reopened by the Call Center on ${cairo()}`;
+      if (ccLines.length || newFiles.length) {
+        const atts = await saveInlineAtts(tno, newFiles as any);
+        await insertEv('Info Desk sync', 'msg.in', tno, { key: `mcc:${no}:${hash.slice(0, 16)}`, mcc: true, channel: info.callType, fromName: 'Call Center', fromEmail: '', to: '', cc: '', date: new Date().toISOString(), subject: `Follow-up from the Call Center – ${no}`, text: ['Follow-up from the Call Center:', ...ccLines.slice().reverse().map(mccLineText), newFiles.length ? `New file(s): ${newFiles.map((f) => f.file_name || f.id).join(', ')}` : ''].filter(Boolean).join('\n'), atts });
+        if (!reopen) reopen = `Follow-up from the Call Center on ${cairo()}`;
+      }
+      for (const l of teamLines) {   // a team decision on the portal that did not come from this ticket's reply box
+        const { data: ours } = await db.from('portal_outbox').select('id').eq('request_id', no).eq('status', 'sent').ilike('job->>text', `%${String(l['Team Comment'] || '').slice(0, 40).replace(/[%_]/g, '')}%`).limit(1);
+        if (!ours || !ours.length) await insertEv('Info Desk sync', 'note', tno, { auto: true, html: `<b>Team decision recorded on the portal</b>${l['Update by'] ? ' by ' + String(l['Update by']).replace(/</g, '&lt;') : ''}: ${String(l['Team Action Status']).replace(/</g, '&lt;')}${l['Team Comment'] ? ' – ' + String(l['Team Comment']).replace(/</g, '&lt;') : ''}` });
+      }
+      if (reopen) {
+        await insertEv('Info Desk sync', 'note', tno, { auto: true, html: `<b>${reopen}</b> – the ticket is open again in Info Desk.` });
+        if (closedHere || st0 === 'Pending') await insertEv('Info Desk sync', 'update', tno, { status: 'Open' });
+        await log({ direction: 'in', action: link.in_list ? 'mcc_followup' : 'mcc_reopened', request_id: no, ticket: tno, detail: { lines: ccLines.length, files: newFiles.length } });
+      }
+      await insertEv('Info Desk sync', 'mcc.update', tno, { mcc: info });
+      await db.from('mcc_links').update({ last_hash: hash, in_list: true, closed_at: null, current_status: info.currentStatus, team_status: info.teamStatus || null, line_ids: [...new Set([...known, ...lines.map((l) => l._id)])], file_ids: [...new Set([...knownF, ...files.map((f) => f.id)])], synced_at: new Date().toISOString() }).eq('request_no', no);
+      res.updated++;
+    } catch (e) { res.errors.push(no + ': ' + errMsg(e)); await log({ direction: 'in', action: 'mcc_ingest', request_id: no, ok: false, error: errMsg(e) }); }
+  }
+  return res;
+}
+// the Call Center lists as read now (complete): a request that left them was closed by the Call Center
+async function bridgeMccReconcile(openNos: string[], b: any = {}) {
+  const set = new Set((openNos || []).map(String));
+  const { data } = await db.from('mcc_links').select('request_no,ticket,in_list,team_status').limit(20000);
+  const links = (data || []) as any[]; const linked = new Set(links.map((l) => l.request_no));
+  const missing = [...set].filter((x) => !linked.has(x)); let closed = 0;
+  for (const l of links.filter((x) => x.in_list && !set.has(x.request_no))) {
+    const tno = await finalTicket(l.ticket); const st0 = await ticketStatusOf(tno);
+    await db.from('mcc_links').update({ in_list: false, closed_at: new Date().toISOString() }).eq('request_no', l.request_no);
+    const close = !!l.team_status && !['Closed', 'Resolved'].includes(st0);
+    await insertEv('Info Desk sync', 'note', tno, { auto: true, html: `<b>Closed by the Call Center on ${cairo()}</b>${close ? ' – our team had answered (' + String(l.team_status).replace(/</g, '&lt;') + '), so the ticket is closed here too.' : ['Closed', 'Resolved'].includes(st0) ? '.' : ' – our team has not answered it on the portal; the ticket stays open here for the team.'}` });
+    if (close) await insertEv('Info Desk sync', 'update', tno, { status: 'Closed' });
+    await log({ direction: 'in', action: 'mcc_closed', request_id: l.request_no, ticket: tno, detail: { closedTicket: close } }); closed++;
+  }
+  await setState('mcc_reconcile', { at: new Date().toISOString(), portal_open: set.size, with_ticket: set.size - missing.length, missing, closed_now: closed, shown: b.shown || null });
+  return { portal_open: set.size, missing, closed };
+}
+
 async function bridgeHistory(rows: any[]) {
   const clean = (rows || []).filter((r) => r && /^\d{1,12}$/.test(String(r.request_id || ''))).slice(0, 2000).map((r) => ({
     request_id: String(r.request_id), individual_number: str(r.individual_number, 20) || null, individual_name: str(r.individual_name, 200) || null,
@@ -887,7 +1007,8 @@ Deno.serve(async (req) => {
           // the sync light every open app shows: last bridge report, replies waiting, portal requests without a ticket
           const h = await getState('health'); const rc = await getState('reconcile');
           const { count: waiting } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).in('status', ['queued', 'sending']);
-          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length, checkedAt: rc.at || null };
+          const mr = await getState('mcc_reconcile');
+          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length + (mr.missing || []).length, checkedAt: rc.at || null, infoDesk: mr.at ? { open: mr.portal_open, missing: (mr.missing || []).length, at: mr.at } : null };
           return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], sync });
         }
         const out = c.dryRun !== false ? { dryRun: true } : await pushOut(c);   // dry run pauses OUT only; requests still come IN
@@ -948,6 +1069,9 @@ Deno.serve(async (req) => {
         case 'bridge_rules': { const out = []; for (const id of (body.request_ids || []).slice(0, 50)) { const { data: l } = await db.from('portal_links').select('ticket').eq('request_id', String(id)).maybeSingle(); if (l) out.push({ request_id: String(id), ticket: l.ticket, ...(await runRules(l.ticket, String(id))) }); } return json({ ok: true, results: out }); }
         case 'bridge_reconcile': return json({ ok: true, ...(await bridgeReconcile(body.open_request_ids || [], body)) });
         case 'bridge_history': return json({ ok: true, ...(await bridgeHistory(body.rows || [])) });
+        case 'bridge_mcc_ingest': return json({ ok: true, ...(await bridgeMccIngest(body.requests || [])) });
+        case 'bridge_mcc_reconcile': return json({ ok: true, ...(await bridgeMccReconcile(body.open_request_nos || [], body)) });
+        case 'bridge_mcc_known': { const { data } = await db.from('mcc_links').select('request_no,last_hash,line_ids,file_ids,in_list'); return json({ ok: true, known: data || [] }); }
         case 'bridge_health': return json(await bridgeHealth(body));
       }
       return json({ error: 'Unknown bridge action' }, 400);
