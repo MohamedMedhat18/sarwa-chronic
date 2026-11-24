@@ -148,3 +148,14 @@ request is shown before it is read; one unreadable request is logged and retried
 rows read is checked every cycle (re-read, then alert); the server keeps the "Portal vs Sarwa Chronic" counter
 (Settings > Portal > Portal health) and emails the admins when a request has no ticket for 10+ minutes; the daily
 07:00 email carries the comparison. Note: the portal's "Pending Wp" card is not the same as the report's Pending list.
+
+## "Sync failed" = only what needs a person (25 Nov 2026)
+
+The folder showed a ticket while its LAST portal reply was refused / failed, and nothing ever settled that: CHR-000361
+(our Rejected reached the member 22/11; a later Approved was refused because the portal had already decided) stayed there
+after the ticket was resolved. Now a failed reply becomes **resolved** (status `resolved`, history kept, note in the ticket)
+automatically, every minute, when: a later reply for the ticket was confirmed; or the portal already shows the intended
+final decision; or the portal had already decided and the ticket was closed after the refusal. A person can also
+**Mark as resolved** with a required note. States: Waiting (goes out by itself) / Failed (needs a person) / Resolved.
+The folder count is the same filter as its list. Left for a person on purpose: a refusal where the portal's decision
+differs from ours and nobody has looked at it since (e.g. CHR-000382 / 38234).
