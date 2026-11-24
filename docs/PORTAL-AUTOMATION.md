@@ -131,3 +131,20 @@ the portal with no way to answer it from the ticket. Now:
   table `file_hashes`) AND within 3 days; only tickets created after 23 Nov 09:05 UTC, never one already answered, never
   two different portal requests (each needs its own answer). A new portal request that is already here by email is linked
   to that ticket on arrival. Anything less: a "Possible duplicate / Same request?" banner with Merge... for the team.
+
+## Portal vs Sarwa Chronic count (24 Nov 2026)
+
+Seen: portal Pending 16 vs 9 tickets in the Sarwa Chronic Portal queue. Causes found (bridge log + Windows events):
+1. The bridge stopped at 02:20 Cairo: after a slow night sign-in it judged "wrong password" after 2.5 s and stopped for good
+   (same on 23 Nov 02:32). The stored password was right: it signed in at once in the morning.
+2. This PC went into Modern Standby from 18:40 (network throttled: "Sarwa Chronic not reachable") and slept 03:28-10:10.
+3. With more Pending requests than one report page, requests on another page could not be read ("not on the report") and
+   one such error - or a request decided during the cycle - ended the whole cycle, so nothing after it was read.
+Fixed 24 Nov: 11 missing requests became tickets within minutes of the restart; 17 shown = 17 read = 17 with a ticket.
+
+Guards: sign-in waits up to 45 s and stops only on the portal's own refusal text (max 3 attempts / hour, then waits);
+the bridge keeps the PC out of standby while it runs (Windows power request, no setting changed); the page of each
+request is shown before it is read; one unreadable request is logged and retried, never ends the cycle; portal total vs
+rows read is checked every cycle (re-read, then alert); the server keeps the "Portal vs Sarwa Chronic" counter
+(Settings > Portal > Portal health) and emails the admins when a request has no ticket for 10+ minutes; the daily
+07:00 email carries the comparison. Note: the portal's "Pending Wp" card is not the same as the report's Pending list.
