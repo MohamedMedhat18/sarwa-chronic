@@ -612,7 +612,8 @@ async function sweep(c: Cfg, force = false) {
     if (j.status === 'sending' && now - Date.parse(j.next_try_at) < LEASE_MIN * 60000) continue;   // the bridge is on it right now
     // the bridge is offline (PC off / asleep / no network / frozen): the reply is HELD, not failed - it goes out by itself, in
     // order and once, when the bridge is back (24 Nov 2026: replies were marked Failed only because the bridge was down)
-    if (problem && j.status === 'queued') continue;
+    // its 15 minutes start again from now, so it is not failed the moment the bridge returns
+    if (problem && j.status === 'queued') { await db.from('portal_outbox').update({ waiting_since: new Date(now - (TIMEOUT_MIN - 5) * 60000).toISOString() }).eq('id', j.id).eq('status', 'queued'); continue; }
     const cause = problem || (j.error ? String(j.error).replace(/^requeued once: /, '') : j.attempts ? `${j.attempts} attempt(s) without a confirmation` : 'the bridge did not pick it up');
     const err = `Not confirmed by the portal within ${TIMEOUT_MIN} minutes (waited ${mins(now - Date.parse(j.waiting_since))} min, ${j.attempts} attempt(s)). Cause: ${cause}. ` +
       'If it did reach the portal, the bridge finds it in the Request Timeline and marks it sent by itself. Otherwise press Try again once the portal is reachable.';
