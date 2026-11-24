@@ -903,7 +903,8 @@ Deno.serve(async (req) => {
         const actor = who.kind === 'user' ? who.name : 'Portal token';
         if (body.action === 'resolve') {   // a person checked it (portal / Outlook / phone) - leaves Sync failed, the note is kept
           const note = str(body.note, 500).trim(); if (note.length < 3) return json({ error: 'Write what you checked (required)' }, 400);
-          await db.from('portal_outbox').update({ status: 'resolved', result: { resolved: note, by: actor, at: new Date().toISOString(), was: row.status } }).eq('id', row.id);
+          const { error: e1 } = await db.from('portal_outbox').update({ status: 'resolved', result: { resolved: note, by: actor, at: new Date().toISOString(), was: row.status } }).eq('id', row.id);
+          if (e1) return json({ error: 'Not saved: ' + e1.message }, 500);
           await insertEv(actor, 'portal.status', row.ticket, { jobId: row.id, status: 'resolved', note: 'Marked as resolved by ' + actor + ': ' + note });
           await log({ direction: 'out', action: 'resolve', request_id: row.request_id, ticket: row.ticket, actor, detail: { job: row.id, was: row.status, note } });
           return json({ ok: true });
