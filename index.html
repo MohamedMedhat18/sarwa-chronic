@@ -962,11 +962,11 @@ function applyEv(S, e) {
     case 'portal.status': {   // the portal sync's answer: sent | retrying | conflict | error | dead | requeued | cancelled
       if (!t) return; const m = t.msgs.find(x => x.kind === 'out' && x.portal && x.jobId === d.jobId);
       const st = d.status === 'requeued' ? 'queued' : d.status;
-      if (m) { m.state = st; m.error = d.error || ''; m.timeout = !!d.timeout; if (st === 'queued' && d.status === 'requeued') m.waitFrom = e.ts; if (d.status === 'sent') { m.sentAt = d.sentAt || e.ts; m.delivered = d.delivered || null; } }
+      if (m) { m.state = st; m.error = d.error || ''; m.timeout = !!d.timeout; m.note = d.note || ''; if (st === 'queued' && d.status === 'requeued') m.waitFrom = e.ts; if (d.status === 'sent') { m.sentAt = d.sentAt || e.ts; m.delivered = d.delivered || null; } }
       if (d.status === 'sent') { const at = d.sentAt || e.ts; if (!t.firstResponseAt) t.firstResponseAt = at; if (!t.lastOut || at > t.lastOut) t.lastOut = at; }
       if (t.portalSync && t.portalSync.jobId === d.jobId) t.portalSync = { ...t.portalSync, state: st, error: d.error || '', at: e.ts, attempt: d.attempt || t.portalSync.attempt || 0, nextTry: d.nextTry || '' };
       if (d.status === 'sent' && d.statusName) t.portal = { ...(t.portal || {}), statusCode: d.statusCode, statusName: d.statusName };
-      const txt = { sent: 'Portal confirmed' + (d.statusName ? ': ' + d.statusName : '') + (d.delivered ? ' · sent by ' + d.delivered.channel + ' to ' + d.delivered.to : ''), retrying: 'Portal not reachable – trying again ' + (d.nextTry ? fmtDate(d.nextTry) : 'soon'), conflict: 'Portal refused: the request changed on the portal – refresh and send again', error: 'Portal refused the decision: ' + (d.error || ''), dead: d.timeout ? 'Failed – not confirmed by the portal: ' + (d.error || '') : 'Portal sync failed after ' + (d.attempts || 3) + ' tries: ' + (d.error || ''), requeued: 'Sent to the portal again', cancelled: 'Portal decision cancelled' }[d.status] || ('Portal: ' + d.status);
+      const txt = { sent: 'Portal confirmed' + (d.statusName ? ': ' + d.statusName : '') + (d.delivered ? ' · sent by ' + d.delivered.channel + ' to ' + d.delivered.to : ''), retrying: 'Portal not reachable – trying again ' + (d.nextTry ? fmtDate(d.nextTry) : 'soon'), conflict: 'Portal refused: the request changed on the portal – refresh and send again', error: 'Portal refused the decision: ' + (d.error || ''), dead: d.timeout ? 'Failed – not confirmed by the portal: ' + (d.error || '') : 'Portal sync failed after ' + (d.attempts || 3) + ' tries: ' + (d.error || ''), requeued: d.auto ? 'Sent to the portal again automatically' : 'Sent to the portal again', cancelled: 'Portal decision cancelled', resolved: d.note || 'Sync failure cleared' }[d.status] || ('Portal: ' + d.status);
       t.timeline.push({ ts: e.ts, by: e.by, text: txt }); t.updated = e.ts; break;
     }
   }
@@ -1704,7 +1704,7 @@ function msgCard(m, t, fromNo) {
   if (m.kind === 'out' && m.portal) {   // decision / message sent back through the portal (its Reply logic delivers it)
     const waitMin = Math.max(0, Math.round((Date.now() - new Date(m.waitFrom || m.at).getTime()) / 60000));
     const waitTxt = waitMin >= 1 ? ' · ' + waitMin + ' min' : '';   // after 15 min the server marks it Failed (with the reason)
-    const st = { queued: ['Waiting for the portal' + waitTxt, 'p-due'], sending: ['Sending to the portal…' + waitTxt, 'p-due'], retrying: ['Portal not reachable – retrying' + waitTxt, 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: [m.timeout ? 'Failed – not confirmed in 15 min' : 'Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'] }[m.state] || [m.state, 'p-muted'];
+    const st = { queued: ['Waiting for the portal' + waitTxt, 'p-due'], sending: ['Sending to the portal…' + waitTxt, 'p-due'], retrying: ['Portal not reachable – retrying' + waitTxt, 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: [m.timeout ? 'Failed – not confirmed in 15 min' : 'Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'], resolved: ['Resolved – no action needed', 'p-ok'] }[m.state] || [m.state, 'p-muted'];
     const failed = ['conflict', 'error', 'dead'].includes(m.state);
     return el('div', { class: 'msg out', style: 'border-left:3px solid #1d5c52' },
       el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
@@ -1715,7 +1715,7 @@ function msgCard(m, t, fromNo) {
       visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
       failed ? el('div', { class: 'row', style: 'padding:0 14px 12px 54px;gap:6px' },
         el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', m.jobId) }, 'Try again'),
-        el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', m.jobId) }, 'Cancel')) : null);
+        el('button', { class: 'btn sm', type: 'button', title: 'You checked it (portal / Outlook / phone): it leaves Sync failed, your note is kept', onclick: e => portalResolve(e.target, m.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', m.jobId) }, 'Cancel')) : m.state === 'resolved' && m.note ? el('div', { class: 'small muted', style: 'padding:0 14px 10px 54px' }, '✓ ' + m.note) : null);
   }
   if (m.kind === 'out') {
     const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
@@ -3404,6 +3404,13 @@ async function portalCall(body) {
   if (data && data.error) throw new Error(data.error);
   return data;
 }
+// a person checked a failed reply (portal Timeline / Outlook / phone) and it needs nothing more: a note is required, kept in the history
+async function portalResolve(btn, id) {
+  const note = (prompt('Mark as resolved – what did you check? (kept in the ticket history)') || '').trim();
+  if (note.length < 3) { if (note) toast('Write a short note of what you checked'); return; }
+  if (btn) btn.disabled = true;
+  try { await portalCall({ action: 'resolve', id, note }); toast('Resolved – it left Sync failed'); } catch (x) { toast(x.message); if (btn) btn.disabled = false; }
+}
 async function portalJobAction(btn, action, id) {
   if (btn) btn.disabled = true;
   try { await portalCall({ action, id }); toast(action === 'retry' ? 'Sent to the portal again' : 'Portal decision cancelled'); }
@@ -3604,7 +3611,7 @@ function portalPanel(t) {
   if (!isPortal(t)) return null; const p = t.portal, s = t.portalSync;
   const row = (k, v) => v || v === 0 ? el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, k), el('span', { dir: 'auto', style: 'text-align:right;min-width:0;overflow-wrap:anywhere' }, String(v))) : null;
   const final = PORTAL_FINAL.includes(+p.statusCode);
-  const sync = s ? ({ queued: ['⏳ Waiting for the portal', '#8a5200'], sending: ['⏳ Sending to the portal…', '#8a5200'], retrying: ['⏳ Portal not reachable – retrying' + (s.nextTry ? ' ' + rel(s.nextTry) : ''), '#8a5200'], sent: ['✓ Portal confirmed ' + rel(s.at), '#1b7344'], conflict: ['⚠ Refused – the request changed on the portal', 'var(--bad)'], error: ['⚠ Refused by the portal', 'var(--bad)'], dead: ['⚠ Sync failed', 'var(--bad)'], cancelled: ['Cancelled', 'var(--muted)'] }[s.state] || [s.state, 'var(--muted)']) : null;
+  const sync = s ? ({ queued: ['⏳ Waiting for the portal', '#8a5200'], sending: ['⏳ Sending to the portal…', '#8a5200'], retrying: ['⏳ Portal not reachable – retrying' + (s.nextTry ? ' ' + rel(s.nextTry) : ''), '#8a5200'], sent: ['✓ Portal confirmed ' + rel(s.at), '#1b7344'], conflict: ['⚠ Refused – the request changed on the portal', 'var(--bad)'], error: ['⚠ Refused by the portal', 'var(--bad)'], dead: ['⚠ Sync failed', 'var(--bad)'], cancelled: ['Cancelled', 'var(--muted)'], resolved: ['✓ Resolved – no action needed', '#1b7344'] }[s.state] || [s.state, 'var(--muted)']) : null;
   const failed = s && ['conflict', 'error', 'dead'].includes(s.state);
   return el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px;border-left:3px solid #1d5c52' },
     el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '⇄ Portal request #' + p.requestId), el('span', { class: 'pill', style: 'background:' + (final ? 'var(--ok-bg)' : 'var(--warn-bg)') }, p.statusName || '—')),
@@ -3616,7 +3623,7 @@ function portalPanel(t) {
     t.portalDirect && openT(t) ? el('div', { style: 'color:#8a5200;font-weight:600' }, '! Decided on the portal' + (t.portalDirect.by ? ' by ' + t.portalDirect.by : '') + ': ' + t.portalDirect.status + ' – check, then close here') : null,
     sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Answer with the Decision buttons or Reply – it goes back through the portal to ' + portalRecipient(t) + '.'),
     failed && s.error ? el('div', { class: 'small', style: 'color:var(--bad)' }, s.error) : null,
-    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null,
+    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null,
     // close the portal request from here - also when the ticket is already closed (e.g. answered by email only)
     t.mergedInto ? el('div', { class: 'small muted' }, 'Answer it in ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto), ' (this ticket was merged).')
       : !final && !portalBusy(t) ? el('div', { style: 'display:grid;gap:4px;margin-top:4px;border-top:1px solid var(--border);padding-top:6px' },
@@ -5042,7 +5049,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-24b';
+const APP_VERSION = '2026-11-25a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

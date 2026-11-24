@@ -623,6 +623,31 @@ async function sweep(c: Cfg, force = false) {
     await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'dead', timeout: true, http: TIMEOUT_CODE, error: str(err, 900), attempts: j.attempts });
     await log({ direction: 'out', action: 'timeout', request_id: j.request_id, ticket: j.ticket, ok: false, http_code: TIMEOUT_CODE, error: err, detail: { job: j.id, attempts: j.attempts, waited_min: mins(now - Date.parse(j.waiting_since)) } });
   }
+  // 2a) "Sync failed" shows only what still needs a person: a failed reply that is settled anyway becomes "resolved" (the
+  //     history stays): a later reply for the ticket was confirmed, the portal already shows the intended status, or the
+  //     portal had already decided and the ticket was closed AFTER the refusal was shown (25 Nov 2026: CHR-000361 / 38219
+  //     stayed in Sync failed although the member had our Rejected and the ticket was resolved)
+  const { data: fails } = await db.from('portal_outbox').select('id,ticket,request_id,status,job,created_at').in('status', ['conflict', 'error', 'dead']).gte('created_at', new Date(now - 30 * DAY).toISOString()).limit(200);
+  for (const j of (fails || []) as any[]) {
+    let why = '';
+    const { data: later } = await db.from('portal_outbox').select('id,job,sent_at').eq('ticket', j.ticket).eq('status', 'sent').gt('created_at', j.created_at).order('created_at', { ascending: false }).limit(1);
+    if (later && later.length) why = `a later reply to the portal (${String(later[0].job?.decision || 'message')}) was confirmed ${String(later[0].sent_at || '').slice(0, 16).replace('T', ' ')} UTC`;
+    const { data: link } = await db.from('portal_links').select('status_code,status_name').eq('request_id', j.request_id).maybeSingle();
+    const target = DECISION_MAP[j.job?.decision]?.portalStatus;
+    if (!why && link && target != null && FINAL.has(target) && +link.status_code === target) why = `the portal already shows ${link.status_name} - the intended outcome`;
+    if (!why && j.status === 'conflict' && link && FINAL.has(+link.status_code)) {
+      const { data: ref } = await db.from('events').select('ts').eq('type', 'portal.status').eq('d->>jobId', j.id).eq('d->>status', 'conflict').order('ts', { ascending: false }).limit(1);
+      const refusedAt = ref && ref[0] ? ref[0].ts : j.created_at;
+      const { data: cl } = await db.from('events').select('ts,actor,d').eq('t', j.ticket).eq('type', 'update').in('d->>status', ['Closed', 'Resolved']).gt('ts', refusedAt).order('ts').limit(1);
+      if (cl && cl.length) why = `the portal had already decided (${link.status_name}) and the ticket was ${cl[0].d?.status} by ${cl[0].actor} after the refusal`;
+    }
+    if (!why) continue;
+    const { data: upd } = await db.from('portal_outbox').update({ status: 'resolved', result: { resolved: why, by: 'automatic', at: new Date().toISOString(), was: j.status } }).eq('id', j.id).eq('status', j.status).select('id');
+    if (!upd || !upd.length) continue;
+    (out as any).cleared = ((out as any).cleared || 0) + 1;
+    await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'resolved', auto: true, note: 'Sync failure cleared automatically: ' + why + '.' });
+    await log({ direction: 'system', action: 'sync_failure_cleared', request_id: j.request_id, ticket: j.ticket, ok: true, detail: { job: j.id, was: j.status, why } });
+  }
   // 2b) the bridge is back: replies that were marked Failed ONLY because the bridge was offline go out by themselves (last
   //     24 h). Same reply, same id; the bridge checks the Request Timeline first, so one that did arrive is never sent twice.
   if (!problem && health.at && now - Date.parse(health.at) < 3 * 60000) {
@@ -704,7 +729,7 @@ async function sweep(c: Cfg, force = false) {
   }
   // 6) one request = one ticket: certain duplicates among new tickets are merged (every 5 min)
   (out as any).merged = await dedupe(now).catch((e) => { console.warn('dedupe', errMsg(e)); return 0; });
-  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert || (out as any).merged || (out as any).resumed) await setState('sweep', { at: new Date().toISOString(), ...out });
+  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert || (out as any).merged || (out as any).resumed || (out as any).cleared) await setState('sweep', { at: new Date().toISOString(), ...out });
   return out;
 }
 // ---------- arrival checks (rules engine) ----------
@@ -871,11 +896,18 @@ Deno.serve(async (req) => {
       }
       case 'push': { if (c.mode === 'off') return json({ error: 'The portal connection is off' }, 400); if (!serverReaches(c)) return json({ ok: true, browser: true }); if (c.dryRun !== false) return json({ ok: true, dryRun: true }); return json({ ok: true, out: await pushOut(c) }); }
 
-      case 'retry': case 'cancel': {
+      case 'retry': case 'cancel': case 'resolve': {
         const { data: row } = await db.from('portal_outbox').select('*').eq('id', String(body.id || '')).maybeSingle();
         if (!row) return json({ error: 'Unknown job' }, 404);
         if (!['error', 'dead', 'conflict'].includes(row.status)) return json({ error: 'This job is ' + row.status }, 400);
         const actor = who.kind === 'user' ? who.name : 'Portal token';
+        if (body.action === 'resolve') {   // a person checked it (portal / Outlook / phone) - leaves Sync failed, the note is kept
+          const note = str(body.note, 500).trim(); if (note.length < 3) return json({ error: 'Write what you checked (required)' }, 400);
+          await db.from('portal_outbox').update({ status: 'resolved', result: { resolved: note, by: actor, at: new Date().toISOString(), was: row.status } }).eq('id', row.id);
+          await insertEv(actor, 'portal.status', row.ticket, { jobId: row.id, status: 'resolved', note: 'Marked as resolved by ' + actor + ': ' + note });
+          await log({ direction: 'out', action: 'resolve', request_id: row.request_id, ticket: row.ticket, actor, detail: { job: row.id, was: row.status, note } });
+          return json({ ok: true });
+        }
         if (body.action === 'cancel') {
           await db.from('portal_outbox').update({ status: 'cancelled' }).eq('id', row.id);
           await insertEv(actor, 'portal.status', row.ticket, { jobId: row.id, status: 'cancelled' });
