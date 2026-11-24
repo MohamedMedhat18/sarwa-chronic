@@ -122,12 +122,28 @@ async function ensureLoggedIn(page) {
   if (!f) throw new Error('login page not recognised (page structure changed?)');
   const b = await blockedOn(f); if (b) throw new Blocked(`the login page asks for a ${b} - automation stopped`);
   if (!USER || !PASS) throw new Blocked('no portal account on this PC - run Set-PortalCredential.ps1');
+  // at most 3 sign-in attempts per hour: a slow night portal must not lock the account (23-24 Nov: the bridge stopped at
+  // 02:20 / 02:32 Cairo on a sign-in that was only slow - the network was asleep - and stayed down all night)
+  state._signin = (state._signin || []).filter((x) => Date.now() - x < 3600000);
+  if (state._signin.length >= 3) throw new Error(`3 sign-in attempts in the last hour did not complete - next attempt after ${new Date(state._signin[0] + 3600000).toISOString().slice(11, 16)} UTC (protects the portal account)`);
+  state._signin.push(Date.now()); saveState();
   await f.locator('input[type=text], input:not([type])').first().fill(USER);
   await f.locator('input[type=password]').first().fill(PASS);
   await f.getByRole('button', { name: /sign in/i }).click();
-  await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500);
+  // signed in = the portal menu appears; give a slow portal up to 45 s instead of judging after 2.5 s
+  for (let i = 0; i < 45; i++) {
+    await page.waitForTimeout(1000); await leaveLoginFrame(page);
+    if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) || await page.locator('#my_ir').count().catch(() => 0)) { state._signin = []; saveState(); return; }
+    const fx = await frameWith(page, 'input[type=password]');
+    if (fx && i >= 4) {   // still on the form: did the PORTAL say why? (only its own words stop the bridge)
+      const said = norm(await fx.locator('.t-Alert, .a-Notification, .apex-page-error, .t-Form-error, [role=alert], .htmldbStdErr').allInnerTexts().catch(() => []).then((a) => a.join(' ')));
+      const b2 = await blockedOn(fx); if (b2) throw new Blocked(`a ${b2} appeared after sign-in - automation stopped`);
+      if (/invalid|incorrect|wrong|locked|expired|disabled|غير صحيح|مغلق|منتهي/i.test(said)) throw new Blocked('the portal refused the sign-in: "' + said.slice(0, 160) + '" - not retried (check the account)');
+      if (said && i >= 10) throw new Error('sign-in did not complete: "' + said.slice(0, 160) + '" - will try again');
+    }
+  }
   const f2 = await frameWith(page, 'input[type=password]');
-  if (f2) { const b2 = await blockedOn(f2); throw b2 ? new Blocked(`a ${b2} appeared after sign-in - automation stopped`) : new Blocked('sign-in failed (wrong password or locked account) - not retried'); }
+  if (f2) throw new Error('sign-in did not complete within 45 s (portal slow or network asleep) - will try again');
   for (const fr of page.frames()) { const b3 = await blockedOn(fr); if (b3) throw new Blocked(`a ${b3} appeared after sign-in - automation stopped`); }
   await leaveLoginFrame(page);
 }
@@ -411,7 +427,15 @@ async function cycle(page, full) {
   const missing = EXPECTED_HEADERS.filter((h) => !heads.includes(h));
   if (missing.length) { await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'report columns changed: missing ' + missing.join(', '), pc: env.COMPUTERNAME || '' }); return; }
   // IN: timeline every cycle; attachments when the request is new or its timeline changed (or on the hourly full pass)
-  const rows = await readReport(page); const shown = await reportCount(page);
+  let rows = await readReport(page); let shown = await reportCount(page);
+  // never trust one read: the portal's own total must equal the rows read (all pages); otherwise read again, then alert
+  if (shown != null && shown !== rows.length) {
+    log('count check: portal shows', shown, 'but', rows.length, 'rows were read - reading again');
+    await resetReport(page); rows = await readReport(page); shown = await reportCount(page);
+    if (shown != null && shown !== rows.length) await call('bridge_health', { ok: false, loggedIn: true, pageOk: true, error: `portal list shows ${shown} Pending requests but ${rows.length} were read`, pc: env.COMPUTERNAME || '' }).catch(() => { });
+  }
+  // the portal's own status counters (cards above the report, e.g. "Pending Wp") - shown next to our count in Settings > Portal
+  const portalCards = await page.evaluate(() => { const L = document.body.innerText.split('\n').map((s) => s.trim()).filter(Boolean); const o = {}; for (let i = 0; i < L.length - 1; i++) if (/^(Pending|Approved|Rejected|Reopened|Partially)/i.test(L[i]) && L[i].length < 40 && /^\d{1,6}$/.test(L[i + 1])) o[L[i]] = +L[i + 1]; return o; }).catch(() => ({}));
   const requests = [];
   // read every request with the in-page reader (plain GETs of the signed dialog URLs - no clicks, nothing submitted):
   // timeline + Broker and Sarwa attachments; files already sent are listed but not downloaded again
@@ -442,7 +466,7 @@ async function cycle(page, full) {
   }
   log('ingest', JSON.stringify({ seen: rows.length, read: requests.length, unchanged: skipped, created: requests.reduce((a, x) => a + x.created, 0), updated: requests.reduce((a, x) => a + x.updated, 0), errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error) }));
   for (let i = 0; i < rows.length; i += 1000) await call('bridge_history', { rows: rows.slice(i, i + 1000).map((r) => histRow(r)) }).catch((e) => log('history:', e.message));
-  const rec = await call('bridge_reconcile', { open_request_ids: rows.filter((r) => !FINAL.has(STATUS[r['Chronic Status Name']])).map((r) => r['Request Id']) });
+  const rec = await call('bridge_reconcile', { open_request_ids: rows.filter((r) => !FINAL.has(STATUS[r['Chronic Status Name']])).map((r) => r['Request Id']), portal_shown: shown, rows_read: rows.length, cards: portalCards, ingest_errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error).slice(0, 20) });
   log('reconcile', JSON.stringify({ shown_on_report: shown, read: rows.length, missing: rec.missing_tickets, closed_elsewhere: rec.closed_on_portal_still_open_here }));
   log('cycle', full ? 'full' : 'changed', `${((Date.now() - t0) / 1000).toFixed(0)} s`);
   await outboundNow(page);
