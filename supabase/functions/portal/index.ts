@@ -610,6 +610,9 @@ async function sweep(c: Cfg, force = false) {
   const failedNow: any[] = [];
   for (const j of (old || []) as any[]) {
     if (j.status === 'sending' && now - Date.parse(j.next_try_at) < LEASE_MIN * 60000) continue;   // the bridge is on it right now
+    // the bridge is offline (PC off / asleep / no network / frozen): the reply is HELD, not failed - it goes out by itself, in
+    // order and once, when the bridge is back (24 Nov 2026: replies were marked Failed only because the bridge was down)
+    if (problem && j.status === 'queued') continue;
     const cause = problem || (j.error ? String(j.error).replace(/^requeued once: /, '') : j.attempts ? `${j.attempts} attempt(s) without a confirmation` : 'the bridge did not pick it up');
     const err = `Not confirmed by the portal within ${TIMEOUT_MIN} minutes (waited ${mins(now - Date.parse(j.waiting_since))} min, ${j.attempts} attempt(s)). Cause: ${cause}. ` +
       'If it did reach the portal, the bridge finds it in the Request Timeline and marks it sent by itself. Otherwise press Try again once the portal is reachable.';
@@ -618,6 +621,21 @@ async function sweep(c: Cfg, force = false) {
     out.timedOut++; failedNow.push({ ...j, err });
     await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'dead', timeout: true, http: TIMEOUT_CODE, error: str(err, 900), attempts: j.attempts });
     await log({ direction: 'out', action: 'timeout', request_id: j.request_id, ticket: j.ticket, ok: false, http_code: TIMEOUT_CODE, error: err, detail: { job: j.id, attempts: j.attempts, waited_min: mins(now - Date.parse(j.waiting_since)) } });
+  }
+  // 2b) the bridge is back: replies that were marked Failed ONLY because the bridge was offline go out by themselves (last
+  //     24 h). Same reply, same id; the bridge checks the Request Timeline first, so one that did arrive is never sent twice.
+  if (!problem && health.at && now - Date.parse(health.at) < 3 * 60000) {
+    const { data: held } = await db.from('portal_outbox').select('*').in('status', ['dead']).eq('http_code', TIMEOUT_CODE).gte('waiting_since', new Date(now - DAY).toISOString()).order('created_at');
+    for (const j of (held || []) as any[]) {
+      if (!/Cause: (the portal bridge|the portal sign-in)/.test(String(j.error || ''))) continue;   // a real refusal stays failed
+      const { data: open } = await db.from('portal_outbox').select('id').eq('ticket', j.ticket).in('status', ['queued', 'sending']).limit(1);
+      if (open && open.length) continue;   // a newer reply for this ticket is already on its way
+      const { data: upd } = await db.from('portal_outbox').update({ status: 'queued', attempts: Math.min(j.attempts || 0, 1), next_try_at: new Date().toISOString(), waiting_since: new Date().toISOString(), http_code: null, error: 'sent again automatically: the bridge is back online' }).eq('id', j.id).eq('status', 'dead').select('id');
+      if (!upd || !upd.length) continue;
+      (out as any).resumed = ((out as any).resumed || 0) + 1;
+      await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'requeued', auto: true, error: 'The portal bridge is back online - sent again automatically (the portal Timeline is checked first, so it cannot go twice).' });
+      await log({ direction: 'out', action: 'auto_resume', request_id: j.request_id, ticket: j.ticket, ok: true, detail: { job: j.id } });
+    }
   }
   if (failedNow.length) {
     const rows = failedNow.map((j) => `<li><b>${j.ticket}</b> / portal request ${j.request_id} - ${String(j.job?.decision || '')} by ${String(j.job?.agent || '').replace(/</g, '&lt;')}: ${String(j.err).replace(/</g, '&lt;')}</li>`).join('');
@@ -685,7 +703,7 @@ async function sweep(c: Cfg, force = false) {
   }
   // 6) one request = one ticket: certain duplicates among new tickets are merged (every 5 min)
   (out as any).merged = await dedupe(now).catch((e) => { console.warn('dedupe', errMsg(e)); return 0; });
-  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert || (out as any).merged) await setState('sweep', { at: new Date().toISOString(), ...out });
+  if (out.retaken || out.timedOut || out.resynced || out.bridgeAlert || (out as any).merged || (out as any).resumed) await setState('sweep', { at: new Date().toISOString(), ...out });
   return out;
 }
 // ---------- arrival checks (rules engine) ----------
@@ -839,7 +857,13 @@ Deno.serve(async (req) => {
       case 'tick': {
         if (c.mode === 'off') return json({ ok: true, off: true, dryRun: c.dryRun !== false });
         await sweep(c).catch(() => null);   // stuck / timed-out replies are handled even while the bridge PC is down
-        if (!serverReaches(c)) return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [] });
+        if (!serverReaches(c)) {
+          // the sync light every open app shows: last bridge report, replies waiting, portal requests without a ticket
+          const h = await getState('health'); const rc = await getState('reconcile');
+          const { count: waiting } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).in('status', ['queued', 'sending']);
+          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length, checkedAt: rc.at || null };
+          return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], sync });
+        }
         const out = c.dryRun !== false ? { dryRun: true } : await pushOut(c);   // dry run pauses OUT only; requests still come IN
         let inn: unknown = null; try { inn = await syncIn(c, false); } catch (e) { inn = { error: errMsg(e) }; }
         return json({ ok: true, out, in: inn, dryRun: c.dryRun !== false });

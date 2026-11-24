@@ -133,7 +133,7 @@ async function ensureLoggedIn(page) {
   // signed in = the portal menu appears; give a slow portal up to 45 s instead of judging after 2.5 s
   for (let i = 0; i < 45; i++) {
     await page.waitForTimeout(1000); await leaveLoginFrame(page);
-    if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) || await page.locator('#my_ir').count().catch(() => 0)) { state._signin = []; saveState(); return; }
+    if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0) || await page.locator('#my_ir').count().catch(() => 0)) { state._signin = []; delete state._blockedUntil; saveState(); return; }
     const fx = await frameWith(page, 'input[type=password]');
     if (fx && i >= 4) {   // still on the form: did the PORTAL say why? (only its own words stop the bridge)
       const said = norm(await fx.locator('.t-Alert, .a-Notification, .apex-page-error, .t-Form-error, [role=alert], .htmldbStdErr').allInnerTexts().catch(() => []).then((a) => a.join(' ')));
@@ -468,7 +468,7 @@ async function cycle(page, full) {
       lastOut = Date.now();
       if (await outboundNow(page)) { await openChronicAttach(page); await page.addScriptTag({ path: READER }); }
     }
-    const id = row['Request Id']; const known = !!state[id] && !!state[id].tlq; const s = st(id);
+    const id = row['Request Id']; const known = !!state[id] && !!state[id].tlq; const s = st(id); alive();
     // one request that cannot be read is logged and read again next cycle - it never stops the others (or the reconcile)
     try {
       if (!(await showRow(page, id))) throw new Error('not found on any page of the report');
@@ -627,7 +627,7 @@ async function outboundNow(page) {
   if (Object.keys(state._results || {}).length) await flushResults();
   const jobs = (await call('bridge_peek', { limit: 5 })).jobs || [];
   for (const j of jobs) {
-    firstSeen[j.id] ||= Date.now();
+    firstSeen[j.id] ||= Date.now(); alive();
     const why = canWrite(j);
     if (why) {   // preview only (this PC is in dry run / not allowed): nothing saved
       let p; try { p = await fillReply(page, j, 3, false); } catch (e) { p = { error: String(e.message || e) }; }
@@ -655,7 +655,7 @@ async function newRequestsNow(page) {
   if (!fresh.length) return 0;
   await page.addScriptTag({ path: READER });
   for (const row of fresh) {
-    const id = row['Request Id']; const s = st(id); const t0 = Date.now();
+    const id = row['Request Id']; const s = st(id); const t0 = Date.now(); alive();
     try {
       if (!(await showRow(page, id))) throw new Error('not found on any page of the report');
       if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
@@ -671,9 +671,18 @@ async function newRequestsNow(page) {
   }
   return fresh.length;
 }
+// ---------------- self-healing (24 Nov 2026: a portal call hung at 14:08 after "Failed to fetch"; the process stayed alive
+// and frozen for 1.5 h, replies piled up). Exit codes: 10 = needs a person (Start-PortalBridge.ps1 does not restart it),
+// anything else = Start-PortalBridge.ps1 starts the bridge again in 20 s; the task also starts it every 5 min if not running.
+let beat = Date.now(); const alive = () => { beat = Date.now(); };
+const WATCHDOG_MS = 8 * 60000;
+setInterval(() => { if (Date.now() - beat > WATCHDOG_MS) { log(`watchdog: no progress for ${WATCHDOG_MS / 60000} min (frozen on the portal or the network) - restarting`); process.exit(3); } }, 30000);
+const browserGone = (m) => /Target page, context or browser has been closed|Browser has been closed|browser has disconnected|Target closed/i.test(m);
 async function main() {
   if (!SB || !TOKEN.startsWith('chp_')) { console.error('SUPABASE_URL and PORTAL_TOKEN are required (Start-PortalBridge.ps1 sets them)'); process.exit(2); }
   const once = process.argv.includes('--once');
+  // after "needs a person" (the portal itself refused the sign-in, captcha, second factor) wait an hour before trying again
+  if (!once && state._blockedUntil && Date.now() < state._blockedUntil) { log('waiting until', new Date(state._blockedUntil).toISOString().slice(11, 16), 'UTC before the next sign-in (portal refused it earlier)'); process.exit(10); }
   const ctx = await chromium.launchPersistentContext(join(DATA, 'chrome-profile'), { channel: 'chrome', headless: HEADLESS, acceptDownloads: true, viewport: { width: 1400, height: 900 } });
   // headless: no images / fonts / media (not needed to read or fill forms); file downloads are fetch() calls and still work
   if (HEADLESS) await ctx.route('**/*', (route) => (['image', 'font', 'media'].includes(route.request().resourceType()) ? route.abort() : route.continue()));
@@ -681,7 +690,9 @@ async function main() {
   log(`portal bridge started - ${DRY ? 'DRY RUN (previews only, nothing saved)' : 'live writes for: ' + ([...ALLOW].join(',') || 'none')}`);
   if (process.argv.includes('--recheck')) { await recheck(page, process.argv[process.argv.indexOf('--recheck') + 1]); await ctx.close(); return; }
   let lastNew = 0, lastChanged = 0, lastFull = 0, active = true, lastCfg = 0;
+  // start-up = catch-up: the first pass sends every waiting reply and reads the whole Pending list (all files) at once
   for (;;) {
+    alive();
     try {
       if (Date.now() - lastCfg > 60000) { active = !!(await call('bridge_config')).active; lastCfg = Date.now(); if (!active) log('link is Off in Settings > Portal - idle'); }
       if (active) {
@@ -694,7 +705,8 @@ async function main() {
     } catch (e) {
       const msg = String(e.message || e).slice(0, 400); log('cycle failed:', msg);
       await call('bridge_health', { ok: false, loggedIn: !(e instanceof Blocked), pageOk: !/structure|not found|not recognised|did not open/.test(msg), error: msg, pc: env.COMPUTERNAME || '' }).catch(() => { });
-      if (e instanceof Blocked) { log('stopped: needs a person (see the health alert)'); break; }
+      if (e instanceof Blocked) { state._blockedUntil = Date.now() + 3600000; saveState(); log('stopped: needs a person (see the health alert) - next try in 1 hour'); await ctx.close().catch(() => { }); process.exit(10); }
+      if (browserGone(msg)) { log('the browser closed - restarting the bridge'); process.exit(4); }   // a new browser in 20 s
       await new Promise((r) => setTimeout(r, 30000));
     }
     if (once) break;
@@ -702,4 +714,4 @@ async function main() {
   }
   await ctx.close();
 }
-main();
+main().catch((e) => { log('bridge crashed:', String(e && e.stack || e).slice(0, 400)); process.exit(5); });

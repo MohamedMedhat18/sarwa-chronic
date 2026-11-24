@@ -38,7 +38,7 @@
   }
   const dialogUrl = (js) => { const m = String(js || '').match(/dialog\('([^']+)'/); return m ? JSON.parse('"' + m[1] + '"') : ''; };
   async function getDoc(url) {
-    const r = await fetch(url, { credentials: 'include' }); const html = await r.text();
+    const r = await fetch(url, { credentials: 'include', signal: AbortSignal.timeout(30000) }); const html = await r.text();   // never wait forever on the portal
     if (/Your session has ended|input type="password"/i.test(html)) throw new Error('portal session ended');
     if (/unexpected internal application error/i.test(html)) throw new Error('portal refused the page (checksum)');
     return new DOMParser().parseFromString(html, 'text/html');
@@ -70,7 +70,7 @@
         seen[src.toLowerCase()]++;
         const att = { id: (src === 'Broker' ? 'b-' : 's-') + r._fileId, file_name: r['File Name'] || ('file-' + r._fileId), source: src, uploaded_at: iso(r['Creation Date']), extra_comment: r['Extra Comment'] || '' };
         if (!skip.has(att.id)) {
-          const res = await fetch(new URL(r._blob, base).href, { credentials: 'include' });
+          const res = await fetch(new URL(r._blob, base).href, { credentials: 'include', signal: AbortSignal.timeout(90000) });
           const type = (res.headers.get('content-type') || '').split(';')[0];
           const buf = new Uint8Array(await res.arrayBuffer()); att.size = buf.length;
           if (/text\/html/.test(type)) att.error = 'the portal returned a page instead of the file';

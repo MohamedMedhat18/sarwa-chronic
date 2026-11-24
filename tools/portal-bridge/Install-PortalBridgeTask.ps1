@@ -23,7 +23,10 @@ try {
 $script = Join-Path $app 'Start-PortalBridge.ps1'
 $arg = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$script`" -SupabaseUrl `"$SupabaseUrl`" -IntervalMin $IntervalMin" + $(if ($Live) { ' -Live' } else { '' }) + $(if ($Headless) { ' -Headless' } else { '' })
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arg -WorkingDirectory $app
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+# starts at sign-in AND every 5 minutes if it is not running (after a restart, a crash, the window closed, the PC waking up);
+# "IgnoreNew" keeps it to one bridge at a time, so the 5-minute check never starts a second one
+$trigger = @((New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME),
+  (New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)))
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 2) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName 'ChronicPortalBridge' -Action $action -Trigger $trigger -Settings $settings -Description ('Sarwa Chronic <-> portal Chronic Attach bridge' + $(if ($Live) { ' (live writes as allowed by Settings > Portal)' } else { ' (dry run)' })) -Force | Out-Null
 Write-Host ('Installed in ' + $app + ' - task ChronicPortalBridge registered' + $(if ($Live) { ' (live)' } else { ' (dry run)' }) + '.')

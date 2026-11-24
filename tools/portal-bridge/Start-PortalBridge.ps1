@@ -63,7 +63,16 @@ try {
   Push-Location $PSScriptRoot
   $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }; if ($Recheck) { $args2 += @('--recheck', $Recheck) }
   $ErrorActionPreference = 'Continue'   # node writes to stderr; keep going and log it (UTF-8)
-  & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8
+  $logFile = Join-Path $dir 'bridge.log'
+  # self-healing: whatever stops the bridge (watchdog, browser closed, crash, network) it starts again in 20 s.
+  # Exit code 10 = needs a person (the portal refused the sign-in / captcha): no restart here; the task tries again later.
+  while ($true) {
+    & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $logFile -Append -Encoding utf8
+    $code = $LASTEXITCODE
+    if ($Once -or $Recheck -or $code -eq 10) { break }
+    "$((Get-Date).ToUniversalTime().ToString('o')) bridge stopped (exit $code) - starting it again in 20 s" | Out-File -FilePath $logFile -Append -Encoding utf8
+    Start-Sleep -Seconds 20
+  }
 } finally {
   Pop-Location
   if ($awake) { [BridgeAwake]::Off($awake) }

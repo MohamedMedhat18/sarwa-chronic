@@ -378,6 +378,7 @@ iframe.orig{width:100%;height:60vh;border:1px solid var(--border);border-radius:
       <button class="btn" id="availBtn" type="button" hidden title="Auto-assign: when On, new tickets of your groups come straight to you">⚪ Auto-assign: Off</button>
       <button class="btn primary" id="newBtn" type="button">+ New ticket</button>
       <div class="sync" id="sync" title="Sync status"><span class="dot"></span><span class="t" id="syncT">Not connected</span></div>
+      <a class="sync" id="psync" href="#/admin/portal" hidden title="Portal link: last report from the portal bridge, replies waiting, portal requests without a ticket"><span class="dot"></span><span class="t" id="psyncT">Portal</span></a>
       <div class="me" id="meBtn" role="button" tabindex="0"><span class="av sm" id="meAv">?</span><span id="meName">Set your name</span></div>
     </header>
     <div id="banner"></div>
@@ -3408,12 +3409,23 @@ async function portalJobAction(btn, action, id) {
   try { await portalCall({ action, id }); toast(action === 'retry' ? 'Sent to the portal again' : 'Portal decision cancelled'); }
   catch (x) { toast(x.message); if (btn) btn.disabled = false; }
 }
+// the portal sync light next to "Synced": green = the bridge reported in the last 10 min; red = it did not, or it reports a
+// problem, or a Pending portal request has no ticket. Replies waiting are counted (they go out by themselves when it is back).
+function portalSyncLight(s) {
+  const a = document.getElementById('psync'), tx = document.getElementById('psyncT'); if (!a || !tx) return;
+  if (!s) { a.hidden = true; return; }
+  const age = s.at ? (Date.now() - Date.parse(s.at)) / 60000 : null;
+  const bad = !!s.problem || age == null || age > 10 || s.missing > 0;
+  a.hidden = false; a.className = 'sync' + (bad ? ' err' : '');
+  tx.textContent = 'Portal ' + (age == null ? 'not synced' : age < 1 ? 'synced now' : 'synced ' + Math.round(age) + ' min ago') + (s.waiting ? ' · ' + s.waiting + ' waiting' : '') + (s.missing ? ' · ' + s.missing + ' missing' : '');
+  a.title = bad ? '⚠ ' + (s.problem || (s.missing ? s.missing + ' Pending portal request(s) have no ticket yet' : 'the portal bridge has not reported for more than 10 minutes')) + '. Replies stay in the queue and go out by themselves when it is back.' : 'Portal link OK – the bridge reported ' + (age < 1 ? 'just now' : Math.round(age) + ' min ago') + '.';
+}
 // every signed-in app nudges the server about every 2 minutes (sends what is queued; takes in new requests when due)
 let PORTAL_TICK = 0, PORTAL_OFF = false;
 async function portalTick(force) {
   if (!DB || !STORE.connected || !ME) return; const now = Date.now();
   if (!force && now - PORTAL_TICK < (PORTAL_OFF ? 10 : 2) * 60000) return; PORTAL_TICK = now;
-  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); portalSetDry(r);
+  try { const r = await portalCall({ action: 'tick' }); PORTAL_OFF = !!(r && r.off); portalSetDry(r); portalSyncLight(r && r.sync);
     if (Date.now() - PORTAL_LEVELS_AT > 30 * 60000) portalSetDry(await portalCall({ action: 'status' }));   // automation levels (Settings › Portal)
   } catch (e) { console.warn('portal tick', e); }
 }
@@ -5030,7 +5042,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-24a';
+const APP_VERSION = '2026-11-24b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
