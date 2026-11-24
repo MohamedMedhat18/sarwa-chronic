@@ -671,6 +671,151 @@ async function newRequestsNow(page) {
   }
   return fresh.length;
 }
+// ---------------- read-only study of a portal area (Call Center, 25 Nov 2026) ----------------
+// Opens tabs and reads what is shown; reads linked request pages with plain GETs. Never clicks Reply / Save / Close / any
+// action button, never submits a form. Records STRUCTURE only (tabs, columns, statuses, item names, buttons, page numbers);
+// values are reduced to their shape (digits -> 9, letters -> a) so no member data leaves this PC.
+const shapeOf = (v) => String(v || '').slice(0, 24).replace(/[0-9]/g, '9').replace(/[A-Za-z]/g, 'a').replace(/[؀-ۿ]/g, 'ء');
+async function studyPage(page) {
+  return await page.evaluate(() => {
+    const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+    const txt = (e) => (e.innerText || e.textContent || '').replace(/\s+/g, ' ').trim();
+    const tabs = [...document.querySelectorAll('[role=tab], .t-Tabs-link, .a-Tabs-element a, .apex-rds-item a, .t-TabsRegion-items a')].map((a) => ({ text: txt(a), controls: a.getAttribute('aria-controls') || a.getAttribute('href') || '', selected: a.getAttribute('aria-selected') || (a.closest('.is-active, .apex-rds-selected') ? 'true' : ''), visible: vis(a) })).filter((t) => t.text);
+    const regions = [...document.querySelectorAll('.a-IRR, .a-IG, .t-Report')].map((r) => {
+      const reg = r.closest('[id^="R"], [id$="_ir"], .t-Region, .t-IRR-region') || r;
+      const heads = [...r.querySelectorAll('.a-IRR-header, th')].map((h) => txt(h)).filter(Boolean);
+      const pag = r.querySelector('.a-IRR-pagination, .t-Report-paginationText, .a-GV-pagination');
+      return { id: reg.id || '', staticId: reg.getAttribute('data-region-id') || '', title: txt(reg.querySelector('.t-Region-title, h2') || document.createElement('i')), visible: vis(r), headers: [...new Set(heads)], rows: r.querySelectorAll('.a-IRR-table tr td[headers]').length ? r.querySelectorAll('.a-IRR-table tr').length : r.querySelectorAll('tbody tr').length, pagination: pag ? txt(pag) : '' };
+    });
+    const items = [...document.querySelectorAll('select, input[type=text], input:not([type]), textarea')].filter((e) => e.id && /^P\d+_/.test(e.id)).map((e) => ({ id: e.id, type: e.tagName.toLowerCase(), label: txt(document.querySelector('label[for="' + e.id + '"]') || document.createElement('i')), visible: vis(e), options: e.tagName === 'SELECT' ? [...e.options].map((o) => o.value + '=' + o.text) : undefined, value: e.tagName === 'SELECT' ? e.value : undefined }));
+    const buttons = [...document.querySelectorAll('button, a.t-Button, input[type=button]')].filter(vis).map((b) => txt(b) || b.getAttribute('title') || b.getAttribute('aria-label') || '').filter(Boolean);
+    const cards = document.body.innerText.split('\n').map((s) => s.trim()).filter(Boolean);
+    const counters = {}; for (let i = 0; i < cards.length - 1; i++) if (cards[i].length < 40 && /^\d{1,6}$/.test(cards[i + 1]) && !/^\d+$/.test(cards[i])) counters[cards[i]] = +cards[i + 1];
+    return { url: location.pathname, title: document.title, tabs, regions, items, buttons: [...new Set(buttons)].slice(0, 80), counters };
+  });
+}
+// every link / button inside the first rows of the visible report: where it goes (page number, item names), never its values
+async function studyRows(page, max = 4) {
+  return await page.evaluate((max) => {
+    const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+    const r = [...document.querySelectorAll('.a-IRR')].find(vis); if (!r) return { rows: [] };
+    const name = {}; for (const el of r.querySelectorAll('[id]')) { const t = el.textContent.trim(); if (/^[CB]\d/.test(el.id) && t && !name[el.id]) name[el.id] = t; }
+    const shape = (v) => String(v || '').slice(0, 24).replace(/[0-9]/g, '9').replace(/[A-Za-z]/g, 'a').replace(/[؀-ۿ]/g, 'ء');
+    const rows = [];
+    for (const tr of [...r.querySelectorAll('.a-IRR-table tr')].filter((x) => x.querySelector('td[headers]')).slice(0, max)) {
+      const o = { cells: {}, links: [] };
+      for (const td of tr.querySelectorAll('td[headers]')) { const col = name[(td.getAttribute('headers') || '').split(/\s+/)[0]] || '?'; o.cells[col] = shape(td.innerText.trim()); }
+      for (const a of tr.querySelectorAll('a, button')) {
+        const raw = (a.getAttribute('href') || '') + ' ' + (a.getAttribute('onclick') || '');
+        const pages = [...raw.matchAll(/[/:]p?(\d{2,4})[?:/]|f\?p=\d+:(\d+)|\/([a-z0-9-]+)\?/gi)].map((m) => m[1] || m[2] || m[3]).filter(Boolean);
+        const itemNames = [...raw.matchAll(/(p\d+_[a-z0-9_]+)=/gi)].map((m) => m[1].toUpperCase());
+        o.links.push({ text: (a.innerText || a.getAttribute('title') || a.getAttribute('aria-label') || '').trim().slice(0, 40), kind: /dialog\(/.test(raw) ? 'dialog' : a.tagName.toLowerCase(), pages: [...new Set(pages)].slice(0, 4), items: [...new Set(itemNames)] });
+      }
+      rows.push(o);
+    }
+    return { rows };
+  }, max);
+}
+// a linked request page read with a GET (the signed dialog address of the first row's links): fields, buttons, reports
+async function studyDialogs(page, max = 3) {
+  return await page.evaluate(async (max) => {
+    const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+    const r = [...document.querySelectorAll('.a-IRR')].find(vis); if (!r) return [];
+    const tr = [...r.querySelectorAll('.a-IRR-table tr')].find((x) => x.querySelector('td[headers]')); if (!tr) return [];
+    const urls = [];
+    for (const a of tr.querySelectorAll('a, button')) { const raw = (a.getAttribute('href') || '') + ' ' + (a.getAttribute('onclick') || ''); const m = raw.match(/dialog\('([^']+)'/) || raw.match(/^(\/ords\/[^ ]+|https?:\/\/[^ ]+)/); if (m) urls.push({ text: (a.innerText || a.getAttribute('title') || '').trim().slice(0, 40), url: m[1].includes('\\u') ? JSON.parse('"' + m[1] + '"') : m[1] }); }
+    const out = [];
+    for (const u of urls.slice(0, max)) {
+      try {
+        const res = await fetch(u.url, { credentials: 'include', signal: AbortSignal.timeout(30000) }); const html = await res.text();
+        const d = new DOMParser().parseFromString(html, 'text/html');
+        const t = (e) => (e.textContent || '').replace(/\s+/g, ' ').trim();
+        out.push({ link: u.text, page: (u.url.match(/\/([a-z0-9-]+)\?/i) || [])[1] || '', title: t(d.querySelector('title') || d.createElement('i')),
+          items: [...d.querySelectorAll('[id^="P"]')].filter((e) => /^P\d+_/.test(e.id) && /INPUT|SELECT|TEXTAREA/.test(e.tagName)).map((e) => ({ id: e.id, type: e.tagName.toLowerCase() + (e.type ? ':' + e.type : ''), label: t(d.querySelector('label[for="' + e.id + '"]') || d.createElement('i')), options: e.tagName === 'SELECT' ? [...e.options].map((o) => o.value + '=' + o.text).slice(0, 30) : undefined })),
+          buttons: [...new Set([...d.querySelectorAll('button, a.t-Button, input[type=submit], input[type=button]')].map((b) => t(b) || b.getAttribute('title') || '').filter(Boolean))].slice(0, 40),
+          reports: [...d.querySelectorAll('.a-IRR, .t-Report, table')].map((x) => [...new Set([...x.querySelectorAll('th, .a-IRR-header')].map(t).filter(Boolean))]).filter((h) => h.length).slice(0, 5),
+          requests: [...html.matchAll(/apex\.submit\(\{[^}]*request:\s*'([^']+)'/g)].map((m) => m[1]).concat([...html.matchAll(/"request":"([^"]+)"/g)].map((m) => m[1])).slice(0, 20) });
+      } catch (e) { out.push({ link: u.text, error: String(e).slice(0, 120) }); }
+    }
+    return out;
+  }, max);
+}
+async function study(page) {
+  const out = { at: new Date().toISOString(), steps: [] };
+  await openChronicAttach(page);
+  out.steps.push({ step: 'page 165 as opened', ...(await studyPage(page)) });
+  // tabs only (role=tab): switched with an in-page click (a covered tab cannot be clicked by position); the LAST match is the
+  // innermost (a sub-tab "Chronic" under Call Center, not the main "Chronic Attach")
+  const clickText = async (label) => {
+    const r = await page.evaluate((label) => {
+      const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+      const all = [...document.querySelectorAll('[role=tab], .t-Tabs-link')].filter((a) => (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim() === label);
+      const el = all.filter(vis).pop() || all.pop(); if (!el) return { ok: false, found: 0 };
+      el.click(); return { ok: true, found: all.length, controls: el.getAttribute('aria-controls') || el.getAttribute('href') || '' };
+    }, label);
+    await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(3000); return r;
+  };
+  for (const [main, subs] of [['Call Center', ['Chronic', 'Approval']]]) {
+    const ok = await clickText(main);
+    out.steps.push({ step: 'tab ' + main, clicked: ok, ...(await studyPage(page)), sample: await studyRows(page) });
+    for (const s of subs) {
+      const ok2 = await clickText(s);
+      out.steps.push({ step: 'tab ' + main + ' > ' + s, clicked: ok2, ...(await studyPage(page)), sample: await studyRows(page), dialogs: await studyDialogs(page) });
+    }
+  }
+  // pass 2: the lifecycle - for each Status Filter value: per sub-tab, how many rows and which CATEGORY values occur
+  // (statuses, call types, request types - never names / numbers), plus the Timeline of up to 3 requests each (categories only)
+  const CAT = ['Call Type', 'Current Status', 'Request Type', 'Request Priority', 'Member Source', 'Team Action Status', 'Request Annex', 'Plan Type'];
+  const TLCAT = ['From Status', 'To Status', 'Reason', 'Team Action Status'];
+  const opts = await page.evaluate(() => [...document.querySelectorAll('#P165_STATUS option')].map((o) => [o.value, o.text]));
+  out.lifecycle = [];
+  for (const [val, label] of opts) {
+    await page.evaluate((v) => apex.item('P165_STATUS').setValue(v), val);
+    await page.locator('#B500203752390221333').click().catch(() => { });
+    await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(4000);
+    for (const s of ['Chronic', 'Approval']) {
+      await clickText('Call Center'); await clickText(s);
+      const res = await page.evaluate(async ({ CAT, TLCAT }) => {
+        const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length));
+        const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); if (!r) return { none: true };
+        const name = {}; for (const el of r.querySelectorAll('[id]')) { const t = el.textContent.trim(); if (/^[CB]\d/.test(el.id) && t && !name[el.id]) name[el.id] = t; }
+        const rows = [...r.querySelectorAll('.a-IRR-table tr')].filter((x) => x.querySelector('td[headers]'));
+        const cats = {}; const combos = {};
+        const tl = [];
+        for (const tr of rows) {
+          const o = {}; for (const td of tr.querySelectorAll('td[headers]')) { const c = name[(td.getAttribute('headers') || '').split(/\s+/)[0]]; if (c) o[c] = td.innerText.trim(); }
+          for (const c of CAT) { cats[c] ||= {}; const v = (o[c] || '(empty)').slice(0, 40); cats[c][v] = (cats[c][v] || 0) + 1; }
+          const k = (o['Current Status'] || '(empty)') + ' / team: ' + (o['Team Action Status'] || '(empty)'); combos[k] = (combos[k] || 0) + 1;
+          o._tl = (() => { const a = [...tr.querySelectorAll('a')].find((x) => /P184_REQUEST/i.test(x.getAttribute('href') || '')); const m = a && (a.getAttribute('href') || '').match(/dialog\('([^']+)'/); return m ? JSON.parse('"' + m[1] + '"') : ''; })();
+          o._done = !!o['Team Action Status'];
+          tl.push(o);
+        }
+        const picks = [...tl.filter((x) => x._done).slice(0, 2), ...tl.filter((x) => !x._done).slice(0, 1)];
+        const timelines = [];
+        for (const p of picks) {
+          if (!p._tl) continue;
+          try {
+            const d = new DOMParser().parseFromString(await (await fetch(p._tl, { credentials: 'include', signal: AbortSignal.timeout(30000) })).text(), 'text/html');
+            const nm = {}; for (const el of d.querySelectorAll('[id]')) { const t = el.textContent.trim(); if (/^[CB]\d/.test(el.id) && t && !nm[el.id]) nm[el.id] = t; }
+            const lines = [...d.querySelectorAll('.a-IRR-table tr')].filter((x) => x.querySelector('td[headers]')).map((x) => {
+              const o = {}; for (const td of x.querySelectorAll('td[headers]')) { const c = nm[(td.getAttribute('headers') || '').split(/\s+/)[0]]; if (!c) continue; const v = td.innerText.trim();
+                o[c] = TLCAT.includes(c) ? v.slice(0, 40) : c === 'File Attach' ? (td.querySelector('a') ? 'file link' : v ? 'text' : '') : v ? 'text(' + v.length + ')' : ''; }
+              return o; });
+            timelines.push({ teamDone: p._done, lines });
+          } catch (e) { timelines.push({ error: String(e).slice(0, 80) }); }
+        }
+        const pag = r.querySelector('.a-IRR-pagination');
+        return { rows: rows.length, pagination: pag ? pag.textContent.replace(/\s+/g, ' ').trim() : '', categories: cats, currentVsTeam: combos, timelines };
+      }, { CAT, TLCAT }).catch((e) => ({ error: String(e).slice(0, 120) }));
+      out.lifecycle.push({ filter: label, sub: s, ...res });
+      alive();
+    }
+  }
+  writeFileSync(join(DATA, 'study-callcenter.json'), JSON.stringify(out, null, 1));
+  log('study written to', join(DATA, 'study-callcenter.json'));
+  await resetReport(page).catch(() => { });
+}
+
 // ---------------- self-healing (24 Nov 2026: a portal call hung at 14:08 after "Failed to fetch"; the process stayed alive
 // and frozen for 1.5 h, replies piled up). Exit codes: 10 = needs a person (Start-PortalBridge.ps1 does not restart it),
 // anything else = Start-PortalBridge.ps1 starts the bridge again in 20 s; the task also starts it every 5 min if not running.
@@ -691,6 +836,7 @@ async function main() {
   if (HEADLESS) await ctx.route('**/*', (route) => (['image', 'font', 'media'].includes(route.request().resourceType()) ? route.abort() : route.continue()));
   const page = ctx.pages()[0] || await ctx.newPage();
   log(`portal bridge started - ${DRY ? 'DRY RUN (previews only, nothing saved)' : 'live writes for: ' + ([...ALLOW].join(',') || 'none')}`);
+  if (process.argv.includes('--study')) { await study(page); await ctx.close().catch(() => { }); process.exit(0); }
   if (process.argv.includes('--recheck')) { await recheck(page, process.argv[process.argv.indexOf('--recheck') + 1]); await ctx.close(); return; }
   let lastNew = 0, lastChanged = 0, lastFull = 0, active = true, lastCfg = 0;
   // start-up = catch-up: the first pass sends every waiting reply and reads the whole Pending list (all files) at once
@@ -717,4 +863,4 @@ async function main() {
   }
   await ctx.close();
 }
-main().catch((e) => { log('bridge crashed:', String(e && e.stack || e).slice(0, 400)); process.exit(5); });
+main().then(() => process.exit(0), (e) => { log('bridge crashed:', String(e && e.stack || e).slice(0, 400)); process.exit(5); });

@@ -1,4 +1,4 @@
-<#
+﻿<#
   Starts the portal bridge. Decrypts the stored account + token (DPAPI) into this process's environment only,
   then runs bridge.mjs. Defaults are SAFE: DRY_RUN=1 (previews only, nothing submitted to the portal).
 
@@ -15,7 +15,8 @@ param(
   [int] $IntervalMin = 5,
   [switch] $Once,
   [string] $Recheck = '',   # read-only re-check of "conflict" replies: path of the jobs JSON (nothing is submitted)
-  [switch] $Headless
+  [switch] $Headless,
+  [switch] $Study      # read-only study of the Call Center area (writes study-callcenter.json, changes nothing)
 )
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'ChronicPortalBridge'
@@ -61,7 +62,7 @@ public static class BridgeAwake {
 } catch { "$(Get-Date -Format o) keep-awake not available: $($_.Exception.Message)" | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8 }
 try {
   Push-Location $PSScriptRoot
-  $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }; if ($Recheck) { $args2 += @('--recheck', $Recheck) }
+  $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }; if ($Recheck) { $args2 += @('--recheck', $Recheck) }; if ($Study) { $args2 += '--study' }
   $ErrorActionPreference = 'Continue'   # node writes to stderr; keep going and log it (UTF-8)
   $logFile = Join-Path $dir 'bridge.log'
   # self-healing: whatever stops the bridge (watchdog, browser closed, crash, network) it starts again in 20 s.
@@ -69,7 +70,7 @@ try {
   while ($true) {
     & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath $logFile -Append -Encoding utf8
     $code = $LASTEXITCODE
-    if ($Once -or $Recheck -or $code -eq 10) { break }
+    if ($Once -or $Recheck -or $Study -or $code -eq 10) { break }
     "$((Get-Date).ToUniversalTime().ToString('o')) bridge stopped (exit $code) - starting it again in 20 s" | Out-File -FilePath $logFile -Append -Encoding utf8
     Start-Sleep -Seconds 20
   }
