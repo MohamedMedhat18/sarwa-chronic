@@ -234,7 +234,23 @@ async function reportCount(page) {
   const m = t.match(/(\d+)\s*-\s*(\d+)(?:\s*of\s*(\d+))?/); return m ? +(m[3] || m[2]) : null;
 }
 // Request Timeline through the in-page reader (GET of the signed dialog address - no click on the report link)
+// The report shows one page of rows at a time; a request's signed links exist only while its row is on screen. With more
+// Pending requests than one page (24 Nov 2026: 16+), every request on another page failed "not on the report" and the
+// failure ended the whole cycle (no reconcile, nothing after it read). Before working on a request its page is shown.
+const hasRow = (page, id) => page.evaluate((x) => [...document.querySelectorAll('#my_ir a')].some((a) => new RegExp('p17[23]_chronic_id=' + x + '(?!\\d)').test(a.getAttribute('href') || '')), String(id)).catch(() => false);
+async function pageBtn(page, dir) {
+  const b = page.locator(`#my_ir .a-IRR-pagination button[aria-label*="${dir}"], #my_ir .a-IRR-button--pagination${dir === 'Next' ? 'Next' : 'Prev'}`);
+  if (!(await b.count().catch(() => 0)) || await b.first().isDisabled().catch(() => true)) return false;
+  await b.first().click(); await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(800); return true;
+}
+async function showRow(page, id) {
+  if (await hasRow(page, id)) return true;
+  for (let i = 0; i < 40 && await pageBtn(page, 'Previous'); i++);   // back to the first page
+  for (let i = 0; i < 40; i++) { if (await hasRow(page, id)) return true; if (!(await pageBtn(page, 'Next'))) break; }
+  return await hasRow(page, id);
+}
 async function readTimeline(page, requestId) {
+  await showRow(page, requestId);
   if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
   return await page.evaluate((x) => window.SarwaPortalReader.timeline(x), String(requestId));
 }
@@ -368,6 +384,8 @@ async function submitReply(page, job) {
     const curCode = STATUS[row['Chronic Status Name']] ?? 3; const core = coreOf(job);
     const targetName = Object.keys(STATUS).find((k) => STATUS[k] === +statusFor(job, curCode) && !k.includes(' ')) || row['Chronic Status Name'];
     if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
+    if (!(await showRow(page, id))) throw new Error('request ' + id + ' not on any page of the report');   // its links exist only on its page
+    if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
     const tlUrl = await page.evaluate((x) => window.SarwaPortalReader.timelineUrl(x), id);   // kept: confirm with one GET
     const before = await page.evaluate((u) => window.SarwaPortalReader.timelineAt(u), tlUrl);
     mark('timeline');
@@ -451,17 +469,25 @@ async function cycle(page, full) {
       if (await outboundNow(page)) { await openChronicAttach(page); await page.addScriptTag({ path: READER }); }
     }
     const id = row['Request Id']; const known = !!state[id] && !!state[id].tlq; const s = st(id);
-    if (known && !full) {
-      const raw = await page.evaluate((x) => window.SarwaPortalReader.timeline(x), id);
-      if (fpOf(raw.map((e) => ({ status: e['Chronic Status Name'], comment: e['Chronic Comment'], extra: e['Extra Comment'] }))) === s.tlq) { skipped++; await pause(200, 500); continue; }
+    // one request that cannot be read is logged and read again next cycle - it never stops the others (or the reconcile)
+    try {
+      if (!(await showRow(page, id))) throw new Error('not found on any page of the report');
+      if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
+      if (known && !full) {
+        const raw = await page.evaluate((x) => window.SarwaPortalReader.timeline(x), id);
+        if (fpOf(raw.map((e) => ({ status: e['Chronic Status Name'], comment: e['Chronic Comment'], extra: e['Extra Comment'] }))) === s.tlq) { skipped++; await pause(200, 500); continue; }
+      }
+      const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
+      const fp = fpOf(r.req.timeline.map((t) => ({ status: t.status_name, comment: t.comment, extra: t.extra_comment })));
+      // send each request on its own: a new one is a ticket within seconds, not after the whole list
+      const res = await call('bridge_ingest', { requests: [r.req] });
+      if (!(res.errors || []).length) { s.tlq = fp; s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
+      requests.push({ id, created: res.created || 0, updated: res.updated || 0, same: res.same || 0, error: (res.errors || [])[0] || '' });
+      if (res.created) log('NEW ticket for request', id);
+    } catch (e) {
+      if (e instanceof Blocked || /session ended|Sarwa Chronic not reachable/.test(String(e.message))) throw e;
+      requests.push({ id, created: 0, updated: 0, same: 0, error: String(e.message || e).slice(0, 160) }); log('read failed', id, String(e.message || e).slice(0, 160), '- read again next cycle');
     }
-    const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
-    const fp = fpOf(r.req.timeline.map((t) => ({ status: t.status_name, comment: t.comment, extra: t.extra_comment })));
-    // send each request on its own: a new one is a ticket within seconds, not after the whole list
-    const res = await call('bridge_ingest', { requests: [r.req] });
-    if (!(res.errors || []).length) { s.tlq = fp; s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
-    requests.push({ id, created: res.created || 0, updated: res.updated || 0, same: res.same || 0, error: (res.errors || [])[0] || '' });
-    if (res.created) log('NEW ticket for request', id);
     await pause(400, 900);
   }
   log('ingest', JSON.stringify({ seen: rows.length, read: requests.length, unchanged: skipped, created: requests.reduce((a, x) => a + x.created, 0), updated: requests.reduce((a, x) => a + x.updated, 0), errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error) }));
@@ -630,10 +656,17 @@ async function newRequestsNow(page) {
   await page.addScriptTag({ path: READER });
   for (const row of fresh) {
     const id = row['Request Id']; const s = st(id); const t0 = Date.now();
-    const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
-    const res = await call('bridge_ingest', { requests: [r.req] });
-    if (!(res.errors || []).length) { s.tlq = sha(JSON.stringify(r.req.timeline.map((t) => [t.status_name, norm(t.comment), norm(t.extra_comment)]))); s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64).map((a) => a.id)])]; saveState(); }
-    log(res.created ? 'NEW ticket for request' : 'read request', id, `(${((Date.now() - t0) / 1000).toFixed(1)} s, ${r.req.attachments.length} file(s))`);
+    try {
+      if (!(await showRow(page, id))) throw new Error('not found on any page of the report');
+      if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
+      const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
+      const res = await call('bridge_ingest', { requests: [r.req] });
+      if (!(res.errors || []).length) { s.tlq = sha(JSON.stringify(r.req.timeline.map((t) => [t.status_name, norm(t.comment), norm(t.extra_comment)]))); s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64).map((a) => a.id)])]; saveState(); }
+      log(res.created ? 'NEW ticket for request' : 'read request', id, `(${((Date.now() - t0) / 1000).toFixed(1)} s, ${r.req.attachments.length} file(s))`);
+    } catch (e) {
+      if (e instanceof Blocked || /session ended|Sarwa Chronic not reachable/.test(String(e.message))) throw e;
+      log('read failed', id, String(e.message || e).slice(0, 160), '- read again next cycle');
+    }
     if (await outboundNow(page)) { await openChronicAttach(page); await page.addScriptTag({ path: READER }); }   // replies first
   }
   return fresh.length;
