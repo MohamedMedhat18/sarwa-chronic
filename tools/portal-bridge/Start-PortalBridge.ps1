@@ -33,6 +33,32 @@ $env:INTERVAL_MIN = "$IntervalMin"
 $env:HEADLESS = $(if ($Headless) { '1' } else { '0' })
 if ($Live) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = '*' }
 elseif ($LiveWriteAllow) { $env:DRY_RUN = '0'; $env:LIVE_WRITE_ALLOW = $LiveWriteAllow } else { $env:DRY_RUN = '1'; $env:LIVE_WRITE_ALLOW = '' }
+# Keep this PC working while the bridge runs (23 Nov 2026: Modern Standby throttled the network from 18:40 and the PC slept
+# 03:28-10:10, so requests waited all night). A Windows power request (like a media player's): the screen may turn off, the
+# PC does not go to standby / sleep. No power setting is changed; it ends with this process (normal sleep afterwards).
+$awake = $null
+try {
+  Add-Type -ErrorAction Stop -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class BridgeAwake {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] public struct REASON_CONTEXT { public uint Version; public uint Flags; public string Reason; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr PowerCreateRequest(ref REASON_CONTEXT c);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool PowerSetRequest(IntPtr h, int type);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool PowerClearRequest(IntPtr h, int type);
+  [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint f);
+  public static IntPtr On(string why) {
+    var c = new REASON_CONTEXT { Version = 0, Flags = 1, Reason = why };
+    var h = PowerCreateRequest(ref c);
+    PowerSetRequest(h, 1);   // PowerRequestSystemRequired: no idle sleep
+    PowerSetRequest(h, 3);   // PowerRequestExecutionRequired: keeps running (and its network) in Modern Standby
+    SetThreadExecutionState(0x80000001);   // ES_CONTINUOUS | ES_SYSTEM_REQUIRED (older Windows)
+    return h;
+  }
+  public static void Off(IntPtr h) { if (h != IntPtr.Zero) { PowerClearRequest(h, 3); PowerClearRequest(h, 1); } SetThreadExecutionState(0x80000000); }
+}
+'@
+  $awake = [BridgeAwake]::On('Sarwa Chronic portal bridge is reading the portal and sending replies')
+} catch { "$(Get-Date -Format o) keep-awake not available: $($_.Exception.Message)" | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8 }
 try {
   Push-Location $PSScriptRoot
   $args2 = @('bridge.mjs'); if ($Once) { $args2 += '--once' }; if ($Recheck) { $args2 += @('--recheck', $Recheck) }
@@ -40,5 +66,6 @@ try {
   & node @args2 2>&1 | ForEach-Object { "$_" } | Out-File -FilePath (Join-Path $dir 'bridge.log') -Append -Encoding utf8
 } finally {
   Pop-Location
+  if ($awake) { [BridgeAwake]::Off($awake) }
   Remove-Item Env:PORTAL_PASS, Env:PORTAL_TOKEN -ErrorAction SilentlyContinue
 }

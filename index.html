@@ -3626,11 +3626,14 @@ function portalHealthBox(s) {
     const med = sent.length ? sent[Math.floor(sent.length / 2)] : null, worst = sent.length ? sent[sent.length - 1] : null;
     const fmt = x => x == null ? '—' : x < 90 ? Math.round(x) + ' s' : Math.round(x / 60) + ' min';
     const h = s.health || {}; const age = h.at ? (Date.now() - Date.parse(h.at)) / 1000 : null;
-    const warn = (age != null && age > 360) || oldest > 600 || (med != null && med > 120) || !!s.bridgeProblem;
+    const rc = s.reconcile || null; const rcAge = rc && rc.at ? (Date.now() - Date.parse(rc.at)) / 1000 : null;
+    const rcBad = !!rc && (((rc.missing || []).length > 0) || (rc.portal_shown != null && rc.portal_shown !== rc.rows_read) || rcAge == null || rcAge > 900);
+    const warn = (age != null && age > 360) || oldest > 600 || (med != null && med > 120) || !!s.bridgeProblem || rcBad;
     const sw = s.sweep || {};
     box.style.borderLeft = '4px solid ' + (warn ? 'var(--bad)' : '#2f8a4f');
     box.replaceChildren(el('b', {}, 'Portal health (last 24 h)'),
       s.bridgeProblem ? el('div', { class: 'small', style: 'color:var(--bad);font-weight:600' }, '⚠ ' + s.bridgeProblem + '. Replies are held in the queue; after ' + (s.timeoutMin || 15) + ' min they move to Sync failed with this reason.') : null,
+      rc ? el('div', { class: 'small', style: rcBad ? 'color:var(--bad);font-weight:600' : '' }, 'Portal vs Sarwa Chronic: portal list ' + (rc.portal_shown ?? '?') + ' Pending · read ' + (rc.rows_read ?? '?') + ' · with a ticket ' + (rc.with_ticket ?? '?') + ' · missing ' + (rc.missing || []).length + ((rc.missing || []).length ? ' (' + rc.missing.slice(0, 10).join(', ') + ')' : '') + ' · checked ' + (rcAge == null ? 'never' : fmt(rcAge) + ' ago') + (rc.cards && Object.keys(rc.cards).length ? ' · portal counters: ' + Object.entries(rc.cards).map(([k, v]) => k + ' ' + v).join(', ') : '')) : null,
       el('div', { class: 'small' }, 'Bridge PC: last report ' + (age == null ? 'never' : fmt(age) + ' ago') + (h.ok === false ? ' – ⚠ ' + (h.error || 'problem') : h.ok ? ' – OK' : '')),
       el('div', { class: 'small muted' }, 'Safety check (every minute): up to ' + (s.maxAttempts || 3) + ' tries per reply, Failed after ' + (s.timeoutMin || 15) + ' min with an alert, daily list of unconfirmed replies.' + (sw.at ? ' Last action ' + fmtDate(sw.at) + ': ' + [sw.retaken ? sw.retaken + ' taken back' : '', sw.timedOut ? sw.timedOut + ' failed (timeout)' : '', sw.resynced ? sw.resynced + ' re-synced' : '', sw.bridgeAlert ? 'bridge alert sent' : ''].filter(Boolean).join(', ') : '')),
       el('div', { class: 'small' }, 'Replies waiting: ' + waiting.length + (waiting.length ? ' · oldest ' + fmt(oldest) : '')),
@@ -5027,7 +5030,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-23e';
+const APP_VERSION = '2026-11-24a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

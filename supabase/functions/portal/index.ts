@@ -493,7 +493,8 @@ async function statusOf(c: Cfg) {
   return { mode: c.mode, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], levels: { ...DEFAULT_LEVELS, ...((c as any).levels || {}) }, configured: c.mode === 'mock' || c.mode === 'browser' || !!(c.baseUrl && c.clientId && c.clientSecret), baseUrl: c.mode === 'live' ? c.baseUrl : c.mode === 'mock' ? 'mock (test requests only)' : c.mode === 'browser' ? 'portal UI via the Outlook bridge PC (no IT)' : '', tokenUrl: c.mode === 'live' ? c.tokenUrl : '',
     clientId: c.mode === 'live' ? c.clientId : '', hasSecret: !!c.clientSecret, intervalMin: c.intervalMin, group: c.group, alertTo: c.alertTo, since: c.since,
     cursor: cur.since || null, lastRun: cur.lastRun || null, lastOk: cur.lastOk || null, lastError: cur.lastError || null, last: cur.last || null, queue: counts, linked: links || 0, health,
-    bridgeProblem: health ? bridgeProblem(c, health, Date.now()) : '', sweep: await getState('sweep'), timeoutMin: TIMEOUT_MIN, maxAttempts: MAX_ATTEMPTS };
+    bridgeProblem: health ? bridgeProblem(c, health, Date.now()) : '', sweep: await getState('sweep'), timeoutMin: TIMEOUT_MIN, maxAttempts: MAX_ATTEMPTS,
+    reconcile: c.mode === 'browser' ? await getState('reconcile') : null };
 }
 
 // ---------- mock helpers (only while the connection is in mock mode: TEST requests) ----------
@@ -666,7 +667,20 @@ async function sweep(c: Cfg, force = false) {
       }
       await log({ direction: 'system', action: 'daily_check', ok: list.length === 0 && dups.length === 0, detail: { open: list.map((x) => [x.ticket, x.request_id, x.status]), duplicate_sends: dups.map((x) => [x.t, x.t1, x.t2]) } });
       const dupHtml = dups.length ? `<p><b>The same email went twice</b> (last 24 h; nothing was sent to anyone about it):</p><ul>${dups.map((x) => `<li><b>${x.t}</b> to ${String(x.to || '').replace(/</g, '&lt;')} - ${String(x.t1).slice(11, 16)} and ${String(x.t2).slice(11, 16)} UTC (${String(x.by || '').replace(/</g, '&lt;')})</li>`).join('')}</ul>` : '';
-      if (list.length || dups.length) await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s)`, (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
+      const rcd = await getState('reconcile');
+      const rcHtml = c.mode === 'browser' ? `<p><b>Portal vs Sarwa Chronic</b> (last check ${String(rcd.at || 'never').slice(0, 16).replace('T', ' ')} UTC): portal list ${rcd.portal_shown ?? '?'} Pending, read ${rcd.rows_read ?? '?'}, with a ticket ${rcd.with_ticket ?? '?'}, missing ${(rcd.missing || []).length}${(rcd.missing || []).length ? ' (' + rcd.missing.join(', ') + ')' : ''}${rcd.cards && Object.keys(rcd.cards).length ? '. Portal counters: ' + Object.entries(rcd.cards).map(([k, v]) => k + ' ' + v).join(', ') : ''}.</p>` : '';
+      await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s), ${(rcd.missing || []).length} missing`, rcHtml + (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
+    }
+  }
+  // 4b) Portal vs Sarwa Chronic: a portal request without a ticket (or a portal total that does not match the rows read)
+  //     for more than 10 minutes -> one alert per hour; a comparison older than 15 min counts as "not checked"
+  const rc = await getState('reconcile');
+  if (rc.problem_since && now - Date.parse(rc.problem_since) > 10 * 60000 && c.mode === 'browser') {
+    const { data: go } = await db.rpc('portal_try_lock', { p_key: 'alert_reconcile', p_secs: 3600 });
+    if (go) {
+      const what = [(rc.missing || []).length ? `${rc.missing.length} Pending portal request(s) have no ticket: ${rc.missing.slice(0, 20).join(', ')}` : '', rc.portal_shown != null && rc.portal_shown !== rc.rows_read ? `the portal list shows ${rc.portal_shown} but ${rc.rows_read} were read` : '', (rc.ingest_errors || []).length ? 'read errors: ' + rc.ingest_errors.slice(0, 5).join(' | ') : ''].filter(Boolean).join('; ');
+      await log({ direction: 'system', action: 'reconcile_alert', ok: false, error: str(what, 900) });
+      await internalMail(c, '', '[Portal] Portal vs Sarwa Chronic does not match', `<p>${what.replace(/</g, '&lt;')}.</p><p>Since ${String(rc.problem_since).slice(0, 16).replace('T', ' ')} UTC. The bridge reads them again every cycle; if this stays, check Settings &gt; Portal &gt; Portal health.</p>`).catch(() => {});
     }
   }
   // 6) one request = one ticket: certain duplicates among new tickets are merged (every 5 min)
@@ -776,14 +790,20 @@ async function bridgeHistory(rows: any[]) {
   if (error) throw new Error(error.message);
   return { upserted: clean.length };
 }
-async function bridgeReconcile(openIds: string[]) {
+async function bridgeReconcile(openIds: string[], b: any = {}) {
   const set = new Set((openIds || []).map(String));
   const { data } = await db.from('portal_links').select('request_id').limit(10000);
   const linked = new Set((data || []).map((l: any) => String(l.request_id)));
   const missing = [...set].filter((id) => !linked.has(id));
   const { data: openLinks } = await db.from('portal_links').select('request_id').in('status_code', [1, 2, 3, 6, 9]);
   const extra = (openLinks || []).map((l: any) => String(l.request_id)).filter((id: string) => !set.has(id));
-  await log({ direction: 'system', action: 'reconcile', ok: missing.length === 0, detail: { portal_open: set.size, linked: linked.size, missing: missing.length, closed_elsewhere: extra.length } });
+  // "Portal vs Sarwa Chronic" counter (Settings > Portal): what the portal shows, what was read, what has a ticket here
+  const prev = await getState('reconcile'); const now = new Date().toISOString();
+  const shown = Number.isFinite(+b.portal_shown) && b.portal_shown !== null ? +b.portal_shown : null, read = Number.isFinite(+b.rows_read) ? +b.rows_read : set.size;
+  const problem = missing.length > 0 || (shown != null && shown !== read);
+  await setState('reconcile', { at: now, portal_shown: shown, rows_read: read, portal_open: set.size, with_ticket: set.size - missing.length, missing, ingest_errors: (b.ingest_errors || []).slice(0, 20),
+    cards: b.cards && typeof b.cards === 'object' ? b.cards : {}, closed_elsewhere: extra.slice(0, 50), problem_since: problem ? (prev.problem_since || now) : null });
+  await log({ direction: 'system', action: 'reconcile', ok: !problem, detail: { portal_shown: shown, rows_read: read, portal_open: set.size, linked: linked.size, missing: missing.length, missing_ids: missing.slice(0, 20), closed_elsewhere: extra.length } });
   return { portal_open: set.size, linked: linked.size, missing_tickets: missing, closed_on_portal_still_open_here: extra };
 }
 async function bridgeHealth(b: any) {
@@ -868,7 +888,7 @@ Deno.serve(async (req) => {
         case 'bridge_job_result': return json(await bridgeJobResult(body));
         case 'bridge_ingest': return json({ ok: true, ...(await bridgeIngest(body.requests || [], body.backfill === true)) });
         case 'bridge_rules': { const out = []; for (const id of (body.request_ids || []).slice(0, 50)) { const { data: l } = await db.from('portal_links').select('ticket').eq('request_id', String(id)).maybeSingle(); if (l) out.push({ request_id: String(id), ticket: l.ticket, ...(await runRules(l.ticket, String(id))) }); } return json({ ok: true, results: out }); }
-        case 'bridge_reconcile': return json({ ok: true, ...(await bridgeReconcile(body.open_request_ids || [])) });
+        case 'bridge_reconcile': return json({ ok: true, ...(await bridgeReconcile(body.open_request_ids || [], body)) });
         case 'bridge_history': return json({ ok: true, ...(await bridgeHistory(body.rows || [])) });
         case 'bridge_health': return json(await bridgeHealth(body));
       }
