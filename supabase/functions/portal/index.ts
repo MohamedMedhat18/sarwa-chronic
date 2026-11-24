@@ -867,7 +867,7 @@ async function bridgeMccIngest(list: any[]) {
       const info = mccInfo(q); const lines = (q.timeline || []) as any[];
       for (const l of lines) l._id = await mccLineId(no, l);
       const files = ((q.files || []) as any[]).map((f) => ({ ...f, id: 'mcc-' + safe(String(f.id)) }));
-      const hash = await sha256(JSON.stringify([info, lines.map((l) => l._id).sort(), files.map((f) => f.id).sort()]));
+      const hash = await sha256(JSON.stringify([info, lines.map((l) => l._id).sort()]));   // files are part of their Timeline line
       const { data: link } = await db.from('mcc_links').select('*').eq('request_no', no).maybeSingle();
       if (!link) {
         const { data: nt, error: e1 } = await db.rpc('portal_next_ticket'); if (e1 || !nt) throw new Error('ticket number: ' + (e1?.message || 'none'));
