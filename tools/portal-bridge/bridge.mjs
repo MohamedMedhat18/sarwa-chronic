@@ -492,6 +492,14 @@ async function cycle(page, full) {
     }
     await pause(400, 900);
   }
+  // self-heal (25 Nov 2026): after a portal form failed to open, every request link was refused ('checksum') until the bridge
+  // restarted. 2+ refused links in a cycle = reload the portal page; 2 such cycles in a row = restart the bridge (fresh page).
+  const refusedNow = requests.filter((x) => /checksum|refused the page|did not open/i.test(x.error || '')).length;
+  if (refusedNow >= 2) {
+    state._refusedStreak = (state._refusedStreak || 0) + 1; saveState();
+    if (state._refusedStreak >= 2) { state._refusedStreak = 0; saveState(); log('portal links refused again after a reload - restarting the bridge for a fresh page'); process.exit(6); }
+    log('portal links refused (' + refusedNow + ') - reloading the portal page'); await closeDialogs(page).catch(() => { }); await openChronicAttach(page, { reload: true }).catch(() => { });
+  } else if (state._refusedStreak) { state._refusedStreak = 0; saveState(); }
   log('ingest', JSON.stringify({ seen: rows.length, read: requests.length, unchanged: skipped, created: requests.reduce((a, x) => a + x.created, 0), updated: requests.reduce((a, x) => a + x.updated, 0), errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error) }));
   for (let i = 0; i < rows.length; i += 1000) await call('bridge_history', { rows: rows.slice(i, i + 1000).map((r) => histRow(r)) }).catch((e) => log('history:', e.message));
   const rec = await call('bridge_reconcile', { open_request_ids: rows.filter((r) => !FINAL.has(STATUS[r['Chronic Status Name']])).map((r) => r['Request Id']), portal_shown: shown, rows_read: rows.length, cards: portalCards, ingest_errors: requests.filter((x) => x.error).map((x) => x.id + ': ' + x.error).slice(0, 20) });
@@ -653,6 +661,8 @@ async function outboundNow(page) {
     // a changed portal form / page is a problem for a person NOW (alert), not only after 3 tries
     if (res.error && /form changed|structure changed|not found on the portal form/i.test(res.error)) await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'Portal form changed: ' + res.error.slice(0, 200), pc: env.COMPUTERNAME || '' }).catch(() => { });
     await reportResult(claimed.id, res); log('job', claimed.id, res.result, res.error || '');
+    // a reply that failed on a form / link: the next try starts from a freshly loaded portal page (no half-open dialog left)
+    if (res.error && /checksum|refused the page|did not open|not found on the portal form|Failed to find element/i.test(res.error)) { await closeDialogs(page).catch(() => { }); await openChronicAttach(page, { reload: true }).catch(() => { }); }
     delete firstSeen[j.id];
     await pause(1500, 3000);
   }
