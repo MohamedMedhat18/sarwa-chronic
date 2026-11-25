@@ -1396,7 +1396,7 @@ const VIEW_DEFS = {
   nodecision: { label: 'Open without a decision', f: t => !t.decision && t.status !== 'Resolved' && t.status !== 'Closed' },
   unverified: { label: 'Open, not checked in i-CARE', f: t => !t.icare && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto },
   portal: { label: 'Portal – open requests', desc: 'Open tickets from the portal (Chronic Attach)', f: t => isPortal(t) && openT(t) && !t.mergedInto },
-  infodesk: { label: 'Info Desk', desc: 'Call Center requests (portal Call Center > Chronic / Approval, MCC-…) – open or waiting for the Call Center', f: t => !!t.mcc && !t.mergedInto && !['Closed', 'Resolved'].includes(t.status) },
+  infodesk: { label: 'Info Desk', desc: 'Call Center requests handed to the Chronic team (portal Call Center > Chronic / Approval, MCC-…, status In Progress) – open or waiting for the Call Center. Requests still Open at the Call Center are under “Call Center working”.', f: t => !!t.mcc && !t.mergedInto && !mccWithCallCenter(t) && !['Closed', 'Resolved'].includes(t.status) },
   portalwait: { label: 'Portal – waiting for confirmation', desc: 'A decision is on its way to the portal (not confirmed yet)', f: t => (isPortal(t) || !!t.mcc) && !!t.portalSync && ['queued', 'sending', 'retrying'].includes(t.portalSync.state) },
   portalfail: { label: 'Portal – sync failed', desc: 'The portal did not take the decision – try again or check the request on the portal', f: t => (isPortal(t) || !!t.mcc) && !!t.portalSync && ['conflict', 'error', 'dead'].includes(t.portalSync.state) },
   portaldirect: { label: 'Portal – changed on the portal', desc: 'Someone decided on the portal directly while the ticket was open here', f: t => isPortal(t) && !!t.portalDirect && openT(t) && !t.mergedInto },
@@ -1481,6 +1481,8 @@ function folderPane(view) {
       link('portalwait', 'Waiting for portal', cnt(t => VIEW_DEFS.portalwait.f(t)), { icon: '⏳', title: VIEW_DEFS.portalwait.desc }),
       link('portalfail', 'Sync failed', cnt(t => VIEW_DEFS.portalfail.f(t)), { icon: '⚠', tone: 'bad', title: VIEW_DEFS.portalfail.desc }),
       link('infodesk', 'Info Desk', cnt(t => VIEW_DEFS.infodesk.f(t)), { icon: '☎', title: VIEW_DEFS.infodesk.desc }),
+      el('div', { class: 'sub' }, el('a', { href: '#', title: 'Call Center requests still Open (the Call Center is working on them): watched only, no ticket. They become an Info Desk ticket when the Call Center hands them over (In Progress).', onclick: e => { e.preventDefault(); mccWatchDialog(); } },
+        el('span', { class: 'ico', 'aria-hidden': 'true' }, '◌'), el('span', { class: 'nm' }, 'Call Center working'), MCC_WATCH_N ? el('b', { class: 'n' }, MCC_WATCH_N) : null)),
       link('portaldirect', 'Changed on the portal', cnt(t => VIEW_DEFS.portaldirect.f(t)), { icon: '!', tone: 'warn', title: VIEW_DEFS.portaldirect.desc }),
       el('a', { href: '#/ph', title: 'Every portal request, old ones included' }, el('span', { class: 'ico', 'aria-hidden': 'true' }, '🗂'), el('span', { class: 'nm' }, 'Portal history'))] : null,
     el('h4', {}, 'Decisions'),
@@ -3430,6 +3432,7 @@ async function portalJobAction(btn, action, id) {
 // the portal sync light next to "Synced": green = the bridge reported in the last 10 min; red = it did not, or it reports a
 // problem, or a Pending portal request has no ticket. Replies waiting are counted (they go out by themselves when it is back).
 function portalSyncLight(s) {
+  if (s && s.infoDesk) MCC_WATCH_N = s.infoDesk.watching || 0;
   const a = document.getElementById('psync'), tx = document.getElementById('psyncT'); if (!a || !tx) return;
   if (!s) { a.hidden = true; return; }
   const age = s.at ? (Date.now() - Date.parse(s.at)) / 60000 : null;
@@ -3654,6 +3657,7 @@ async function queueMcc(t, { teamStatus, text, after }) {
   if (!t.mcc) throw new Error('Not a Call Center request');
   if (!MCC_DECISIONS.includes(teamStatus)) throw new Error('Choose the decision – the portal requires one');
   if (!confirmSameText(t, text, teamStatus)) return 'cancelled';
+  if (mccWithCallCenter(t) && !confirm(t.mcc.requestNo + ' is still Open at the Call Center – they are working on it and have not handed it to the Chronic team yet.\n\nSend this reply to the portal anyway?')) return 'cancelled';
   if (portalBusy(t)) throw new Error('A reply for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
   const id = 'pd_' + Date.now().toString(36) + rand(4); const html = textToHtml(text || '');
   const ticketUpdate = after && isDone(after.status) ? after : { status: 'Pending', pendingReason: 'Awaiting Call Center' };
@@ -3663,6 +3667,31 @@ async function queueMcc(t, { teamStatus, text, after }) {
   await emit('portal.queued', t.no, { jobId: id, decision: teamStatus, reason: '', text: text || '', html, atts: [], to: 'Call Center request ' + t.mcc.requestNo, channel: 'callcenter' });
   return id;
 }
+// Call Center status (list "Current Status"): Open = the Call Center is still working on it (not ours yet);
+// In Progress = handed to the Chronic team; Pending Info = waiting for the Call Center / member
+var MCC_WATCH_N = null;   // var: the sidebar may render before this line runs
+function mccWithCallCenter(t) { return !!(t && t.mcc && /^open$/i.test(String(t.mcc.currentStatus || '').trim())); }
+function mccStatusPill(st) {
+  const s = String(st || '').trim(); if (!s) return null;
+  const [txt, bg, fg] = /^open$/i.test(s) ? ['With the Call Center (Open)', 'var(--warn-bg)', '#8a5200'] : /progress/i.test(s) ? ['With the Chronic team (' + s + ')', '#e3f4ea', '#1b7344'] : /pending/i.test(s) ? ['Waiting – ' + s, 'var(--warn-bg)', '#8a5200'] : [s, 'var(--surface-2)', 'var(--muted)'];
+  return el('span', { class: 'pill', style: `background:${bg};color:${fg}`, title: 'Call Center status on the portal' }, txt);
+}
+// Info Desk > Call Center working: requests the Call Center has not handed over yet (no ticket) + tickets whose request went back to Open
+async function mccWatchDialog() {
+  const body = el('div', { style: 'display:grid;gap:8px' }, el('div', { class: 'small muted' }, 'Loading…'));
+  openDialog('◌ Call Center working', [body], [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Close')], 'min(820px,96vw)');
+  try {
+    const r = await portalCall({ action: 'mcc_watch' }); const w = r.watch || [], back = r.ticketsStillOpen || []; MCC_WATCH_N = w.length;
+    const td = (x, st) => el('td', { dir: 'auto', style: 'padding:3px 8px;border-bottom:1px solid var(--border);' + (st || '') }, x == null ? '' : x);
+    body.replaceChildren(
+      el('div', { class: 'small muted' }, 'Status Open on the portal = the Call Center is still working on it. No ticket is made and nothing is needed from the Chronic team. When the Call Center changes it to In Progress, an Info Desk ticket is created automatically (one per request, with the full Timeline and files).'),
+      w.length ? el('table', { style: 'border-collapse:collapse;font-size:12.5px;width:100%' },
+        el('thead', {}, el('tr', {}, ...['Request', 'Type', 'Member', 'Request', 'Call', 'With the Call Center since'].map(h => el('th', { style: 'text-align:left;padding:3px 8px;border-bottom:1px solid var(--border)' }, h)))),
+        el('tbody', {}, ...w.map(x => el('tr', {}, td(el('b', {}, x.request_no)), td(x.kind === 'approval' ? 'Approval' : 'Chronic'), td([x.member_name, x.member_id].filter(Boolean).join(' · ')), td(x.request_type || ''), td(x.call_type === 'WP' ? 'WhatsApp' : x.call_type === 'INCOMING' ? 'Phone' : x.call_type || ''), td(rel(x.first_seen), 'white-space:nowrap')))))
+        : el('div', { class: 'small' }, 'No request is Open at the Call Center right now.'),
+      back.length ? el('div', { class: 'small' }, el('b', {}, 'Tickets whose request is Open at the Call Center again: '), ...back.flatMap((x, i) => [i ? ', ' : '', el('a', { href: '#/t/' + x.ticket, onclick: closeDialog }, x.ticket + ' (' + x.request_no + ')')]), ' – they stay Pending (Awaiting Call Center) and come back to Info Desk when handed over.') : null);
+  } catch (x) { body.replaceChildren(el('div', { class: 'small', style: 'color:var(--bad)' }, 'Could not load the list: ' + x.message)); }
+}
 // the request as the Call Center shows it + where it stands; Approval requests can also go to the Approval team by email
 function mccPanel(t) {
   if (!t || !t.mcc) return null; const p = t.mcc, s = t.portalSync;
@@ -3671,6 +3700,8 @@ function mccPanel(t) {
   const other = [...DB.tickets.values()].filter(o => o.no !== t.no && !o.mergedInto && p.memberId && o.member === p.memberId && (isPortal(o) || o.mcc));
   return el('div', { class: 'slabox', style: 'display:grid;gap:4px;font-size:12.5px;margin-bottom:10px;border-left:3px solid #6b4fa0' },
     el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', {}, '☎ Call Center ' + p.requestNo), el('span', { class: 'pill', style: 'background:' + (p.kind === 'approval' ? '#efe7fb' : 'var(--warn-bg)') }, p.kind === 'approval' ? 'Approval' : 'Chronic')),
+    el('div', {}, mccStatusPill(p.currentStatus)),
+    mccWithCallCenter(t) ? el('div', { class: 'small', style: 'color:#8a5200' }, 'The Call Center is still working on this request (Open) – it is not with the Chronic team yet. A reply is still possible (you will be asked to confirm).') : null,
     row('Call', p.callType === 'WP' ? 'WhatsApp to the Call Center' : p.callType === 'INCOMING' ? 'Phone call' : p.callType), row('Request', [p.requestType, p.annex].filter(Boolean).join(' – ')), row('Priority', p.priority),
     p.notes ? el('div', { dir: 'auto', style: 'white-space:pre-wrap;background:var(--surface-2);border-radius:6px;padding:4px 6px' }, p.notes) : null,
     row('Member', [p.memberName, p.memberId].filter(Boolean).join(' · ')), row('Mobile', p.mobile), row('Policy holder', p.policyHolder), row('Policy', p.policyNumber), row('Plan', p.plan), row('Valid', [p.effective, p.expiry].filter(Boolean).join(' → ')),
@@ -5143,7 +5174,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-25d';
+const APP_VERSION = '2026-11-25e';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

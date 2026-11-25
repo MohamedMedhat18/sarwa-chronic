@@ -883,8 +883,9 @@ async function mccTimeline(page, url) {
 }
 // every page of the visible Call Center list
 async function mccAllRows(page) {
-  const out = [];
+  const out = []; out.pages = 0;
   for (let i = 0; i < 30; i++) {
+    out.pages++;
     out.push(...((await page.evaluate(MCC_ROWS)) || []));
     const moved = await page.evaluate(() => { const vis = (e) => !!(e && (e.offsetWidth || e.offsetHeight || e.getClientRects().length)); const r = [...document.querySelectorAll('.a-IRR')].find((x) => vis(x) && /Request Number/.test(x.textContent)); const b = r && r.querySelector('.a-IRR-pagination button[aria-label*="Next"], .a-IRR-button--paginationNext'); if (!b || b.disabled) return false; b.click(); return true; });
     if (!moved) break;
@@ -895,25 +896,43 @@ async function mccAllRows(page) {
 const MCC_KEEP = ['Request Number', 'Member Id', 'Member Name', 'Member Source', 'Call Type', 'Current Status', 'Effective Date', 'Expiry Date', 'Mobile', 'Plan Type', 'Policy Holder', 'Policy Number', 'Request Annex', 'Request Notes', 'Request Type', 'Request Priority', 'Assigned To', 'Team Action Status', 'Team Comment'];   // no national id / date of birth / gender
 const mccFileId = (url) => (String(url).match(/[?&]k1=([^&]+)/) || [])[1] || sha(String(url)).slice(0, 16);
 const mccLineIdOf = (no, l) => 'ml-' + sha([no, l['From Status'], l['To Status'], l['Reason'], l['Team Action Status'], l['Team Comment'], l['Update by'], l['Update Date'], l._fileId || ''].join('|')).slice(0, 20);
-// Info Desk read: both Call Center lists, every request's Timeline, new files only; then the list comparison (closed = left)
+// the list-row fingerprint: when none of these changed, the request's Timeline is not read again (25 Nov 2026)
+const MCC_FP = ['Current Status', 'Team Action Status', 'Team Comment', 'Request Notes', 'Assigned To', 'Request Annex', 'Request Priority'];
+const mccFp = (row) => sha(MCC_FP.map((k) => String(row[k] ?? '').replace(/\s+/g, ' ').trim()).join('|')).slice(0, 24);
+const MCC_FULL_MIN = 10;   // every 10 minutes every ticketed request's Timeline is read anyway (files the Call Center adds later)
+let mccFullAt = 0;
+// Info Desk read: both Call Center lists; Open = still the Call Center's (watch list, no Timeline); a Timeline only for changed
+// rows, new requests and the 10-minute full pass; new files only; then the list comparison (closed = left)
 async function mccCycle(page) {
-  const t0 = Date.now(); const known = {}; for (const k of ((await call('bridge_mcc_known')).known || [])) known[k.request_no] = k;
-  const open = []; let created = 0, updated = 0; const errors = [];
+  const t0 = Date.now(); const kn = await call('bridge_mcc_known'); const known = {}, watch = {};
+  for (const k of (kn.known || [])) known[k.request_no] = k; for (const w of (kn.watch || [])) watch[w.request_no] = w;
+  const full = Date.now() - mccFullAt > MCC_FULL_MIN * 60000;
+  const open = []; let created = 0, updated = 0, watched = 0, skipped = 0, timelines = 0, pages = 0, fileReads = 0; const errors = [];
   try {
     for (const sub of ['Chronic', 'Approval']) {
-      await openMcc(page, sub);
-      const rows = await mccAllRows(page);
+      await openMcc(page, sub); pages++;
+      const rows = await mccAllRows(page); pages += rows.pages || 0;
       for (const row of rows) {
         const no = row['Request Number']; if (!/^MCC-\d{4}-\d+$/.test(no || '')) continue; open.push(no); alive();
+        const fp = mccFp(row), link = known[no], isOpen = /^open$/i.test(String(row['Current Status'] || '').trim());
+        const kept = {}; for (const k of MCC_KEEP) if (row[k] != null) kept[k] = row[k];
+        const kind = sub === 'Approval' ? 'approval' : 'chronic';
         try {
+          if (!link && isOpen) {   // the Call Center is still working on it: watch list only, no Timeline, no ticket
+            if (watch[no] && watch[no].fp === fp) { skipped++; continue; }
+            const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind, row: kept, fp }] });
+            watched += res.watched || 0; if ((res.errors || []).length) errors.push(res.errors[0]); continue;
+          }
+          if (link && link.in_list && link.fp === fp && !full) { skipped++; continue; }   // unchanged since the last read
+          timelines++; pages++;
           const tl = (await mccTimeline(page, row._timeline)).map((l) => ({ ...l, _fileId: l._file ? mccFileId(l._file) : '' }));
           const have = new Set((known[no] || {}).file_ids || []); const files = [];
           for (const l of tl.filter((x) => x._file && !have.has('mcc-' + x._fileId))) {
             const f = await page.evaluate(async (u) => { const r = await fetch(u, { credentials: 'include', signal: AbortSignal.timeout(90000) }); const type = (r.headers.get('content-type') || '').split(';')[0]; const cd = r.headers.get('content-disposition') || ''; const buf = new Uint8Array(await r.arrayBuffer()); if (/text\/html/.test(type) || buf.length > 20 * 1048576) return { error: /text\/html/.test(type) ? 'page instead of file' : 'over 20 MB', size: buf.length }; let s = ''; for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000)); return { mime: type, name: decodeURIComponent((cd.match(/filename\*?=(?:UTF-8'')?"?([^";]+)/i) || [])[1] || ''), b64: btoa(s), size: buf.length }; }, l._file).catch((e) => ({ error: String(e).slice(0, 80) }));
+            fileReads++; pages++;
             if (f.b64) files.push({ id: l._fileId, file_name: f.name || ('callcenter-file-' + l._fileId), mime_type: f.mime, content_base64: f.b64, source: 'Call Center' });
           }
-          const kept = {}; for (const k of MCC_KEEP) if (row[k] != null) kept[k] = row[k];
-          const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind: sub === 'Approval' ? 'approval' : 'chronic', row: kept, timeline: tl.map(({ _file, ...l }) => l), files }] });
+          const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind, row: kept, fp, timeline: tl.map(({ _file, ...l }) => l), files }] });
           created += res.created || 0; updated += res.updated || 0; if ((res.errors || []).length) errors.push(res.errors[0]);
           if (res.created) log('INFO DESK new ticket for', no);
         } catch (e) { if (e instanceof Blocked || /session ended|not reachable/.test(String(e.message))) throw e; errors.push(no + ': ' + String(e.message || e).slice(0, 120)); }
@@ -922,12 +941,15 @@ async function mccCycle(page) {
     // form-change detector (read only, every cycle): the Team Status form of one listed request must still have its fields
     const sample = await page.evaluate(MCC_ROWS).catch(() => null);
     const act = (sample || []).find((r) => r._actions);
-    if (act) {
+    if (act && full) {   // on the 10-minute full pass
       const miss = await page.evaluate(async (u) => { const d = new DOMParser().parseFromString(await (await fetch(u, { credentials: 'include', signal: AbortSignal.timeout(30000) })).text(), 'text/html'); const need = ['P6_REQ_NO', 'P6_STATUS', 'P6_COMMENT']; const m = need.filter((x) => !d.getElementById(x)); if (![...d.querySelectorAll('button')].some((b) => /save/i.test(b.textContent))) m.push('Save button'); return m; }, act._actions).catch((e) => ['(form not readable: ' + String(e).slice(0, 60) + ')']);
       if (miss.length) await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'Portal form changed: the Call Center Team Status form is missing ' + miss.join(', '), pc: env.COMPUTERNAME || '' }).catch(() => { });
     }
-    const rec = await call('bridge_mcc_reconcile', { open_request_nos: open, shown: open.length });
-    log('info desk', JSON.stringify({ open: open.length, created, updated, closed_on_portal: rec.closed || 0, missing: (rec.missing || []).length, errors: errors.slice(0, 5), secs: Math.round((Date.now() - t0) / 1000) }));
+    if (full) pages++;   // the form-change check (full pass only)
+    const secs = Math.round((Date.now() - t0) / 1000);
+    const rec = await call('bridge_mcc_reconcile', { open_request_nos: open, shown: open.length, pages, timelines, secs });
+    if (full) mccFullAt = Date.now();
+    log('info desk', JSON.stringify({ open: open.length, watching: rec.watching || 0, created, updated, watched, skipped, timelines, files: fileReads, pages, full, closed_on_portal: rec.closed || 0, missing: (rec.missing || []).length, errors: errors.slice(0, 5), secs }));
   } finally { await clickTab(page, 'Chronic Attach').catch(() => { }); }
 }
 // one Info Desk reply: Team Status (decision + comment) on the request's Actions form, confirmed from its Timeline
