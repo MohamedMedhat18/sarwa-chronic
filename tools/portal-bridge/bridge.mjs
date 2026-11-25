@@ -70,6 +70,33 @@ async function call(action, body = {}) {
     return j;
   }
 }
+// Large files go up one at a time as raw bytes; the request message then only names them (25 Nov 2026: request 38408 with all
+// its files as base64 in one message ran the server out of memory - "546", no ticket). Small files stay inside the message.
+const INLINE_MAX = 3 * 1048576;   // base64 characters of files kept inside one request message
+async function stageFile(kind, rid, fid, b64, type) {
+  const bytes = Buffer.from(b64, 'base64');
+  const url = `${SB}/functions/v1/portal?stage=${kind}&rid=${encodeURIComponent(rid)}&fid=${encodeURIComponent(fid)}&type=${encodeURIComponent(type || '')}`;
+  for (let i = 0; ; i++) {
+    let r;
+    try { r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-portal-token': TOKEN }, body: bytes, signal: AbortSignal.timeout(120000) }); }
+    catch (e) { if (i < 2) { await new Promise((ok) => setTimeout(ok, [3000, 10000][i])); continue; } throw new Error(`file upload: ${e.message || e} (Sarwa Chronic not reachable)`); }
+    if (r.status >= 500 && i < 2) { await new Promise((ok) => setTimeout(ok, [3000, 10000][i])); continue; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.error) throw new Error(`file upload: ${j.error || r.status}`);
+    return j;
+  }
+}
+async function stageBig(kind, rid, atts) {   // biggest first, until what is left inline is small
+  const list = (atts || []).filter((a) => a.content_base64).sort((a, b) => b.content_base64.length - a.content_base64.length);
+  let total = list.reduce((s, a) => s + a.content_base64.length, 0); let n = 0;
+  for (const a of list) {
+    if (total <= INLINE_MAX) break;
+    const st = await stageFile(kind, String(rid), String(a.id), a.content_base64, a.mime_type || '');
+    total -= a.content_base64.length; delete a.content_base64; a.staged = st.path; a.size = st.size; a.sha256 = st.sha256; n++;
+  }
+  if (n) log('files sent separately for', rid, n);
+  return atts;
+}
 // a reply's result must reach Sarwa Chronic: if it cannot be delivered now it is kept in state.json and sent first next time
 async function reportResult(id, res) {
   try { await call('bridge_job_result', { id, ...res }); delete state._results?.[id]; saveState(); return true; }
@@ -482,8 +509,8 @@ async function cycle(page, full) {
       const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
       const fp = fpOf(r.req.timeline.map((t) => ({ status: t.status_name, comment: t.comment, extra: t.extra_comment })));
       // send each request on its own: a new one is a ticket within seconds, not after the whole list
-      const res = await call('bridge_ingest', { requests: [r.req] });
-      if (!(res.errors || []).length) { s.tlq = fp; s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
+      await stageBig('portal', r.req.request_id, r.req.attachments); const res = await call('bridge_ingest', { requests: [r.req] });
+      if (!(res.errors || []).length) { s.tlq = fp; s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || a.staged || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
       requests.push({ id, created: res.created || 0, updated: res.updated || 0, same: res.same || 0, error: (res.errors || [])[0] || '' });
       if (res.created) log('NEW ticket for request', id);
     } catch (e) {
@@ -552,8 +579,8 @@ async function lookupRequest(page, id, card) {
     if (!found) return 'not found on the portal ' + JSON.stringify(await page.evaluate((x) => ({ otherReports: [...document.querySelectorAll('.a-IRR, .t-Report, .a-GV')].map((r) => { const reg = r.closest('[id^="R"], [id$="_ir"]') || r; const tab = reg.closest('.t-TabsRegion-items > div, [role=tabpanel]'); return { id: (reg.id || '').slice(0, 40), tab: tab ? (document.querySelector('[aria-controls="' + tab.id + '"]') || {}).textContent?.trim() : '', rows: r.querySelectorAll('tr').length, hasId: r.textContent.includes(x) }; }).slice(0, 8), tabLinks: [...document.querySelectorAll('.t-Tabs a, [role=tab]')].map((a) => a.textContent.trim() + '>' + (a.getAttribute('aria-controls') || a.getAttribute('href') || '').slice(0, 40)).slice(0, 6), status: apex.item('P165_STATUS').getValue(), search: !!document.querySelector('#my_ir_search_field'), filters: [...document.querySelectorAll('#my_ir .a-IRR-controls-item')].map((e) => e.textContent.replace(/\s+/g, ' ').trim()).slice(0, 3), pag: (document.querySelector('#my_ir .a-IRR-pagination') || {}).textContent?.replace(/\s+/g, ' ').trim(), rows: window.SarwaPortalReader.reportRows().length, tabs: [...document.querySelectorAll('a,button')].map((e) => e.textContent.trim()).filter((t) => /^Chronic Attach/.test(t)).slice(0, 4) }), String(id)).catch((e) => ({ err: String(e) })));
     const s = st(id);
     const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
-    const res = await call('bridge_ingest', { requests: [r.req] });
-    if (!(res.errors || []).length) { s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
+    await stageBig('portal', r.req.request_id, r.req.attachments); const res = await call('bridge_ingest', { requests: [r.req] });
+    if (!(res.errors || []).length) { s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || a.staged || s.files.includes(a.id)).map((a) => a.id)])]; saveState(); }
     const q = r.req;   // full row for the history (every column, so nothing is blanked by the upsert)
     await call('bridge_history', { rows: [{ request_id: q.request_id, individual_number: q.individual_number, individual_name: q.individual_name, policy_holder: q.policy_holder_name || q.policy_holder, contract_no: q.contract_no, channel: q.channel, creation_user: q.creation_user, broker: q.broker, broker_mail: q.broker_mail, status_name: q.status_name, status_code: q.status_code, chronic_date: q.chronic_date || null, creation_date: q.creation_date || null, assign_to: q.assign_to }] }).catch(() => { });
     return 'now ' + r.req.status_name + ((res.errors || []).length ? ' - error ' + res.errors[0] : res.updated ? ' - ticket updated' : ' - no change');
@@ -683,8 +710,8 @@ async function newRequestsNow(page) {
       if (!(await showRow(page, id))) throw new Error('not found on any page of the report');
       if (!(await page.evaluate(() => !!window.SarwaPortalReader).catch(() => false))) await page.addScriptTag({ path: READER });
       const r = await page.evaluate(({ id, skip, mine }) => window.SarwaPortalReader.readRequest(id, { skip, mine }), { id, skip: s.files, mine: s.mine });
-      const res = await call('bridge_ingest', { requests: [r.req] });
-      if (!(res.errors || []).length) { s.tlq = sha(JSON.stringify(r.req.timeline.map((t) => [t.status_name, norm(t.comment), norm(t.extra_comment)]))); s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64).map((a) => a.id)])]; saveState(); }
+      await stageBig('portal', r.req.request_id, r.req.attachments); const res = await call('bridge_ingest', { requests: [r.req] });
+      if (!(res.errors || []).length) { s.tlq = sha(JSON.stringify(r.req.timeline.map((t) => [t.status_name, norm(t.comment), norm(t.extra_comment)]))); s.files = [...new Set([...s.files, ...r.req.attachments.filter((a) => a.content_base64 || a.staged).map((a) => a.id)])]; saveState(); }
       log(res.created ? 'NEW ticket for request' : 'read request', id, `(${((Date.now() - t0) / 1000).toFixed(1)} s, ${r.req.attachments.length} file(s))`);
     } catch (e) {
       if (e instanceof Blocked || /session ended|Sarwa Chronic not reachable/.test(String(e.message))) throw e;
@@ -932,7 +959,7 @@ async function mccCycle(page) {
             fileReads++; pages++;
             if (f.b64) files.push({ id: l._fileId, file_name: f.name || ('callcenter-file-' + l._fileId), mime_type: f.mime, content_base64: f.b64, source: 'Call Center' });
           }
-          const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind, row: kept, fp, timeline: tl.map(({ _file, ...l }) => l), files }] });
+          await stageBig('mcc', no, files); const res = await call('bridge_mcc_ingest', { requests: [{ request_no: no, kind, row: kept, fp, timeline: tl.map(({ _file, ...l }) => l), files }] });
           created += res.created || 0; updated += res.updated || 0; if ((res.errors || []).length) errors.push(res.errors[0]);
           if (res.created) log('INFO DESK new ticket for', no);
         } catch (e) { if (e instanceof Blocked || /session ended|not reachable/.test(String(e.message))) throw e; errors.push(no + ': ' + String(e.message || e).slice(0, 120)); }

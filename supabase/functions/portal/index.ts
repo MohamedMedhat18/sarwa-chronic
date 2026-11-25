@@ -149,13 +149,40 @@ async function copyAtts(c: Cfg, no: string, q: Req, list: Att[]) {
 }
 
 // browser mode: the bridge PC already downloaded the file in the real browser and sends its bytes as base64
-type InlineAtt = Att & { content_base64?: string };
+// Large files come separately, one call each, as raw bytes (stageUpload) and the request then only names them (`staged`):
+// 25 Nov 2026 request 38408 - all its files as base64 inside one JSON message ran the server out of memory (546).
+type InlineAtt = Att & { content_base64?: string; staged?: string; sha256?: string };
+const fromB64 = (s: string) => { const bin = atob(s); const u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u; };
+const STAGE = `${HD}/staging/`;
+async function stageUpload(req: Request, u: URL) {
+  const who = await caller(req); if (!who || who.kind !== 'token') return json({ error: 'Bridge token required' }, 403);
+  const kind = u.searchParams.get('stage') || '', rid = u.searchParams.get('rid') || '', fid = u.searchParams.get('fid') || '', type = u.searchParams.get('type') || '';
+  if (!['portal', 'mcc'].includes(kind) || !/^[\w.-]{1,80}$/.test(rid) || !/^[\w.=-]{1,120}$/.test(fid)) return json({ error: 'bad file reference' }, 400);
+  const bytes = new Uint8Array(await req.arrayBuffer());
+  if (!bytes.length) return json({ error: 'empty file' }, 400);
+  if (bytes.length > MAX_ATT) return json({ error: 'larger than 20 MB' }, 413);
+  const path = `${STAGE}${kind}/${rid}/${safe(fid)}`;
+  const { error } = await db.storage.from(BUCKET).upload(path, bytes, { contentType: /^[\w.+-]+\/[\w.+-]+$/.test(type) ? type : 'application/octet-stream', upsert: true });
+  if (error) return json({ error: 'file not stored: ' + error.message }, 500);
+  return json({ ok: true, path, size: bytes.length, sha256: await shaBytes(bytes) });
+}
 async function saveInlineAtts(no: string, list: InlineAtt[]) {
   const out = [];
   for (const a of list) {
     const name = a.file_name || ('file-' + a.id); const mime = mimeOf(name, a.mime_type || '');
+    if (a.staged) {   // already in storage (staging): copied into place inside storage, never held in memory here
+      if (!a.staged.startsWith(STAGE) || a.staged.includes('..')) throw new Error('bad staged file ' + name);
+      const path = `${HD}/files/${no}/p_${safe(String(a.id))}_${safe(name)}`;
+      const { error } = await db.storage.from(BUCKET).copy(a.staged, path);
+      if (error && !/exist/i.test(error.message)) throw new Error('copy ' + name + ': ' + error.message);   // exists = same portal file id, stored before
+      await db.storage.from(BUCKET).remove([a.staged]).catch(() => null);
+      const size = +(a.size || 0);
+      if (a.sha256) await db.from('file_hashes').upsert({ path, size, sha256: a.sha256 });
+      out.push({ name, mime, size, path, cls: readable(mime) ? 'readable' : 'unreadable', why: readable(mime) ? '' : 'open it to view (Word / Excel download)', via: 'portal', portalId: String(a.id), source: a.source || '', ...((a as any).extra_comment ? { note: str((a as any).extra_comment, 300) } : {}) });
+      continue;
+    }
     if (!a.content_base64) { out.push({ name, mime, size: a.size || 0, path: '', cls: 'unreadable', why: 'not downloaded (too large / open it in the portal)', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
-    const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0));
+    const bytes = fromB64(a.content_base64);
     if (bytes.length > MAX_ATT) { out.push({ name, mime, size: bytes.length, path: '', cls: 'unreadable', why: 'larger than 20 MB - open it in the portal', via: 'portal', portalId: String(a.id), source: a.source || '' }); continue; }
     // one path per portal file id: a re-run overwrites the same object instead of storing the file twice
     const path = `${HD}/files/${no}/p_${safe(String(a.id))}_${safe(name)}`;
@@ -252,8 +279,10 @@ async function linkToEmailTicket(q: Req, hash: string): Promise<'updated' | 'ski
   const at = Date.parse(q.creation_date || '') || Date.now();
   const mine = new Map<string, string>();   // sha -> file name (the portal's files, already in this request)
   for (const a of (q.attachments || []) as InlineAtt[]) {
-    if (!a.content_base64 || /sarwa/i.test(String(a.source || ''))) continue;
-    const bytes = Uint8Array.from(atob(a.content_base64), (ch) => ch.charCodeAt(0)); if (bytes.length > 20000) mine.set(await shaBytes(bytes), a.file_name || String(a.id));
+    if (/sarwa/i.test(String(a.source || ''))) continue;
+    if (a.staged && a.sha256) { if (+(a.size || 0) > 20000) mine.set(a.sha256, a.file_name || String(a.id)); continue; }   // fingerprint taken when it was stored
+    if (!a.content_base64) continue;
+    const bytes = fromB64(a.content_base64); if (bytes.length > 20000) mine.set(await shaBytes(bytes), a.file_name || String(a.id));
   }
   if (!mine.size) return null;
   const { data: cands } = await db.from('events').select('t,ts,d').eq('type', 'ticket.create').eq('d->>member', member).neq('d->>source', 'portal').neq('d->>source', 'callcenter')
@@ -828,7 +857,7 @@ async function backfillFiles(q: Req & { attachments?: InlineAtt[] }, link: any) 
     channel: q.channel || '', fromName: q.individual_name || q.broker || '', fromEmail: q.broker_mail || '', to: '', cc: '', date: q.creation_date || new Date().toISOString(),
     subject: `Chronic Attach #${id} - documents on the portal`, text: `Documents of portal request #${id} (Broker attachments: ${fresh.filter((a) => a.source !== 'Sarwa').length}, Sarwa attachments: ${fresh.filter((a) => a.source === 'Sarwa').length}).`, atts });
   const stored = atts.filter((a: any) => a.path).length;
-  await db.from('portal_links').update({ att_ids: [...new Set([...known, ...fresh.filter((a) => a.content_base64).map((a) => String(a.id))])], synced_at: new Date().toISOString() }).eq('request_id', id);
+  await db.from('portal_links').update({ att_ids: [...new Set([...known, ...fresh.filter((a) => a.content_base64 || a.staged).map((a) => String(a.id))])], synced_at: new Date().toISOString() }).eq('request_id', id);
   await log({ direction: 'in', action: 'backfill_files', request_id: id, ticket: no, ok: stored === fresh.length, detail: { files: fresh.length, stored }, error: stored === fresh.length ? null : (fresh.length - stored) + ' file(s) not stored' });
   return { added: stored, files: fresh.length };
 }
@@ -1039,6 +1068,7 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'POST only' }, 405);
   try {
+    const u = new URL(req.url); if (u.searchParams.get('stage')) return await stageUpload(req, u);   // one large file, raw bytes
     const body = await req.json().catch(() => ({}));
     const who = await caller(req);
     if (!who) return json({ error: 'Please sign in again.' }, 401);
