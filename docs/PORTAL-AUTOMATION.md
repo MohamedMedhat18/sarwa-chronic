@@ -180,3 +180,25 @@ Filter does not apply to it); a request closed by the Call Center leaves the lis
 No email / WhatsApp to the member. Linked (not merged) to a Chronic Attach ticket of the same card. Approval requests: same
 folder, tag approval, "Forward to Approval team" (Approval@sarwa.life) – preview only until the template is approved
 (`MCC_FORWARD_LIVE`). Same safeguards as the other portal flows (queue, Timeline check, retries, sweep, alerts, sync light).
+
+### Open vs In Progress: who owns the request (25 Nov 2026, approved)
+
+The list column **Current Status** decides, not the Timeline (every Call Center save writes an "Open -> In Progress" line
+there, even while the list still says Open):
+
+| Current Status (list) | Meaning | Sarwa Chronic |
+|---|---|---|
+| Open | the Call Center is still working on it | **no ticket** – watch list `mcc_watch`, sidebar "Call Center working" |
+| In Progress | handed to the Chronic team | one Info Desk ticket (created at handover, note "Handed to the Chronic team …") |
+| In Progress -> Open | returned to the Call Center | note, ticket Pending – Awaiting Call Center, hidden from Info Desk |
+| -> Pending Info | waiting for the Call Center / member | note, ticket Pending – Awaiting Call Center |
+| Open / Pending Info -> In Progress | back to us | note "Back from the Call Center", ticket Open again |
+| left the list while Open | closed by the Call Center | removed from the watch list, nothing else (no ticket existed) |
+
+A reply on a request that is still Open is possible but asks for confirmation first.
+
+**Performance.** The bridge keeps a fingerprint of each list row (Current Status, Team Action Status, Team Comment, Request
+Notes, Assigned To, Request Annex, Request Priority). Unchanged rows are skipped; a Timeline is read only for a changed row, a
+new handover, or the full pass every 10 minutes (files the Call Center adds later). Open rows never read a Timeline. Files are
+downloaded once (known file ids). Each cycle logs `pages`, `timelines`, `skipped`, `secs`; the server keeps them in
+`portal_state.mcc_reconcile`.
