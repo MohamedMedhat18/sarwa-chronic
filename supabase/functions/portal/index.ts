@@ -391,6 +391,20 @@ async function updateTicket(c: Cfg, q: Req, link: any, hash: string, attFn: AttF
   return changed ? 'updated' : 'same';
 }
 
+// The ticket status saved with a reply is applied when the portal confirms it - unless someone (or a member's answer) changed
+// the ticket's status after the reply was queued: that later change wins (25 Nov 2026: CHR-000856 closed 15 s after the reply
+// was queued, then set back to Pending by the confirmation). Server times (inserted_at) are compared, not PC clocks.
+const STATUS_KEYS = ['status', 'pendingReason', '_pendingNote'];
+async function ticketUpdateNow(j: any, tu: Record<string, unknown>) {
+  if (!tu || tu.status == null || !j.created_at) return tu;
+  const { data } = await db.from('events').select('actor,d,inserted_at').eq('t', j.ticket).eq('type', 'update').gt('inserted_at', j.created_at).order('inserted_at', { ascending: false }).limit(50);
+  const later = ((data || []) as any[]).find((e) => e.d && e.d.status != null);
+  if (!later || String(later.d.status) === String(tu.status)) return tu;
+  const rest: Record<string, unknown> = {}; for (const [k, v] of Object.entries(tu)) if (!STATUS_KEYS.includes(k)) rest[k] = v;
+  await insertEv('Portal sync', 'note', j.ticket, { auto: true, html: `Reply confirmed by the portal. The ticket stays <b>${String(later.d.status).replace(/</g, '&lt;')}</b> – ${String(later.actor || 'someone').replace(/</g, '&lt;')} set it after the reply was queued, so the status chosen with the reply (${String(tu.status).replace(/</g, '&lt;')}) was not applied.` });
+  await log({ direction: 'out', action: 'status_kept', request_id: String(j.request_id), ticket: j.ticket, detail: { job: j.id, kept: later.d.status, skipped: tu.status, by: later.actor || null } });
+  return rest;
+}
 // apply a successful decision result (from the ORDS HTTP response, or from the bridge PC's browser result)
 async function recordSent(j: any, link: any, res: any, httpCode: number | null) {
   const job = j.job || {}; const id = String(j.request_id); const by = (job.agent || 'Agent') + ' (via portal)';
@@ -399,7 +413,7 @@ async function recordSent(j: any, link: any, res: any, httpCode: number | null) 
   await db.from('portal_links').update({ status_code: res.status_code ?? link?.status_code, status_name: res.status_name || link?.status_name, portal_updated_at: res.last_update || link?.portal_updated_at,
     timeline_ids: [...new Set([...(link?.timeline_ids || []), ...(res.timeline_id ? [String(res.timeline_id)] : [])])], synced_at: sentAt }).eq('request_id', id);
   await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'sent', statusCode: res.status_code ?? null, statusName: res.status_name || '', timelineId: res.timeline_id || '', delivered: res.delivered || null, sentAt });
-  if (job.ticketUpdate && Object.keys(job.ticketUpdate).length) await insertEv(by, 'update', j.ticket, job.ticketUpdate);
+  if (job.ticketUpdate && Object.keys(job.ticketUpdate).length) { const tu = await ticketUpdateNow(j, job.ticketUpdate); if (Object.keys(tu).length) await insertEv(by, 'update', j.ticket, tu); }
   await log({ direction: 'out', action: 'decision', request_id: id, ticket: j.ticket, http_code: httpCode, actor: job.agent || null, old_status: link?.status_name || null, new_status: res.status_name || null, detail: { job: j.id, decision: job.decision, delivered: res.delivered || null, attempts: j.attempts, via: res.via || 'api' } });
 }
 // a transient failure: queue again with back-off (minutes; seconds on the mock with fastRetry)
