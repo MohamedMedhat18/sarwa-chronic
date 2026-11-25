@@ -2017,7 +2017,7 @@ function ticketView(r) {
       } else if (t.mcc) {   // Info Desk: Team Status (decision + comment) on the Call Center request
         if (!mccDec.value) { toast('Choose the decision – the portal requires one on every reply'); mccDec.focus(); sendBtn.disabled = false; return; }
         const txt = htmlToPlain(body).trim(); if (!txt) { toast('Write the comment for the Call Center'); sendBtn.disabled = false; return; }
-        await queueMcc(t, { teamStatus: mccDec.value, text: txt, after });
+        if (await queueMcc(t, { teamStatus: mccDec.value, text: txt, after }) === 'cancelled') { sendBtn.disabled = false; return; }
         toast(mccDec.value + ' sent to Call Center request ' + t.mcc.requestNo + ' – confirmed from its Timeline in a moment'); mccDec.value = '';
       } else if (isDual(t)) {   // email + portal ticket: the same reply to every ticked channel; each shows its own delivery status
         if (!chMail && !chPortal) { toast('Tick at least one channel (Email / Portal).'); sendBtn.disabled = false; return; }
@@ -2029,7 +2029,7 @@ function ticketView(r) {
         if (chMail) { const dup = recentSameReply(t, to, mailHtml); if (dup) { toast('This exact reply already went to the same people ' + rel(dup.at) + ' – not sent twice'); sendBtn.disabled = false; return; } }   // checked before ANY channel goes
         const sent = []; const replyId = replyIdNew();
         if (chPortal) {
-          if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: chMail ? {} : (after || {}), replyId }) === 'dry') { sendBtn.disabled = false; return; }
+          if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: chMail ? {} : (after || {}), replyId }).then(r => r === 'dry' || r === 'cancelled')) { sendBtn.disabled = false; return; }
           sent.push('portal (' + portalRecipient(t) + ')');
         }
         if (chMail) {
@@ -2041,7 +2041,7 @@ function ticketView(r) {
         toast('Sent to ' + sent.join(' + ') + ' – each shows its status in the conversation');
       } else if (isPortal(t)) {   // portal request: a message through the portal (WhatsApp / broker email); status after the portal confirms
         if (after && isDone(after.status)) { toast('Close a portal request with the Decision buttons (Approved / Partial / Rejected) – so it closes on the portal too.'); sendBtn.disabled = false; return; }
-        if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} }) === 'dry') { sendBtn.disabled = false; return; }   // preview only; the editor keeps the text
+        if (await queuePortal(t, { decision: 'Message', text: htmlToPlain(body), files: [...files, ...B.inline.map(x => x.file)], ticketUpdate: after || {} }).then(r => r === 'dry' || r === 'cancelled')) { sendBtn.disabled = false; return; }   // preview only; the editor keeps the text
         toast('Message sent to the portal – it goes out to ' + portalRecipient(t) + ' when the portal confirms');
       } else {
         const to = toIn.value.trim(); if (!/@/.test(to)) { toast('Enter the provider email in "To".'); toIn.focus(); sendBtn.disabled = false; return; }
@@ -3529,6 +3529,7 @@ function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
 async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {}, replyId = '' }) {
   if (!isPortal(t)) throw new Error('Not a portal request');
   if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
+  if (!confirmSameText(t, text, decision)) return 'cancelled';   // the same text already went in the last 30 min: asked first
   if (PORTAL_DRY || !portalLiveOk(t)) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
@@ -3606,6 +3607,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
         const replyId = replyIdNew();
         const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate, replyId });
         if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
+        if (q === 'cancelled') { e.target.disabled = false; return; }   // same text already sent: the agent chose not to send it again
         if (wantMail) {
           try { await queueReply(t, { to: MT.to, cc: MT.cc, subject: replySubject(t), html: mailHtml, files: files.slice(), replyId }); }
           catch (x) { toast('Portal: queued. Email: not queued – ' + x.message + ' (send it from the reply box)'); }
@@ -3621,6 +3623,18 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
    The Call Center creates and closes them and answers the member. Our team answers with Team Status on the portal: a
    decision (required by the portal – a comment alone is refused, tested 25 Nov 2026 on MCC-2026-05976) and a comment. */
 const MCC_DECISIONS = ['Approved', 'Partially Approved Rejected', 'Rejected', 'Pending'];
+// the same text already went to the portal for this ticket in the last 30 minutes (25 Nov 2026: on 10 tickets the same
+// letter went first as a Message, then again as Approved - the member received it twice on WhatsApp). Asks before a 2nd copy.
+const normTxt = x => String(x || '').replace(/\s+/g, ' ').trim();
+function portalSameText(t, text) {
+  const n = normTxt(text); if (n.length < 10) return null;
+  return t.msgs.filter(m => m.kind === 'out' && m.portal && ['queued', 'sending', 'retrying', 'sent'].includes(m.state) && Date.now() - Date.parse(m.at) < 30 * 60000 && normTxt(m.text) === n).sort((a, b) => a.at < b.at ? 1 : -1)[0] || null;
+}
+function confirmSameText(t, text, decision) {
+  const m = portalSameText(t, text); if (!m) return true;
+  const who = t.mcc ? 'The Call Center' : 'The member / broker';
+  return confirm('This exact text was already sent to the portal ' + rel(m.at) + ' as "' + (m.decision || 'Message') + '" by ' + (m.by || 'the team') + '.\n\n' + who + ' would receive the same text again' + (decision && decision !== m.decision ? ' (now as "' + decision + '")' : '') + '.\nTo add a decision to a text you already sent, send the decision with a short note instead.\n\nSend it again anyway?');
+}
 // the real reason behind a retry / failure (25 Nov 2026: every bridge error showed as 'Portal not reachable')
 function portalWhy(err) {
   const e = String(err || '');
@@ -3639,6 +3653,7 @@ const MCC_FORWARD_LIVE = false;   // the Approval forward template is waiting fo
 async function queueMcc(t, { teamStatus, text, after }) {
   if (!t.mcc) throw new Error('Not a Call Center request');
   if (!MCC_DECISIONS.includes(teamStatus)) throw new Error('Choose the decision – the portal requires one');
+  if (!confirmSameText(t, text, teamStatus)) return 'cancelled';
   if (portalBusy(t)) throw new Error('A reply for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
   const id = 'pd_' + Date.now().toString(36) + rand(4); const html = textToHtml(text || '');
   const ticketUpdate = after && isDone(after.status) ? after : { status: 'Pending', pendingReason: 'Awaiting Call Center' };
@@ -4096,7 +4111,7 @@ function pendingDialog(t, preset, opts = {}) {
       if (mail && !list.value.trim() && reason.value === 'Missing documents') { list.focus(); return toast('List what is missing – it goes into the email'); }
       e.target.disabled = true;
       try {
-        if (mail && (await sendPendingMail(t, 'request', list.value.trim())) === 'dry') return;   // portal dry run: preview only
+        if (mail && ['dry', 'cancelled'].includes(await sendPendingMail(t, 'request', list.value.trim()))) { e.target.disabled = false; return; }   // portal dry run: preview only
         await emit('update', t.no, { status: 'Pending', pendingReason: reason.value, _pendingNote: note.value.trim(),
           ...(opts.decision ? { decision: 'Pending', _decisionReason: reason.value, _decisionNote: note.value.trim(), _decisionAt: new Date().toISOString(), _decisionBy: me() } : {}) });
         closeDialog(); toast(t.no + ': Pending – ' + reason.value + (mail ? ' · request emailed (Reply All)' : ''));
@@ -4229,7 +4244,7 @@ function cyclePanel(t) {
 function reminderDialog(t) {
   const R = replyAllOf(t); const list = el('textarea', { rows: 4, dir: 'auto', style: 'width:100%' }, missingFromValidation(t) || ('- ' + pendingReasonOf(t)));
   openDialog('🔔 Reminder – ' + t.no, [el('div', { class: 'small' }, 'Reply All to ', el('b', {}, R.to || '—'), R.cc ? ' + ' + R.cc.split(';').length + ' in copy' : ''), el('label', {}, 'Still missing (one per line)', list)],
-    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try { if ((await sendPendingMail(t, 'reminder', list.value.trim())) === 'dry') return; closeDialog(); toast('Reminder queued (Reply All)'); } catch (x) { e.target.disabled = false; toast(x.message); } } }, 'Send reminder')]);
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async e => { e.target.disabled = true; try { if (['dry', 'cancelled'].includes(await sendPendingMail(t, 'reminder', list.value.trim()))) { e.target.disabled = false; return; } closeDialog(); toast('Reminder queued (Reply All)'); } catch (x) { e.target.disabled = false; toast(x.message); } } }, 'Send reminder')]);
 }
 // runs on every signed-in device (every 30 s): pending tickets past the last stage are closed (no email), and the assigned
 // agent is told about new customer responses
@@ -5128,7 +5143,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-25c';
+const APP_VERSION = '2026-11-25d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
