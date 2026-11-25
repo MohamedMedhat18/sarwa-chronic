@@ -580,7 +580,8 @@ async function bridgeJobResult(b: any) {
   }
   if (result === 'conflict') { await fail(j, 'conflict', 409, str(b.error || 'the request changed on the portal', 400)); return { ok: true, status: 'conflict' }; }
   if (result === 'retry' && j.attempts < MAX_ATTEMPTS) { await recordRetry(c, j, b.http || null, str(b.error || 'the bridge could not complete the submit', 400)); return { ok: true, status: 'retrying' }; }
-  await fail(j, 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));
+  // 3 technical tries used up = Sync failed (with the reason), not 'Refused by the portal' - the portal did not refuse anything
+  await fail(j, result === 'retry' ? 'dead' : 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));
   return { ok: true, status: 'error' };
 }
 // replies failed by the 15-min timeout in the last 48 h: the bridge looks in each request's Timeline (read only) and

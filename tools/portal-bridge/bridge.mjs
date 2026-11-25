@@ -567,6 +567,13 @@ async function resetReport(page) {
     await page.locator('#B500203752390221333').click().catch(() => { });
     await page.waitForLoadState('networkidle').catch(() => { }); await page.waitForTimeout(2500);
   }
+  // every Pending request on ONE page (25 Nov 2026: rows per page was back to 20; the requests on page 2 got "portal refused
+  // the page (checksum)" for their Timeline / Actions links, every cycle - and replies to them failed)
+  const rpp = await page.evaluate(() => { try { return $('#my_ir_ir').interactiveReport('instance').options.currentRowsPerPage; } catch { return null; } }).catch(() => null);
+  if (rpp && rpp < 100) {
+    await page.evaluate(() => { const o = $('#my_ir_ir').interactiveReport('instance'); o.options.currentRowsPerPage = 100; o._search('SEARCH'); }).catch(() => { });
+    await waitReport(page, 30); log('report rows per page', rpp, '-> 100 (every Pending request on one page)');
+  }
 }
 
 // ---------------- status sync for replies that timed out (read only) ----------------
@@ -643,6 +650,8 @@ async function outboundNow(page) {
     claimed.queued_s = ((Date.now() - firstSeen[j.id]) / 1000).toFixed(1);
     let res;
     try { res = claimed.kind === 'mcc' ? await submitMcc(page, claimed) : await submitReply(page, claimed); } catch (e) { res = e instanceof Blocked ? { result: 'error', error: e.message } : { result: 'retry', error: String(e.message || e).slice(0, 300) }; }
+    // a changed portal form / page is a problem for a person NOW (alert), not only after 3 tries
+    if (res.error && /form changed|structure changed|not found on the portal form/i.test(res.error)) await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'Portal form changed: ' + res.error.slice(0, 200), pc: env.COMPUTERNAME || '' }).catch(() => { });
     await reportResult(claimed.id, res); log('job', claimed.id, res.result, res.error || '');
     delete firstSeen[j.id];
     await pause(1500, 3000);
@@ -900,6 +909,13 @@ async function mccCycle(page) {
         } catch (e) { if (e instanceof Blocked || /session ended|not reachable/.test(String(e.message))) throw e; errors.push(no + ': ' + String(e.message || e).slice(0, 120)); }
       }
     }
+    // form-change detector (read only, every cycle): the Team Status form of one listed request must still have its fields
+    const sample = await page.evaluate(MCC_ROWS).catch(() => null);
+    const act = (sample || []).find((r) => r._actions);
+    if (act) {
+      const miss = await page.evaluate(async (u) => { const d = new DOMParser().parseFromString(await (await fetch(u, { credentials: 'include', signal: AbortSignal.timeout(30000) })).text(), 'text/html'); const need = ['P6_REQ_NO', 'P6_STATUS', 'P6_COMMENT']; const m = need.filter((x) => !d.getElementById(x)); if (![...d.querySelectorAll('button')].some((b) => /save/i.test(b.textContent))) m.push('Save button'); return m; }, act._actions).catch((e) => ['(form not readable: ' + String(e).slice(0, 60) + ')']);
+      if (miss.length) await call('bridge_health', { ok: false, loggedIn: true, pageOk: false, error: 'Portal form changed: the Call Center Team Status form is missing ' + miss.join(', '), pc: env.COMPUTERNAME || '' }).catch(() => { });
+    }
     const rec = await call('bridge_mcc_reconcile', { open_request_nos: open, shown: open.length });
     log('info desk', JSON.stringify({ open: open.length, created, updated, closed_on_portal: rec.closed || 0, missing: (rec.missing || []).length, errors: errors.slice(0, 5), secs: Math.round((Date.now() - t0) / 1000) }));
   } finally { await clickTab(page, 'Chronic Attach').catch(() => { }); }
@@ -927,6 +943,12 @@ async function submitMcc(page, job) {
     if (!el) return { result: 'retry', error: 'the Actions link of ' + no + ' was not found on the list' };
     await el.click();
     const f = await frameForPage(page, '6');
+    // the form is still loading when its page id appears (25 Nov 2026, CHR-000830: "#P6_REQ_NO not found" on all 3 tries):
+    // wait for every field we use; a field that never comes = the portal form changed (named in the alert)
+    for (const sel of ['#P6_REQ_NO', '#P6_STATUS', '#P6_COMMENT']) {
+      const ok = await f.waitForSelector(sel, { state: 'attached', timeout: 20000 }).then(() => true, () => false);
+      if (!ok) { await closeDialogs(page); throw new Error(`Team Status form changed: ${sel} not found on the portal form (page 6)`); }
+    }
     if (await f.$eval('#P6_REQ_NO', (e) => e.value) !== no) { await closeDialogs(page); throw new Error('the Team Status form opened for another request - stopped'); }
     await f.evaluate(([v, t]) => { apex.item('P6_STATUS').setValue(v); apex.item('P6_COMMENT').setValue(t); }, [value, String(job.message || '').slice(0, 3900)]);
     await f.evaluate(() => apex.submit({ request: 'SAVE', validate: true }));

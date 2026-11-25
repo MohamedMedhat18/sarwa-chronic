@@ -159,3 +159,24 @@ final decision; or the portal had already decided and the ticket was closed afte
 **Mark as resolved** with a required note. States: Waiting (goes out by itself) / Failed (needs a person) / Resolved.
 The folder count is the same filter as its list. Left for a person on purpose: a refusal where the portal's decision
 differs from ours and nobody has looked at it since (e.g. CHR-000382 / 38234).
+
+## Info Desk – Call Center requests (25 Nov 2026)
+
+Portal Medical Claims > Call Center > **Chronic** / **Approval** (request numbers MCC-YYYY-NNNNN). The Call Center creates the
+request (Call Type WP = the member wrote on WhatsApp, INCOMING = phone call), works it ("Open" -> "In Progress", reasons,
+files) and closes it; it answers the member. Our team's only action: **Actions -> Team Status** (page 6): Status (Approved /
+Partially Approved Rejected / Rejected / Pending, **required** – a comment alone is refused: tested 25 Nov on MCC-2026-05976,
+"Status must have some value", nothing saved) + Comment + Save. The list shows every request still "In Progress" (the Status
+Filter does not apply to it); a request closed by the Call Center leaves the list.
+
+| Portal | Ticket (folder **Info Desk**, tags info_desk / mcc / chronic or approval) |
+|---|---|
+| new request | one ticket (key = request number, table `mcc_links`), details + Timeline + files |
+| Call Center follow-up / new file / back in the list | same ticket, note "Follow-up from / Reopened by the Call Center", reopened |
+| our reply (decision + comment), confirmed in the Timeline | Pending - Awaiting Call Center (or Closed if the agent chose it) |
+| left the list | note "Closed by the Call Center on ..."; the ticket closes if our team had decided, else stays open |
+| reply after the Call Center closed it | Resolved: "reply saved on the ticket only" (never Waiting / Failed) |
+
+No email / WhatsApp to the member. Linked (not merged) to a Chronic Attach ticket of the same card. Approval requests: same
+folder, tag approval, "Forward to Approval team" (Approval@sarwa.life) – preview only until the template is approved
+(`MCC_FORWARD_LIVE`). Same safeguards as the other portal flows (queue, Timeline check, retries, sweep, alerts, sync light).
