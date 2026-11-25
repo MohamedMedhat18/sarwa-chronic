@@ -202,3 +202,14 @@ Notes, Assigned To, Request Annex, Request Priority). Unchanged rows are skipped
 new handover, or the full pass every 10 minutes (files the Call Center adds later). Open rows never read a Timeline. Files are
 downloaded once (known file ids). Each cycle logs `pages`, `timelines`, `skipped`, `secs`; the server keeps them in
 `portal_state.mcc_reconcile`.
+
+## Large files go up one at a time (25 Nov 2026)
+
+Request 38408 had no ticket for about 2.5 hours: all its files were sent as base64 inside one message and the server ran
+out of memory ("546 Memory limit exceeded") on every try. Now the bridge sends a request's biggest files separately, one
+call each as raw bytes, to `hd/staging/…` (until what is left inside the message is under 3 MB). The message only names
+them; the server copies them into the ticket's folder inside storage and removes the staged copy. The SHA-256 is taken at
+upload (duplicate rule, `file_hashes`). Same for Info Desk (Call Center) files. Bridge token only; bad paths are refused.
+
+When the portal confirms a reply, the ticket status chosen with it is applied only if nobody changed the ticket's status
+after the reply was queued; otherwise the later status stays and a note says so.
