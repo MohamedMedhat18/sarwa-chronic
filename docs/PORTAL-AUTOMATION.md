@@ -237,3 +237,17 @@ email) and no "email without ticket" (the ticket exists before the email leaves)
   connection reuses the draft's queue id and ticket, so it can never queue the email twice.
 - Bcc: the Outlook PC script adds `job.bcc` as Bcc recipients (one line; replies have no bcc and are unchanged).
 - The bridge function source is now in the repo (`supabase/functions/bridge`).
+
+## Failures of 26 Nov 2026 and what now prevents them
+
+| Ticket | What happened | Root cause | Now |
+|---|---|---|---|
+| CHR-000898 | Approved refused "request changed on the portal", Try again pressed 4 times | the request was already Rejected **by our own team from the same ticket**; a decided request takes no new decision (bridge guard), but the app let it be queued and the message blamed the portal | the app checks before queuing and offers to send the text as a Message; the server says who decided it; "Send as message" replaces Try again; same status + no text = closed as done |
+| CHR-000917, CHR-000850 | "Refused by the portal" ORA-12899 | the Call Center Team Comment holds **1000 bytes** (UTF-8, CRLF – an Arabic letter is 2); 1300 / 1315 were sent | live byte counter + Shorten in the reply box; refused before queuing and in the bridge before the portal is touched; "Shorten & edit" on the failed reply |
+| 5 tickets on 26 Nov | the member got the same letter twice (Message, then Approved with the same text) | the warning only offered "send again" or "cancel" | "Approved without sending the text again" is offered first (the portal posts Approved without text) |
+| 3 replies 14:44–14:58 | "login page not recognised" for 14 min | the portal did not show its sign-in form (portal side); the bridge did not say what it showed | the error now carries the page title, address and first words, and says when the portal reports maintenance |
+
+Also: a warning when a reply names another ticket number (CHR-000917's letter named CHR-000908); one admin alert per failed
+reply; the daily check has a **Health** section (kinds of errors of 24 h, NEW ones marked, double letters, emails not sent,
+Info Desk counts); a **new kind of error** is emailed at once (once per kind); admin action `health_report` (read only).
+Regression checks: `node tests/regressions.mjs` (23 checks, no network, synthetic texts).
