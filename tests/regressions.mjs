@@ -51,4 +51,12 @@ ok(A.confirmOtherTicketNo(t, 'رقم التذكرة CHR-000917') === true, 'own 
 ok(A.confirmOtherTicketNo(t, 'رقم التذكرة CHR-000908') === false, 'another ticket number: asks first (and stops when answered No)');
 ok(A.confirmOtherTicketNo({ no: 'CHR-000917', mergedFrom: ['CHR-000908'] }, 'CHR-000908') === true, 'a merged ticket number is fine');
 
+// ---- the same letter twice to the member (Message, then Approved with the same text: 5 times on 26 Nov) ----
+const qp = grab(app, 'queuePortal'), cst = grab(app, 'confirmSameText');
+ok(/return 'decision-only'/.test(cst) && /decision === 'Approved' && m\.decision === 'Message'/.test(cst), 'same text: "decision only" is offered for Approved after a Message');
+ok(/if \(same === 'decision-only'\) text = ''/.test(qp) && qp.indexOf("same === 'decision-only'") < qp.indexOf('const html = textToHtml'), 'decision only posts no text (set before the job is built)');
+// ---- 14 minutes of "login page not recognised" with no clue (26 Nov) ----
+ok(/login page not recognised – \$\{what\}/.test(bridge) && /document\.title/.test(bridge), 'the bridge says what the portal showed instead of the sign-in form');
+ok(/async function healthHtml/.test(srv) && /new_error_kind/.test(srv), 'daily health section + alert for a new kind of error');
+
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

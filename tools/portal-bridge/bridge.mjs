@@ -146,7 +146,11 @@ async function ensureLoggedIn(page) {
     if (await page.getByRole('link', { name: 'Claims' }).count().catch(() => 0)) return;
     f = await frameWith(page, 'input[type=password]');
   }
-  if (!f) throw new Error('login page not recognised (page structure changed?)');
+  if (!f) {   // say WHAT was shown (26 Nov 2026: 14 minutes of "not recognised" with no clue): title, address, first words – no fields
+    const seen = await page.evaluate(() => ({ title: document.title, url: location.href.replace(/[?#].*$/, ''), text: (document.body ? document.body.innerText : '').replace(/\s+/g, ' ').trim().slice(0, 160) })).catch(() => ({ title: '?', url: page.url(), text: '' }));
+    const what = /maintenance|unavailable|service|503|502|504|bad gateway|try again later|صيانة/i.test(seen.title + ' ' + seen.text) ? 'the portal says it is unavailable / under maintenance' : 'no sign-in form on the page';
+    throw new Error(`login page not recognised – ${what} (page "${String(seen.title).slice(0, 60)}" at ${String(seen.url).slice(0, 80)}: "${seen.text.slice(0, 120)}")`);
+  }
   const b = await blockedOn(f); if (b) throw new Blocked(`the login page asks for a ${b} - automation stopped`);
   if (!USER || !PASS) throw new Blocked('no portal account on this PC - run Set-PortalCredential.ps1');
   // at most 3 sign-in attempts per hour: a slow night portal must not lock the account (23-24 Nov: the bridge stopped at

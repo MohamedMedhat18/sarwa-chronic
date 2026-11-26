@@ -506,6 +506,36 @@ async function fail(j: any, status: 'conflict' | 'error' | 'dead', http: number 
   if (status !== 'conflict') await alertAdmin(j, status, error).catch(() => {});
   return 'failed';
 }
+// ---------- health: kinds of errors (26 Nov 2026 - see the error before the team does) ----------
+// one "kind" = the action + the error text with numbers / ids taken out, so the same failure on 10 tickets counts as one kind
+const errorKind = (action: string, error: string) => (action + ': ' + String(error || ''))
+  .replace(/pd_[a-z0-9]+|out_[a-z0-9_]+|CHR-\d+|MCC-\d{4}-\d+/gi, '#').replace(/\d+/g, '#').replace(/["'\s]+/g, ' ').trim().slice(0, 110);
+async function errorKinds(now: number, recentMs: number) {
+  const { data } = await db.from('portal_sync_log').select('at,action,error,ticket').eq('ok', false).gte('at', new Date(now - 8 * DAY).toISOString()).neq('action', 'new_error_kind').limit(5000);
+  const recent = new Map<string, { kind: string; n: number; tickets: string[]; sample: string; last: string }>(), before = new Set<string>();
+  for (const r of (data || []) as any[]) {
+    if (!r.error || /^rule:/.test(r.action)) continue; const k = errorKind(r.action, r.error);   // rule results are not errors
+    if (now - Date.parse(r.at) <= recentMs) { const x = recent.get(k) || { kind: k, n: 0, tickets: [], sample: r.error || r.action, last: r.at }; x.n++; if (r.ticket && !x.tickets.includes(r.ticket)) x.tickets.push(r.ticket); if (r.at > x.last) x.last = r.at; recent.set(k, x); }
+    else if (now - Date.parse(r.at) <= recentMs + 7 * DAY) before.add(k);
+  }
+  return [...recent.values()].map((x) => ({ ...x, fresh: !before.has(x.kind) })).sort((a, b) => b.n - a.n);
+}
+async function healthHtml(now: number) {
+  const kinds = await errorKinds(now, DAY); const esc2 = (s: unknown) => String(s ?? '').replace(/</g, '&lt;');
+  // the same text sent twice to one portal request within 30 minutes (e.g. Message, then Approved with the same letter)
+  const { data: ps } = await db.from('portal_outbox').select('ticket,request_id,job,created_at').eq('status', 'sent').gte('created_at', new Date(now - DAY - 1800000).toISOString()).order('created_at');
+  const twice: string[] = []; const seen = new Map<string, number>();
+  for (const r of (ps || []) as any[]) { const tx = String(r.job?.text || '').trim(); if (!tx) continue; const key = r.request_id + '|' + tx; const at = Date.parse(r.created_at); const prev = seen.get(key); if (prev && at - prev < 1800000 && at > now - DAY) twice.push(`${r.ticket} (${r.request_id})`); seen.set(key, at); }
+  const { data: em } = await db.from('outbox').select('ticket,status,error,created_at,job').or(`and(status.eq.error,created_at.gte.${new Date(now - DAY).toISOString()}),and(status.eq.queued,created_at.lte.${new Date(now - 15 * 60000).toISOString()})`).limit(50);
+  const emails = ((em || []) as any[]).filter((x) => x.status === 'error' || !x.job?.sendAt);
+  const mr = await getState('mcc_reconcile');
+  const html = `<h3 style="margin:12px 0 4px">Health (last 24 h)</h3>`
+    + (kinds.length ? `<p>Kinds of errors (${kinds.length}):</p><ul>${kinds.slice(0, 25).map((k) => `<li>${k.fresh ? '<b style="color:#b0281c">NEW</b> ' : ''}${k.n}× ${esc2(k.kind)}${k.tickets.length ? ' – ' + k.tickets.slice(0, 6).join(', ') : ''}</li>`).join('')}</ul>` : '<p>No errors in the last 24 hours.</p>')
+    + (twice.length ? `<p><b>The same text went twice to the same portal request</b> (member got it twice): ${esc2(twice.join(', '))}</p>` : '')
+    + (emails.length ? `<p><b>Emails not sent</b>: ${esc2(emails.map((x) => x.ticket + ' ' + x.status + (x.error ? ' (' + String(x.error).slice(0, 80) + ')' : '')).join('; '))}</p>` : '')
+    + (mr.at ? `<p>Info Desk: ${mr.portal_open ?? '?'} Call Center requests in the lists, ${mr.with_ticket ?? '?'} with a ticket, ${mr.watching ?? 0} still with the Call Center, ${(mr.missing || []).length} missing; last read ${mr.secs ?? '?'} s.</p>` : '');
+  return { html, kinds: kinds.length, fresh: kinds.filter((k) => k.fresh).length };
+}
 // "already Rejected on the portal": who decided it, and whether there is anything left to do (26 Nov 2026, CHR-000898: our own
 // earlier decision from the same ticket; the old text "request changed on the portal" sent the team to Try again 4 times)
 async function conflictWhy(j: any, error: string): Promise<{ text: string; resolve: boolean }> {
@@ -799,11 +829,19 @@ async function sweep(c: Cfg, force = false) {
       }
       await log({ direction: 'system', action: 'daily_check', ok: list.length === 0 && dups.length === 0, detail: { open: list.map((x) => [x.ticket, x.request_id, x.status]), duplicate_sends: dups.map((x) => [x.t, x.t1, x.t2]) } });
       const dupHtml = dups.length ? `<p><b>The same email went twice</b> (last 24 h; nothing was sent to anyone about it):</p><ul>${dups.map((x) => `<li><b>${x.t}</b> to ${String(x.to || '').replace(/</g, '&lt;')} - ${String(x.t1).slice(11, 16)} and ${String(x.t2).slice(11, 16)} UTC (${String(x.by || '').replace(/</g, '&lt;')})</li>`).join('')}</ul>` : '';
+      const hh = await healthHtml(now);   // error kinds of the last 24 h (new ones marked), portal double sends, failed / stuck emails
       const rcd = await getState('reconcile');
-      const rcHtml = c.mode === 'browser' ? `<p><b>Portal vs Sarwa Chronic</b> (last check ${String(rcd.at || 'never').slice(0, 16).replace('T', ' ')} UTC): portal list ${rcd.portal_shown ?? '?'} Pending, read ${rcd.rows_read ?? '?'}, with a ticket ${rcd.with_ticket ?? '?'}, missing ${(rcd.missing || []).length}${(rcd.missing || []).length ? ' (' + rcd.missing.join(', ') + ')' : ''}${rcd.cards && Object.keys(rcd.cards).length ? '. Portal counters: ' + Object.entries(rcd.cards).map(([k, v]) => k + ' ' + v).join(', ') : ''}.</p>` : '';
-      await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s), ${(rcd.missing || []).length} missing`, rcHtml + (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
+      const rcHtml = hh.html + (c.mode === 'browser' ? `<p><b>Portal vs Sarwa Chronic</b> (last check ${String(rcd.at || 'never').slice(0, 16).replace('T', ' ')} UTC): portal list ${rcd.portal_shown ?? '?'} Pending, read ${rcd.rows_read ?? '?'}, with a ticket ${rcd.with_ticket ?? '?'}, missing ${(rcd.missing || []).length}${(rcd.missing || []).length ? ' (' + rcd.missing.join(', ') + ')' : ''}${rcd.cards && Object.keys(rcd.cards).length ? '. Portal counters: ' + Object.entries(rcd.cards).map(([k, v]) => k + ' ' + v).join(', ') : ''}.</p>` : '');
+      await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s), ${(rcd.missing || []).length} missing, ${hh.kinds} error kind(s)${hh.fresh ? ' (' + hh.fresh + ' new)' : ''}`, rcHtml + (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
     }
   }
+  // 6) a NEW kind of error (not seen in the 7 days before): one alert at once, per kind, at most once a week (checked every 10 min)
+  { const { data: go } = await db.rpc('portal_try_lock', { p_key: 'new_error_scan', p_secs: 600 });
+    if (go) for (const k of await errorKinds(now, 15 * 60000)) if (k.fresh) {
+      const { data: once } = await db.rpc('portal_try_lock', { p_key: 'new_error:' + (await sha256(k.kind)).slice(0, 24), p_secs: 7 * 86400 });
+      if (once) { await log({ direction: 'system', action: 'new_error_kind', ok: false, error: str(k.kind, 300), detail: { n: k.n, tickets: k.tickets } });
+        await internalMail(c, '', '[Sarwa Chronic] new kind of error: ' + str(k.kind, 90), `<p>A kind of error that did not happen in the last 7 days just appeared (${k.n} time${k.n === 1 ? '' : 's'} in 15 minutes${k.tickets.length ? ', ' + k.tickets.slice(0, 8).join(', ') : ''}):</p><p><b>${String(k.sample).slice(0, 600).replace(/</g, '&lt;')}</b></p><p>Nothing was sent to any member about it. It is also listed in tomorrow's daily check.</p>`).catch(() => {}); }
+    } }
   // 4b) Portal vs Sarwa Chronic: a portal request without a ticket (or a portal total that does not match the rows read)
   //     for more than 10 minutes -> one alert per hour; a comparison older than 15 min counts as "not checked"
   const rc = await getState('reconcile');
@@ -1102,6 +1140,11 @@ Deno.serve(async (req) => {
     switch (body.action) {
       case 'status': await sweep(c).catch(() => null); return json({ ok: true, ...(await statusOf(c)) });
       case 'sweep': { if (!isAdmin(who)) return json({ error: 'Admin only' }, 403); return json({ ok: true, sweep: await sweep(c, true) }); }
+      case 'health_report': {   // read only: what the daily check would list now (error kinds of 24 h, new ones marked)
+        if (!isAdmin(who)) return json({ error: 'Admin only' }, 403);
+        const now = Date.now(); const h = await healthHtml(now);
+        return json({ ok: true, ...h, list: (await errorKinds(now, DAY)).map((k) => ({ kind: k.kind, n: k.n, fresh: k.fresh, tickets: k.tickets.slice(0, 10) })) });
+      }
 
       // every signed-in app (about every 2 minutes) and the scheduler: send what is queued, take in new requests when due.
       // In browser mode Supabase cannot reach the portal, so the bridge PC does all of it; the server only waits.

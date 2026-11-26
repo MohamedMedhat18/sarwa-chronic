@@ -3560,7 +3560,8 @@ async function queuePortal(t, { decision, text, reason = '', missing = [], files
     if (!confirm('Request #' + t.portal.requestId + ' is already ' + now + ' on the portal' + portalFinalBy(t) + '.\n\nA decided request takes no new decision, so "' + decision + '" cannot be posted.\n\nSend your text to ' + portalRecipient(t) + ' as a Message instead? (The portal stays ' + now + '; your decision is recorded on this ticket.)')) return 'cancelled';
     decision = 'Message';
   }
-  if (!confirmSameText(t, text, decision)) return 'cancelled';   // the same text already went in the last 30 min: asked first
+  const same = confirmSameText(t, text, decision); if (!same) return 'cancelled';   // the same text already went in the last 30 min: asked first
+  if (same === 'decision-only') text = '';   // the decision is posted without repeating the letter
   if (PORTAL_DRY || !portalLiveOk(t)) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
   for (const f of files) { const p = `${HD}/portal/${id}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
@@ -3665,6 +3666,9 @@ function portalSameText(t, text) {
 function confirmSameText(t, text, decision) {
   const m = portalSameText(t, text); if (!m) return true;
   const who = t.mcc ? 'The Call Center' : 'The member / broker';
+  // Message, then Approved with the same letter = the member got it twice (5 times on 26 Nov after the warning): the portal takes
+  // an Approved decision without text (its own template, 38 sent that way), so that is offered first
+  if (!t.mcc && decision === 'Approved' && m.decision === 'Message' && confirm('This exact text already went to ' + (t.portal && t.portal.brokerMail ? 'the broker' : 'the member') + ' ' + rel(m.at) + ' as a Message (by ' + (m.by || 'the team') + ').\n\nPost only the decision "Approved" WITHOUT sending the text again?\n\nOK = decision only (recommended – they already have the text)\nCancel = more choices')) return 'decision-only';
   return confirm('This exact text was already sent to the portal ' + rel(m.at) + ' as "' + (m.decision || 'Message') + '" by ' + (m.by || 'the team') + '.\n\n' + who + ' would receive the same text again' + (decision && decision !== m.decision ? ' (now as "' + decision + '")' : '') + '.\nTo add a decision to a text you already sent, send the decision with a short note instead.\n\nSend it again anyway?');
 }
 // the real reason behind a retry / failure (25 Nov 2026: every bridge error showed as 'Portal not reachable')
@@ -3716,6 +3720,8 @@ function portalWhy(err) {
   const e = String(err || '');
   if (/Too long for the portal|ORA-12899/i.test(e)) return 'text too long for the portal';
   if (portalFinalConflict(e)) return 'already decided on the portal';
+  if (/unavailable \/ under maintenance/i.test(e)) return 'portal unavailable (maintenance)';
+  if (/login page not recognised/i.test(e)) return 'portal sign-in page not available';
   if (/form changed|structure changed|not found on the portal form|Failed to find element|did not open/i.test(e)) return 'portal form not ready / changed';
   if (/checksum|refused the page/i.test(e)) return 'portal refused the request page';
   if (/closed by the Call Center|no longer in the/i.test(e)) return 'request closed on the portal';
@@ -5496,7 +5502,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-26b';
+const APP_VERSION = '2026-11-26c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
