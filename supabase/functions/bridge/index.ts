@@ -172,7 +172,8 @@ Deno.serve(async (req) => {
       }
 
       case 'outbox_list': {
-        const { data, error } = await db.from('outbox').select('id,ticket,job,created_at').eq('status', 'queued').order('created_at').limit(25);
+        // "New email" with Schedule send (26 Nov 2026): a job with a future job.sendAt stays in the queue and is not handed to Outlook yet
+        const { data, error } = await db.from('outbox').select('id,ticket,job,created_at').eq('status', 'queued').or(`job->>sendAt.is.null,job->>sendAt.lte.${new Date().toISOString()}`).order('created_at').limit(25);
         if (error) return json({ error: error.message }, 400);
         const out = [];
         for (const r of data || []) {
