@@ -838,7 +838,9 @@ async function sweep(c: Cfg, force = false) {
   // 6) a NEW kind of error (not seen in the 7 days before): one alert at once, per kind, at most once a week (checked every 10 min)
   { const { data: go } = await db.rpc('portal_try_lock', { p_key: 'new_error_scan', p_secs: 600 });
     if (go) for (const k of await errorKinds(now, 15 * 60000)) if (k.fresh) {
-      const { data: once } = await db.rpc('portal_try_lock', { p_key: 'new_error:' + (await sha256(k.kind)).slice(0, 24), p_secs: 7 * 86400 });
+      // 23 h, not 7 days: portal_try_lock starts a new key "1 day old", so a longer wait would never fire; a kind seen once is
+      // no longer "fresh" for the next 7 days anyway
+      const { data: once } = await db.rpc('portal_try_lock', { p_key: 'new_error:' + (await sha256(k.kind)).slice(0, 24), p_secs: 23 * 3600 });
       if (once) { await log({ direction: 'system', action: 'new_error_kind', ok: false, error: str(k.kind, 300), detail: { n: k.n, tickets: k.tickets } });
         await internalMail(c, '', '[Sarwa Chronic] new kind of error: ' + str(k.kind, 90), `<p>A kind of error that did not happen in the last 7 days just appeared (${k.n} time${k.n === 1 ? '' : 's'} in 15 minutes${k.tickets.length ? ', ' + k.tickets.slice(0, 8).join(', ') : ''}):</p><p><b>${String(k.sample).slice(0, 600).replace(/</g, '&lt;')}</b></p><p>Nothing was sent to any member about it. It is also listed in tomorrow's daily check.</p>`).catch(() => {}); }
     } }
