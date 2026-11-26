@@ -213,3 +213,27 @@ upload (duplicate rule, `file_hashes`). Same for Info Desk (Call Center) files. 
 
 When the portal confirms a reply, the ticket status chosen with it is applied only if nobody changed the ticket's status
 after the reply was queued; otherwise the later status stays and a note says so.
+
+## New email – start a new conversation from the helpdesk (26 Nov 2026)
+
+"✉ New email" (header, shortcut **C**) works like Outlook's New Message. One new email = **one new ticket**
+(source `outbound`, tag "New email", assigned to the sender). The ticket number is added to the subject
+(`Subject [CHR-000123]`), so the recipient's reply joins the ticket; the copy Outlook files in Sent Items is recognised
+(ChronicOutId tag + ticket number) and never makes a second ticket. No auto-acknowledgement (that only answers incoming
+email) and no "email without ticket" (the ticket exists before the email leaves).
+
+- From: the shared mailbox only. To / Cc / Bcc with suggestions from past contacts; max 25 recipients.
+- Warnings before sending: no subject, attachment mentioned but none attached, more than 10 recipients, an address never
+  emailed before. One confirmation lists To / Cc / Bcc and the domains.
+- Same editor as Reply (RTL for Arabic, pasted pictures, templates with {{placeholders}} filled at send, signature), files
+  up to 20 MB in total.
+- Ticket details: folder (group), priority, type, tags, member card, related ticket (a note on both), status after sending
+  (default Pending – Awaiting customer info; the reply opens it again).
+- Draft: saved on this PC every second of typing (text, settings, files), one per agent, restored when New email opens.
+- Undo: nothing is written for 10 seconds after Send. Closing the page in that time sends nothing (the draft stays).
+- Schedule send: `job.sendAt`; the bridge function's `outbox_list` holds the email until then. "Cancel sending" on the
+  ticket (RPC `outbox_cancel`, until 1 minute before) marks it `cancelled` – nothing is deleted.
+- Sent by the Outlook PC through the same queue as replies (Sent Items check, 6 retries, never twice). A retry after a lost
+  connection reuses the draft's queue id and ticket, so it can never queue the email twice.
+- Bcc: the Outlook PC script adds `job.bcc` as Bcc recipients (one line; replies have no bcc and are unchanged).
+- The bridge function source is now in the repo (`supabase/functions/bridge`).
