@@ -981,9 +981,15 @@ async function mccCycle(page) {
 }
 // one Info Desk reply: Team Status (decision + comment) on the request's Actions form, confirmed from its Timeline
 const MCC_STATUS_VALUE = { Approved: '1', 'Partially Approved Rejected': '2', Rejected: '3', Pending: '4' };
+const MCC_COMMENT_MAX = 1000;   // SL_MCC_REQUEST_HISTORY.TEAM_COMMENT (bytes)
+const mccCommentBytes = (s) => Buffer.byteLength(String(s || '').replace(/\r?\n/g, '\r\n'), 'utf8');
 async function submitMcc(page, job) {
   const no = String(job.request_id); const T = { start: Date.now() }; const core = norm(job.message);
   const value = MCC_STATUS_VALUE[job.teamStatus]; if (!value) return { result: 'error', error: 'no team decision on this reply (the portal requires one)' };
+  // the portal stores the Team Comment in 1000 BYTES (UTF-8, Windows line ends): an Arabic letter is 2 bytes. Checked here, before
+  // the portal is touched (26 Nov 2026: CHR-000917 1300 bytes, CHR-000850 1315 bytes -> ORA-12899, nothing saved)
+  const bytes = mccCommentBytes(job.message);
+  if (bytes > MCC_COMMENT_MAX) return { result: 'error', error: `Too long for the portal: ${bytes} of ${MCC_COMMENT_MAX} bytes in the Team Comment (an Arabic letter counts as 2, a new line as 2). Nothing was sent to the portal – shorten the text and send again.` };
   try {
     let row = null;
     for (const sub of job.mccKind === 'approval' ? ['Approval', 'Chronic'] : ['Chronic', 'Approval']) { await openMcc(page, sub); row = (await mccAllRows(page)).find((r) => r['Request Number'] === no); if (row) break; }

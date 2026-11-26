@@ -506,8 +506,23 @@ async function fail(j: any, status: 'conflict' | 'error' | 'dead', http: number 
   if (status !== 'conflict') await alertAdmin(j, status, error).catch(() => {});
   return 'failed';
 }
+// "already Rejected on the portal": who decided it, and whether there is anything left to do (26 Nov 2026, CHR-000898: our own
+// earlier decision from the same ticket; the old text "request changed on the portal" sent the team to Try again 4 times)
+async function conflictWhy(j: any, error: string): Promise<{ text: string; resolve: boolean }> {
+  const m = error.match(/already (.+?) on the portal/i); if (!m) return { text: error, resolve: false };
+  const now = m[1].trim(), asked = String(j.job?.decision || '');
+  const norm = (s: string) => s.toLowerCase().replace(/partially approved.*/, 'partially approved').trim();
+  if (norm(now) === norm(asked) && !String(j.job?.text || '').trim()) return { text: `Already ${now} on the portal – nothing to change.`, resolve: true };
+  const { data } = await db.from('portal_outbox').select('ticket,job,sent_at').eq('request_id', String(j.request_id)).eq('status', 'sent').order('sent_at', { ascending: false }).limit(30);
+  const ours = ((data || []) as any[]).find((r) => r.job?.decision && !['Message', 'Pending'].includes(r.job.decision));
+  const who = ours ? `decided by ${ours.job.agent || 'our team'} from ${ours.ticket === j.ticket ? 'this ticket' : ours.ticket} on ${cairo(new Date(ours.sent_at))} (${ours.job.decision})` : 'decided directly on the portal (not from Sarwa Chronic)';
+  return { text: `Not posted: request ${j.request_id} is already ${now} on the portal – ${who}. A decided request takes no new decision, so Try again cannot help. Use "Send as message" to give the member this text (the portal stays ${now}), or Mark as resolved.`, resolve: false };
+}
 async function alertAdmin(j: any, status: string, error: string) {
   const c = await config();
+  // one alert per reply: a second failure of the same reply within 6 hours is not emailed again (CHR-000917 got 2 in 25 s)
+  const { data: prev } = await db.from('outbox').select('id').eq('ticket', j.ticket).eq('job->>subject', `[Portal sync failed] ${j.ticket} / request ${j.request_id}`).gte('created_at', new Date(Date.now() - 6 * 3600000).toISOString()).limit(1);
+  if (prev && prev.length) return;
   const to = c.alertTo || ((await db.from('profiles').select('email').eq('role', 'admin').eq('active', true)).data || []).map((p: any) => p.email).filter(Boolean).join('; ');
   if (!to) return;
   const outId = 'out_portal_' + Date.now().toString(36) + rand(4);
@@ -621,7 +636,18 @@ async function bridgeJobResult(b: any) {
     }
     return { ok: true, status: 'sent' };
   }
-  if (result === 'conflict') { await fail(j, 'conflict', 409, str(b.error || 'the request changed on the portal', 400)); return { ok: true, status: 'conflict' }; }
+  if (result === 'conflict') {
+    const why = await conflictWhy(j, String(b.error || 'the request changed on the portal'));
+    if (why.resolve) {   // already in the very status we asked for and no text to deliver: nothing to change (CHR-000644, 24 Nov)
+      await db.from('portal_outbox').update({ status: 'resolved', http_code: 409, error: why.text, result: { resolved: why.text, by: 'automatic', at: new Date().toISOString(), was: 'sending' } }).eq('id', j.id);
+      await insertEv('Portal sync', 'portal.status', j.ticket, { jobId: j.id, status: 'resolved', auto: true, note: why.text });
+      await log({ direction: 'out', action: 'decision_already_done', request_id: j.request_id, ticket: j.ticket, ok: true, detail: { job: j.id } });
+      return { ok: true, status: 'resolved' };
+    }
+    await fail(j, 'conflict', 409, str(why.text, 600)); return { ok: true, status: 'conflict' };
+  }
+  // the real reason in words (26 Nov 2026): the portal's database message (ORA-12899 "value too large") said nothing to the team
+  if (/ORA-12899/.test(String(b.error || ''))) { const m = String(b.error).match(/actual:\s*(\d+),\s*maximum:\s*(\d+)/); b.error = `Too long for the portal: ${m ? m[1] + ' of ' + m[2] : 'over the limit of'} bytes in the ${/TEAM_COMMENT/.test(String(b.error)) ? 'Team Comment' : 'comment'} (an Arabic letter counts as 2, a new line as 2). Nothing was saved on the portal – shorten the text and send again.`; }
   if (result === 'retry' && j.attempts < MAX_ATTEMPTS) { await recordRetry(c, j, b.http || null, str(b.error || 'the bridge could not complete the submit', 400)); return { ok: true, status: 'retrying' }; }
   // 3 technical tries used up = Sync failed (with the reason), not 'Refused by the portal' - the portal did not refuse anything
   await fail(j, result === 'retry' ? 'dead' : 'error', b.http || null, str(b.error || 'the bridge reported a failure', 400));

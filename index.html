@@ -1710,7 +1710,7 @@ function msgCard(m, t, fromNo) {
   if (m.kind === 'out' && m.portal) {   // decision / message sent back through the portal (its Reply logic delivers it)
     const waitMin = Math.max(0, Math.round((Date.now() - new Date(m.waitFrom || m.at).getTime()) / 60000));
     const waitTxt = waitMin >= 1 ? ' · ' + waitMin + ' min' : '';   // after 15 min the server marks it Failed (with the reason)
-    const st = { queued: ['Waiting for the portal' + waitTxt, 'p-due'], sending: ['Sending to the portal…' + waitTxt, 'p-due'], retrying: [portalWhy(m.error).replace(/^./, c => c.toUpperCase()) + ' – retrying' + waitTxt, 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: ['Refused – request changed on the portal', 'p-over'], error: ['Refused by the portal', 'p-over'], dead: [m.timeout ? 'Failed – not confirmed in 15 min' : 'Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'], resolved: ['Resolved – no action needed', 'p-ok'] }[m.state] || [m.state, 'p-muted'];
+    const st = { queued: ['Waiting for the portal' + waitTxt, 'p-due'], sending: ['Sending to the portal…' + waitTxt, 'p-due'], retrying: [portalWhy(m.error).replace(/^./, c => c.toUpperCase()) + ' – retrying' + waitTxt, 'p-due'], sent: ['Confirmed by the portal ' + (m.sentAt ? fmtDate(m.sentAt) : ''), 'p-ok'], conflict: [portalFinalConflict(m.error) ? 'Not posted – already decided on the portal' : 'Refused – request changed on the portal', 'p-over'], error: [/Too long for the portal|ORA-12899/.test(m.error || '') ? 'Not sent – text too long for the portal' : 'Refused by the portal', 'p-over'], dead: [m.timeout ? 'Failed – not confirmed in 15 min' : 'Sync failed', 'p-over'], cancelled: ['Cancelled', 'p-muted'], resolved: ['Resolved – no action needed', 'p-ok'] }[m.state] || [m.state, 'p-muted'];
     const failed = ['conflict', 'error', 'dead'].includes(m.state);
     return el('div', { class: 'msg out', style: 'border-left:3px solid #1d5c52' },
       el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' },
@@ -1720,7 +1720,10 @@ function msgCard(m, t, fromNo) {
       htmlBox(m),
       visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
       failed ? el('div', { class: 'row', style: 'padding:0 14px 12px 54px;gap:6px' },
-        el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', m.jobId) }, 'Try again'),
+        // Try again only where it can succeed: a decided request needs a Message; a too-long comment needs a shorter text
+        portalFinalConflict(m.error) && !t.mcc ? el('button', { class: 'btn sm primary', type: 'button', title: 'The member gets this text; the portal decision stays as it is', onclick: e => portalResendAs(e.target, t, m, 'message') }, 'Send as message')
+          : /Too long for the portal|ORA-12899/.test(m.error || '') ? el('button', { class: 'btn sm primary', type: 'button', title: 'Puts a shortened text in the reply box to check and send', onclick: e => portalResendAs(e.target, t, m, 'shorten') }, 'Shorten & edit')
+          : el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', m.jobId) }, 'Try again'),
         el('button', { class: 'btn sm', type: 'button', title: 'You checked it (portal / Outlook / phone): it leaves Sync failed, your note is kept', onclick: e => portalResolve(e.target, m.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', m.jobId) }, 'Cancel')) : m.state === 'resolved' && m.note ? el('div', { class: 'small muted', style: 'padding:0 14px 10px 54px' }, '✓ ' + m.note) : null);
   }
   if (m.kind === 'out') {
@@ -1888,6 +1891,14 @@ function ticketView(r) {
   // Info Desk: the decision the portal requires on every Call Center reply (Team Status)
   const mccDec = el('select', { 'aria-label': 'Call Center decision' }, opt('', '— decision (required by the portal) —'), MCC_DECISIONS.map(x => opt(x, x)));   // email + portal ticket: which channels this reply goes to (email: decided on first draw)
   const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your reply…', role: 'textbox', 'aria-multiline': 'true', dir: 'auto' });
+  // Info Desk: the Call Center's Team Comment holds 1000 bytes – counted while typing, with "Shorten" (26 Nov 2026, CHR-000917)
+  const mccCount = el('span', { class: 'small', 'aria-live': 'polite', style: 'margin-left:auto' });
+  const drawMccCount = () => {
+    const tk = DB.tickets.get(no); if (!tk || !tk.mcc) return; const b = portalBytes(htmlToPlain(ce.innerHTML).trim()), over = b > MCC_COMMENT_MAX;
+    mccCount.replaceChildren(el('span', { style: over ? 'color:var(--bad);font-weight:600' : 'color:var(--muted)' }, 'Team Comment ' + b + ' / ' + MCC_COMMENT_MAX + ' bytes' + (over ? ' – too long for the portal' : '')),
+      over ? el('button', { class: 'btn sm', type: 'button', style: 'margin-left:6px', title: 'Removes greeting, reference and closing lines – the Call Center knows the member', onclick: () => { const s = mccShorten(htmlToPlain(ce.innerHTML)); ce.innerHTML = textToHtml(s); drawMccCount(); toast(portalBytes(s) > MCC_COMMENT_MAX ? 'Still ' + portalBytes(s) + ' bytes – shorten the item list or the notes' : 'Shortened – check the text before sending'); } }, 'Shorten') : null);
+  };
+  ce.addEventListener('input', drawMccCount);
   // To / Cc like Outlook's Reply All: the sender of the newest email + everyone who was in its To / Cc (the agent can remove people)
   const toIn = el('input', { type: 'text', 'aria-label': 'To', placeholder: 'name@company.com; …' }), ccIn = el('input', { type: 'text', 'aria-label': 'Cc', placeholder: 'everyone in copy' });
   let recipFor = '';   // the newest incoming email the recipients were filled from
@@ -1976,7 +1987,7 @@ function ticketView(r) {
     sendBtn.textContent = mode === 'reply' ? 'Send' : mode === 'forward' ? 'Forward' : 'Add note';
     const fwdMsg = mode === 'forward' ? fwdMsgs().find(m => m.id === fwdSel.value) : null;
     edHost.replaceChildren(el('div', { class: 'editor', id: 'editor', style: mode === 'note' ? 'background:var(--note);border-color:var(--note-border)' : '' }, tabs,
-      mode === 'reply' && t.mcc ? el('div', { style: 'display:grid;gap:6px;padding:8px 12px 0' }, el('div', { class: 'small', style: 'color:#6b4fa0;font-weight:600' }, '☎ Goes to Call Center request ' + t.mcc.requestNo + ' on the portal (Team Status). The Call Center answers the member – nothing is sent to the member from here.'), el('label', { class: 'row', style: 'gap:8px;align-items:center' }, el('span', { class: 'small muted' }, 'Decision'), mccDec))
+      mode === 'reply' && t.mcc ? el('div', { style: 'display:grid;gap:6px;padding:8px 12px 0' }, el('div', { class: 'small', style: 'color:#6b4fa0;font-weight:600' }, '☎ Goes to Call Center request ' + t.mcc.requestNo + ' on the portal (Team Status). The Call Center answers the member – nothing is sent to the member from here.'), el('div', { class: 'row', style: 'gap:8px;align-items:center;flex-wrap:wrap' }, el('label', { class: 'row', style: 'gap:8px;align-items:center' }, el('span', { class: 'small muted' }, 'Decision'), mccDec), mccCount))
       : mode === 'reply' && isDual(t) ? channelBox(t)
       : mode === 'reply' && isPortal(t) ? el('div', { class: 'small', style: 'padding:6px 12px 0;color:#1d5c52' }, '⇄ Goes through the portal (request #' + t.portal.requestId + ') to ' + portalRecipient(t) + '. Pictures and files go as attachments. For Approved / Rejected / Pending use the Decision buttons.')
       : mode === 'reply' ? [el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'To'), toIn), el('div', { class: 'fld' }, el('label', { class: 'small muted' }, 'Cc'), ccIn), recipLine, el('div', { class: 'small muted', style: 'padding:4px 12px 0' }, 'Subject: ' + replySubject(t))] : null,
@@ -1987,6 +1998,7 @@ function ticketView(r) {
       el('div', { class: 'efoot' }, el('span', { class: 'small muted' }, mode === 'reply' && t.mcc ? 'Posted on the request with your decision and confirmed from its Timeline; the ticket waits for the Call Center to close it (or choose Then set Closed).' : mode === 'reply' && isDual(t) ? 'Each channel shows its own status in the conversation (email: Outlook · portal: confirmed in the portal Timeline). Nothing stays waiting: after 15 min it shows Failed with Try again.' : mode === 'reply' && isPortal(t) ? (PORTAL_DRY ? 'Dry run is on: Send shows the preview only – nothing goes to the portal.' : !portalLiveOk(t) ? 'Live sending is not on for request #' + t.portal.requestId + ' yet: Send shows the preview only.' : 'Sent by the portal’s own Reply (WhatsApp / broker email). Use short text: the portal adds its greeting and closing.') : mode === 'reply' ? 'Sent from ' + DB.settings.general.mailbox + ' (in the same email thread).' : mode === 'forward' ? 'Forwarded from ' + DB.settings.general.mailbox + ' with the original email and attachments – saved in this ticket.' : 'Only the team sees notes.'), el('div', { class: 'row' }, afterSel, sendBtn))));
   }
   fwdSel.addEventListener('change', () => drawEditor());
+  const drawEditor0 = drawEditor; drawEditor = (...a) => { drawEditor0(...a); drawMccCount(); };   // the Team Comment counter follows every redraw
   // email + portal ticket: tick the channels; who receives it is shown before sending
   function channelBox(t) {
     const p = t.portal; const fin = PORTAL_FINAL.includes(+p.statusCode);
@@ -2007,6 +2019,7 @@ function ticketView(r) {
     if (mode !== 'forward' && !htmlToPlain(body) && !files.length && !B.inline.length) { toast('Write something first.'); ce.focus(); return; }
     if (!me()) { askName(); return; }
     const after = afterSplit();
+    if (mode !== 'note' && !confirmOtherTicketNo(t, htmlToPlain(body))) return;   // text copied from another ticket's letter?
     sendBtn.disabled = true;
     try {
       if (mode === 'note') {
@@ -2175,7 +2188,7 @@ function ticketView(r) {
   const sigOf = t => t.msgs.length + '|' + t.msgs.map(m => m.state || '').join('') + '|' + t.mergedFrom.join(',') + '|' + t.mergedFrom.map(n => (DB.tickets.get(n) || { msgs: [] }).msgs.length).join(',');
   const drawThreadIfChanged = () => { const s = sigOf(DB.tickets.get(no)); if (s !== threadSig) { threadSig = s; drawThread(); } };
   drawTop(); drawThreadIfChanged(); drawEditor(); drawSide();
-  const view = { el: root, insertReply(html) { mode = 'reply'; drawEditor(); ce.innerHTML = sanitize(html); ce.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, update() { if (!DB.tickets.get(no)) return; drawTop(); drawThreadIfChanged(); if (!sideDirty && !side.contains(document.activeElement)) drawSide(); }, keys(k) { if (k === 'r') { mode = 'reply'; drawEditor(); ce.focus(); return true; } if (k === 'n') { mode = 'note'; drawEditor(); ce.focus(); return true; } if (k === 'f') { mode = 'forward'; drawEditor(); fwdTo.focus(); return true; } } };
+  const view = { el: root, insertReply(html) { mode = 'reply'; drawEditor(); ce.innerHTML = sanitize(html); drawMccCount(); ce.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, update() { if (!DB.tickets.get(no)) return; drawTop(); drawThreadIfChanged(); if (!sideDirty && !side.contains(document.activeElement)) drawSide(); }, keys(k) { if (k === 'r') { mode = 'reply'; drawEditor(); ce.focus(); return true; } if (k === 'n') { mode = 'note'; drawEditor(); ce.focus(); return true; } if (k === 'f') { mode = 'forward'; drawEditor(); fwdTo.focus(); return true; } } };
   return view;
 }
 
@@ -3540,6 +3553,13 @@ function portalDryRun(t, { decision, text, files = [], ticketUpdate = {} }) {
 async function queuePortal(t, { decision, text, reason = '', missing = [], files = [], ticketUpdate = {}, replyId = '' }) {
   if (!isPortal(t)) throw new Error('Not a portal request');
   if (portalBusy(t)) throw new Error('A decision for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
+  // a request already decided on the portal takes no new decision (the bridge refuses it): say so BEFORE queuing (CHR-000898)
+  if (decision !== 'Message' && PORTAL_FINAL.includes(+t.portal.statusCode)) {
+    const now = t.portal.statusName || 'decided';
+    if (!String(text || '').trim()) throw new Error('Request #' + t.portal.requestId + ' is already ' + now + ' on the portal' + portalFinalBy(t) + ' – nothing to post.');
+    if (!confirm('Request #' + t.portal.requestId + ' is already ' + now + ' on the portal' + portalFinalBy(t) + '.\n\nA decided request takes no new decision, so "' + decision + '" cannot be posted.\n\nSend your text to ' + portalRecipient(t) + ' as a Message instead? (The portal stays ' + now + '; your decision is recorded on this ticket.)')) return 'cancelled';
+    decision = 'Message';
+  }
   if (!confirmSameText(t, text, decision)) return 'cancelled';   // the same text already went in the last 30 min: asked first
   if (PORTAL_DRY || !portalLiveOk(t)) return portalDryRun(t, { decision, text, files, ticketUpdate });
   const id = 'pd_' + Date.now().toString(36) + rand(4); const atts = [];
@@ -3616,6 +3636,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
         if (wantMail) { const dup = recentSameReply(t, MT.to, mailHtml); if (dup) { e.target.disabled = false; return toast('This exact email already went to the same people ' + rel(dup.at) + ' – untick "Also by email" or wait'); } }
         if (wantMail && overlap && !confirm(overlap + ' will receive this twice (the portal emails them too). Send the email as well?')) { e.target.disabled = false; return; }
         const replyId = replyIdNew();
+        if (!confirmOtherTicketNo(t, msg.value)) { e.target.disabled = false; return; }
         const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate, replyId });
         if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
         if (q === 'cancelled') { e.target.disabled = false; return; }   // same text already sent: the agent chose not to send it again
@@ -3647,8 +3668,54 @@ function confirmSameText(t, text, decision) {
   return confirm('This exact text was already sent to the portal ' + rel(m.at) + ' as "' + (m.decision || 'Message') + '" by ' + (m.by || 'the team') + '.\n\n' + who + ' would receive the same text again' + (decision && decision !== m.decision ? ' (now as "' + decision + '")' : '') + '.\nTo add a decision to a text you already sent, send the decision with a short note instead.\n\nSend it again anyway?');
 }
 // the real reason behind a retry / failure (25 Nov 2026: every bridge error showed as 'Portal not reachable')
+// ---- limits and checks learned from real failures (26 Nov 2026) ----
+// Call Center Team Comment: the portal keeps 1000 BYTES (UTF-8, Windows line ends) – an Arabic letter counts 2 (CHR-000917 / 850)
+const MCC_COMMENT_MAX = 1000;
+const portalBytes = s => new TextEncoder().encode(String(s || '').replace(/\r?\n/g, '\r\n')).length;
+// "Shorten": the Call Center already knows the member and the request – greeting, reference and closing lines are dropped
+const MCC_BOILER = [/^\s*[.،,]?\s*(السادة|السيد|السيدة|الأستاذ|حضرة)(?=[\s/]|$).{0,40}$/, /^\s*[.،,]?\s*تحية طيبة.{0,40}$/, /بالإشارة إلى طلب/, /نحيط سيادتكم علماً/,
+  /^\s*[.،,]?\s*(وتفضلوا|مع خالص|مع تحيات|شكراً|نشكركم|وخدمتك أولويتنا|فريق الأدوية).{0,80}$/, /^\s*(dear|greetings|kind regards|best regards|thank you|regards)\b.{0,60}$/i];
+function mccShorten(text) {
+  return String(text || '').split(/\r?\n/).filter(l => !MCC_BOILER.some(r => r.test(l))).map(l => l.replace(/[ \t ]+/g, ' ').trim()).join('\n').replace(/\n{2,}/g, '\n').trim();
+}
+// "already Rejected on the portal": a decided request takes no new decision (CHR-000898) – Try again can never help
+const portalFinalConflict = err => /already .+? on the portal/i.test(String(err || ''));
+function portalFinalBy(t) {   // who made the final decision that is on the portal now
+  const m = [...(t.msgs || [])].reverse().find(x => x.portal && x.state === 'sent' && x.decision && !['Message', 'Pending'].includes(x.decision));
+  return m ? ' – decided by ' + (m.by || 'our team') + ' from this ticket, ' + fmtDate(m.sentAt || m.at) + ' (' + m.decision + ')' : t.portalDirect ? ' – changed directly on the portal' + (t.portalDirect.by ? ' by ' + t.portalDirect.by : '') : '';
+}
+// a reply that names ANOTHER ticket number was probably copied from an older letter (CHR-000917's text named CHR-000908)
+function confirmOtherTicketNo(t, text) {
+  const own = new Set([t.no, t.mergedInto, ...(t.mergedFrom || [])].filter(Boolean));
+  const other = [...new Set(String(text || '').match(/CHR-\d{6}/g) || [])].filter(n => !own.has(n));
+  return !other.length || confirm('This text mentions ' + other.join(', ') + ', but you are answering ' + t.no + '.\n\nIt may have been copied from another ticket (wrong member / wrong letter). Send it anyway?');
+}
+// a failed portal reply sent again in the right form; the failed one leaves "Sync failed" with a note pointing to the new one
+// the panel's main button for a failed reply: Try again only where it can succeed
+function portalRetryBtn(t, s) {
+  const m = (t.msgs || []).find(x => x.portal && x.jobId === s.jobId) || { jobId: s.jobId, text: '', error: s.error };
+  if (portalFinalConflict(s.error) && !t.mcc) return el('button', { class: 'btn sm primary', type: 'button', title: 'The member gets this text; the portal decision stays as it is', onclick: e => portalResendAs(e.target, t, m, 'message') }, 'Send as message');
+  if (/Too long for the portal|ORA-12899/.test(s.error || '')) return el('button', { class: 'btn sm primary', type: 'button', title: 'Puts a shortened text in the reply box to check and send', onclick: e => portalResendAs(e.target, t, m, 'shorten') }, 'Shorten & edit');
+  return el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again');
+}
+async function portalResendAs(btn, t, m, how) {
+  try {
+    btn.disabled = true; let id;
+    if (how === 'message') {
+      if (!String(m.text || '').trim()) return toast('There is no text to send – Mark as resolved instead');
+      if (!confirm('Send this text to ' + portalRecipient(t) + ' as a Message?\n\nThe portal request stays ' + (t.portal.statusName || 'as it is') + '. The member gets the text by ' + (t.portal.brokerMail ? 'email' : 'WhatsApp') + '.')) return;
+      id = await queuePortal(t, { decision: 'Message', text: m.text, ticketUpdate: {} }); if (!id || id === 'cancelled' || id === 'dry') return;
+      await portalCall({ action: 'resolve', id: m.jobId, note: 'Sent as a Message instead (the request was already decided on the portal)' });
+    } else {   // too long for the Call Center's Team Comment: the shortened text goes into the reply box to check and send
+      const s = mccShorten(m.text); CUR.view && CUR.view.insertReply && CUR.view.insertReply(textToHtml(s));
+      toast('Shortened to ' + portalBytes(s) + ' of ' + MCC_COMMENT_MAX + ' bytes – check it, choose the decision and send. The failed reply is closed when the new one is queued.');
+    }
+  } catch (x) { toast(x.message); } finally { btn.disabled = false; }
+}
 function portalWhy(err) {
   const e = String(err || '');
+  if (/Too long for the portal|ORA-12899/i.test(e)) return 'text too long for the portal';
+  if (portalFinalConflict(e)) return 'already decided on the portal';
   if (/form changed|structure changed|not found on the portal form|Failed to find element|did not open/i.test(e)) return 'portal form not ready / changed';
   if (/checksum|refused the page/i.test(e)) return 'portal refused the request page';
   if (/closed by the Call Center|no longer in the/i.test(e)) return 'request closed on the portal';
@@ -3664,6 +3731,7 @@ const MCC_FORWARD_LIVE = false;   // the Approval forward template is waiting fo
 async function queueMcc(t, { teamStatus, text, after }) {
   if (!t.mcc) throw new Error('Not a Call Center request');
   if (!MCC_DECISIONS.includes(teamStatus)) throw new Error('Choose the decision – the portal requires one');
+  const bytes = portalBytes(text); if (bytes > MCC_COMMENT_MAX) throw new Error('Too long for the portal: ' + bytes + ' of ' + MCC_COMMENT_MAX + ' bytes in the Team Comment (an Arabic letter counts as 2). Press "Shorten" above the text, or write a shorter comment.');
   if (!confirmSameText(t, text, teamStatus)) return 'cancelled';
   if (mccWithCallCenter(t) && !confirm(t.mcc.requestNo + ' is still Open at the Call Center – they are working on it and have not handed it to the Chronic team yet.\n\nSend this reply to the portal anyway?')) return 'cancelled';
   if (portalBusy(t)) throw new Error('A reply for ' + t.no + ' is already on its way to the portal – wait for the confirmation');
@@ -3673,6 +3741,9 @@ async function queueMcc(t, { teamStatus, text, after }) {
   const { error } = await SB.from('portal_outbox').insert({ id, ticket: t.no, request_id: t.mcc.requestNo, job, status: 'queued' });
   if (error) throw new Error(/portal_outbox_one_open/.test(error.message) ? 'A reply for this ticket is already on its way' : 'Not queued: ' + error.message);
   await emit('portal.queued', t.no, { jobId: id, decision: teamStatus, reason: '', text: text || '', html, atts: [], to: 'Call Center request ' + t.mcc.requestNo, channel: 'callcenter' });
+  // an earlier reply of this ticket that was too long leaves "Sync failed": this one replaces it
+  for (const old of t.msgs.filter(x => x.portal && x.jobId && x.jobId !== id && ['error', 'dead'].includes(x.state) && /Too long for the portal|ORA-12899/.test(x.error || '')))
+    portalCall({ action: 'resolve', id: old.jobId, note: 'Sent again shorter as ' + id }).catch(() => { });
   return id;
 }
 // Call Center status (list "Current Status"): Open = the Call Center is still working on it (not ours yet);
@@ -3715,7 +3786,7 @@ function mccPanel(t) {
     row('Member', [p.memberName, p.memberId].filter(Boolean).join(' · ')), row('Mobile', p.mobile), row('Policy holder', p.policyHolder), row('Policy', p.policyNumber), row('Plan', p.plan), row('Valid', [p.effective, p.expiry].filter(Boolean).join(' → ')),
     row('Assigned (Call Center)', p.assignedTo), row('Call Center status', p.currentStatus), row('Our decision on the portal', p.teamStatus ? p.teamStatus + (p.teamComment ? ' – ' + p.teamComment.slice(0, 120) : '') : 'not yet'),
     sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Reply with a decision + comment: it goes to this request on the portal (Team Status). The Call Center answers the member; nothing is sent to the member from here.'),
-    s && ['conflict', 'error', 'dead'].includes(s.state) ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved')) : null,
+    s && ['conflict', 'error', 'dead'].includes(s.state) ? el('div', { class: 'row', style: 'gap:6px' }, portalRetryBtn(t, s), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved')) : null,
     other.length ? el('div', { class: 'small' }, 'Same member: ', ...other.slice(0, 4).flatMap((o, i) => [i ? ', ' : '', el('a', { href: '#/t/' + o.no }, o.no + (o.mcc ? ' (Call Center)' : ' (Chronic Attach)'))]), ' – linked, not merged.') : null,
     p.kind === 'approval' ? el('div', { class: 'row', style: 'gap:6px;margin-top:4px' }, el('button', { class: 'btn sm', type: 'button', title: 'Send this request (details + files) to ' + APPROVAL_MAIL + ' – only when you click', onclick: () => approvalForwardDialog(t) }, '✉ Forward to Approval team')) : null);
 }
@@ -3756,7 +3827,7 @@ function portalPanel(t) {
     t.portalDirect && openT(t) ? el('div', { style: 'color:#8a5200;font-weight:600' }, '! Decided on the portal' + (t.portalDirect.by ? ' by ' + t.portalDirect.by : '') + ': ' + t.portalDirect.status + ' – check, then close here') : null,
     sync ? el('div', { style: 'color:' + sync[1] + ';font-weight:600', title: s.error || '' }, sync[0] + (s.decision ? ' · ' + s.decision : '')) : el('div', { class: 'small muted' }, 'Answer with the Decision buttons or Reply – it goes back through the portal to ' + portalRecipient(t) + '.'),
     failed && s.error ? el('div', { class: 'small', style: 'color:var(--bad)' }, s.error) : null,
-    failed ? el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: e => portalJobAction(e.target, 'retry', s.jobId) }, 'Try again'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null,
+    failed ? el('div', { class: 'row', style: 'gap:6px' }, portalRetryBtn(t, s), el('button', { class: 'btn sm', type: 'button', onclick: e => portalResolve(e.target, s.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', s.jobId) }, 'Cancel')) : null,
     // close the portal request from here - also when the ticket is already closed (e.g. answered by email only)
     t.mergedInto ? el('div', { class: 'small muted' }, 'Answer it in ', el('a', { href: '#/t/' + t.mergedInto }, t.mergedInto), ' (this ticket was merged).')
       : !final && !portalBusy(t) ? el('div', { style: 'display:grid;gap:4px;margin-top:4px;border-top:1px solid var(--border);padding-top:6px' },
@@ -5425,7 +5496,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-26a';
+const APP_VERSION = '2026-11-26b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
