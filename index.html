@@ -376,6 +376,7 @@ iframe.orig{width:100%;height:60vh;border:1px solid var(--border);border-radius:
       <div class="grow"></div>
       <button class="btn" id="installBtn" type="button" hidden>⬇ Install app</button>
       <button class="btn" id="availBtn" type="button" hidden title="Auto-assign: when On, new tickets of your groups come straight to you">⚪ Auto-assign: Off</button>
+      <button class="btn" id="newMailBtn" type="button" title="New email (shortcut: C) – starts a new ticket">✉ New email</button>
       <button class="btn primary" id="newBtn" type="button">+ New ticket</button>
       <div class="sync" id="sync" title="Sync status"><span class="dot"></span><span class="t" id="syncT">Not connected</span></div>
       <a class="sync" id="psync" href="#/admin/portal" hidden title="Portal link: last report from the portal bridge, replies waiting, portal requests without a ticket"><span class="dot"></span><span class="t" id="psyncT">Portal</span></a>
@@ -1723,9 +1724,11 @@ function msgCard(m, t, fromNo) {
         el('button', { class: 'btn sm', type: 'button', title: 'You checked it (portal / Outlook / phone): it leaves Sync failed, your note is kept', onclick: e => portalResolve(e.target, m.jobId) }, 'Mark as resolved'), el('button', { class: 'btn sm', type: 'button', onclick: e => portalJobAction(e.target, 'cancel', m.jobId) }, 'Cancel')) : m.state === 'resolved' && m.note ? el('div', { class: 'small muted', style: 'padding:0 14px 10px 54px' }, '✓ ' + m.note) : null);
   }
   if (m.kind === 'out') {
-    const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
+    const state = m.state === 'sent' ? el('span', { class: 'pill p-ok' }, 'Sent ' + (m.sentAt ? fmtDate(m.sentAt) : '')) : m.state === 'error' ? el('span', { class: 'pill p-over', title: m.error }, 'Not sent: ' + (m.error || 'error')) : m.state === 'draft' ? el('span', { class: 'pill p-due' }, 'Saved as draft in Outlook') : m.state === 'cancelled' ? el('span', { class: 'pill', title: 'Cancelled before it was sent – nothing went out' }, 'Cancelled – not sent')
+      : m.sendAt && Date.parse(m.sendAt) > Date.now() ? el('span', { class: 'row', style: 'gap:6px;display:inline-flex' }, el('span', { class: 'pill p-due' }, '🕒 Scheduled for ' + fmtDate(m.sendAt)), el('button', { class: 'btn sm', type: 'button', onclick: e => cancelScheduled(e.target, m) }, 'Cancel sending'))
+      : el('span', { class: 'pill p-due' }, 'Waiting for the Outlook PC to send');
     return el('div', { class: 'msg out' },
-      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : m.forward ? ' forwarded to ' + (m.to || '') + ' ' : ' replied ', m.forward ? el('span', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0' }, '↪ Forward') : null, state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
+      el('div', { class: 'mh' }, avatar(m.by), el('div', { style: 'min-width:0' }, el('div', {}, el('span', { class: 'who' }, m.by), m.auto ? ' sent the ticket number ' : m.forward ? ' forwarded to ' + (m.to || '') + ' ' : m.newEmail ? ' sent a new email ' : ' replied ', m.forward ? el('span', { class: 'pill', style: 'background:#efe7fb;color:#6a3fb0' }, '↪ Forward') : null, state, fromNo ? el('span', { class: 'pill p-muted' }, 'from ' + fromNo) : null), el('div', { class: 'small muted', dir: 'auto' }, 'To: ' + (m.to || '') + (m.cc ? ' · Cc: ' + m.cc : '') + ' · ' + fmtDate(m.at)))),
       htmlBox(m),
       visAtts(m).length ? el('div', { class: 'atts' }, visAtts(m).map(attChip)) : null,
       // post-send check (Outlook PC): who really received it, and an alert if anyone of the Reply All list is missing
@@ -1787,13 +1790,13 @@ function dupSendsOf(t) {
   }
   return res;
 }
-async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder, exact, removed, replyId }) {
+async function queueReply(t, { to, cc, bcc, subject, html, files, inline, reuseAtts, statusAfter, auto, forward, reminder, exact, removed, replyId, sendAt, newEmail, fixedId }) {
   if (!forward) { const dup = recentSameReply(t, to, html); if (dup) throw new Error('This exact reply already went to the same people ' + rel(dup.at) + ' – not sent twice'); }
   // Reply All: the Outlook PC keeps Outlook's own Reply All list and adds what is typed here. Only people an agent REMOVED in the
   // reply box are left out (job.removed) – "Try again", reminders and the acknowledgement never remove anyone.
   // "exact": only the people typed (e.g. the people an earlier reply missed) – used only when an agent asks for it.
   const prop = forward || exact ? null : replyAllOf(t); removed = forward || exact ? [] : (removed || []);
-  const outId = 'out_' + Date.now().toString(36) + rand(4); const atts = [];
+  const outId = fixedId || 'out_' + Date.now().toString(36) + rand(4); const atts = [];   // fixedId: New email keeps one id per draft (a retry can never queue it twice)
   for (const f of files || []) { const p = `${HD}/outbox/${outId}/${safeName(f.name)}`; await FS.write(p, f); atts.push({ name: f.name, size: f.size, mime: f.type, path: p, cls: 'readable' }); }
   // pictures pasted into the text: inline attachments (Content-ID) that the HTML shows with <img src="cid:…">
   for (const x of inline || []) { const p = `${HD}/outbox/${outId}/${safeName(x.file.name)}`; await FS.write(p, x.file); atts.push({ name: x.file.name, size: x.file.size, mime: x.file.type, path: p, cls: 'readable', inline: true, cid: x.cid }); }
@@ -1804,11 +1807,16 @@ async function queueReply(t, { to, cc, subject, html, files, inline, reuseAtts, 
   const fwdAtts = forward ? (forward.msg.atts || []).filter(a => a.path && !a.inline) : [];
   for (const a of fwdAtts) atts.push(a);
   const job = { outId, ticket: t.no, to, cc: cc || '', replyAll: !exact, ...(exact ? { exact: true } : {}), proposed: prop ? { to: prop.to, cc: prop.cc } : null, removed, subject, html, replyToMid: forward ? forward.msg.mid || '' : lastIn ? lastIn.mid || '' : '', attachments: atts.map(a => a.path), attachmentNames: atts.map(a => a.name), attachmentCids: atts.map(a => a.cid || ''), mailbox: DB.settings.general.mailbox, queuedBy: me(), queuedAt: new Date().toISOString(),
-    ...(forward ? { forward: true, fwdHtml: forward.html, fwdPaths: fwdAtts.map(a => a.path) } : {}) };
+    ...(forward ? { forward: true, fwdHtml: forward.html, fwdPaths: fwdAtts.map(a => a.path) } : {}),
+    // New email (26 Nov 2026): Bcc, and Schedule send (the queue holds it until sendAt) – only on new emails
+    ...(bcc ? { bcc } : {}), ...(sendAt ? { sendAt } : {}), ...(newEmail ? { newEmail: true } : {}) };
   const { error } = await SB.from('outbox').insert({ id: outId, ticket: t.no, job, status: 'queued' });
-  if (error) { toast((forward ? 'Forward' : 'Reply') + ' not queued: ' + error.message); throw new Error(error.message); }
-  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(replyId ? { replyId } : {}), ...(removed.length ? { removed } : {}), ...(exact ? { exact: true } : {}), ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}) });
+  const already = !!error && !!fixedId && /duplicate key|already exists/i.test(error.message);   // queued by an earlier try that lost its answer
+  if (error && !already) { toast((forward ? 'Forward' : newEmail ? 'Email' : 'Reply') + ' not queued: ' + error.message); throw new Error(error.message); }
+  if (already && t.msgs.some(m => m.kind === 'out' && m.outId === outId)) return outId;
+  await emit('msg.out', t.no, { outId, to, cc, subject, html, atts, auto: !!auto, ...(replyId ? { replyId } : {}), ...(removed.length ? { removed } : {}), ...(exact ? { exact: true } : {}), ...(reminder ? { reminder: true } : {}), ...(forward ? { forward: true, fwdOf: forward.msg.id } : {}), ...(bcc ? { bcc } : {}), ...(sendAt ? { sendAt } : {}), ...(newEmail ? { newEmail: true, from: DB.settings.general.mailbox } : {}) });
   if (statusAfter) await emit('update', t.no, { status: statusAfter });
+  return outId;
 }
 /* ---- Activity: every action on a ticket with its details (also who opened it) ---- */
 const VIEWED = new Map();
@@ -1824,7 +1832,7 @@ const clip = (s, n = 400) => { s = String(s || '').trim(); return s.length > n ?
 function describeEv(e) {
   const d = e.d || {}; const fmtV = v => Array.isArray(v) ? v.join(', ') || '—' : v && typeof v === 'object' ? JSON.stringify(v) : (v === '' || v == null ? '—' : String(v));
   switch (e.type) {
-    case 'ticket.create': return ['change', 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : ''), [d.subject, d.fromEmail || d.requester && d.requester.email].filter(Boolean).join('\n')];
+    case 'ticket.create': return ['change', 'Ticket created' + (d.source === 'email' ? ' from email' : d.source === 'manual' ? ' manually' : d.source === 'outbound' ? ' by a new email (✉ New email)' : ''), [d.subject, d.fromEmail || d.requester && d.requester.email].filter(Boolean).join('\n')];
     case 'msg.in': return ['message', d.internal ? 'Email from a Sarwa colleague' : 'Email received', `From: ${d.fromName || ''} <${d.fromEmail || ''}>\nSubject: ${d.subject || ''}${(d.atts || []).length ? `\nAttachments: ${d.atts.length}` : ''}\n${clip(d.text || stripHtml(d.html))}`];
     case 'msg.out': return ['message', d.outlook ? 'Reply sent from Outlook' : d.auto ? 'Auto-acknowledgement sent' : d.forward ? 'Forwarded' : 'Reply sent', `To: ${d.to || ''}${d.cc ? '  Cc: ' + d.cc : ''}\nSubject: ${d.subject || ''}\n${clip(d.text || stripHtml(d.html))}`];
     case 'out.status': return ['message', 'Email ' + (d.status === 'error' ? 'could not be sent' : d.status || 'status'), d.error || (d.sentAt ? 'Sent ' + fmtDate(d.sentAt) : '')];
@@ -5052,6 +5060,249 @@ function newTicketDialog() {
     } }, 'Create')]);
   f.subject.focus();
 }
+/* ---------------- New email (like Outlook "New Message", 26 Nov 2026) ----------------
+   One new email = one new ticket (source "outbound"). The ticket number goes in the subject, so the recipient's reply joins
+   the ticket; the copy Outlook files in Sent Items is recognised (tag + ticket number) and never makes a second ticket.
+   Sent by the Outlook PC from the shared mailbox through the same queue as replies (Sent Items check, retries, no double send).
+   Also: Bcc, a 10-second Undo, Schedule send (held by the queue until its time), a draft saved on this PC (text + files). */
+const NM = { draftKey: 'newmail-draft', maxRecips: 25, warnRecips: 10, undoSecs: 10, maxTotal: 20 * 1048576, lastSig: '', lastAt: 0 };
+const NM_EMAIL = /^[\w.+'%-]+@[\w-]+(\.[\w-]+)+$/;
+const NM_ATTACH_WORDS = /\b(attach(ed|ment|ments|ing)?|enclosed|please find)\b|مرفق|المرفق|مرفقة|مرفقه|مرفقات|المرفقات/i;
+const nmKey = () => 'newmail-draft:' + ((ME && ME.id) || me());   // one draft per agent on this PC
+const nmLocal = d => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);   // for <input type=datetime-local>
+// every address the team has written to or received from (suggestions; "never emailed before" warning) – built once per dialog
+function nmKnown() {
+  const m = new Map();
+  const add = (email, name, sent) => { email = String(email || '').trim().toLowerCase(); if (!NM_EMAIL.test(email)) return; const r = m.get(email) || { email, name: '', n: 0, sent: 0 }; if (name && !r.name && String(name).toLowerCase() !== email) r.name = String(name); r.n++; if (sent) r.sent++; m.set(email, r); };
+  for (const t of DB.tickets.values()) {
+    if (t.requester) add(t.requester.email, t.requester.name);
+    for (const x of t.msgs || []) {
+      if (x.kind === 'in') add(x.fromEmail, x.fromName);
+      for (const r of recipTokens([x.to, x.cc, x.bcc].filter(Boolean).join(';'))) add(r.email, r.name, x.kind === 'out');
+      for (const r of x.recips || []) add(r.email, r.name, true);
+    }
+  }
+  return m;
+}
+// a To / Cc / Bcc box with suggestions from past contacts (last address typed after ";")
+function nmRecipInput(label, known, onChange) {
+  const inp = el('input', { type: 'text', 'aria-label': label, placeholder: 'name@company.com; …', autocomplete: 'off', dir: 'ltr', style: 'width:100%' });
+  const box = el('div', { role: 'listbox', hidden: true, style: 'position:absolute;left:0;right:0;top:100%;z-index:30;background:var(--surface,#fff);border:1px solid var(--border);border-radius:6px;box-shadow:0 6px 18px rgba(0,0,0,.16);max-height:240px;overflow:auto' });
+  let items = [], sel = -1;
+  const last = () => { const v = inp.value; return v.slice(v.lastIndexOf(';') + 1).trim().toLowerCase(); };
+  const mark = () => [...box.children].forEach((c, i) => { c.style.background = i === sel ? 'var(--surface-2,#eef2f7)' : ''; });
+  const pick = r => { const v = inp.value, i = v.lastIndexOf(';'); inp.value = (i >= 0 ? v.slice(0, i + 1) + ' ' : '') + recipText(r) + '; '; box.hidden = true; inp.focus(); onChange(); };
+  const draw = () => {
+    const q = last(); if (q.length < 2) { box.hidden = true; return; }
+    const have = new Set(recipTokens(inp.value).map(x => x.email));
+    items = [...known.values()].filter(r => !have.has(r.email) && (r.email.includes(q) || r.name.toLowerCase().includes(q))).sort((a, b) => b.sent - a.sent || b.n - a.n).slice(0, 8); sel = -1;
+    box.replaceChildren(...items.map(r => el('div', { role: 'option', style: 'padding:6px 9px;cursor:pointer;overflow-wrap:anywhere', onmousedown: e => { e.preventDefault(); pick(r); } },
+      el('b', { dir: 'auto' }, r.name || r.email), r.name ? el('span', { class: 'muted' }, ' <' + r.email + '>') : null, r.sent ? el('span', { class: 'small muted' }, ' · emailed ' + r.sent + '×') : el('span', { class: 'small muted' }, ' · wrote to us'))));
+    box.hidden = !items.length;
+  };
+  inp.addEventListener('input', () => { draw(); onChange(); });
+  inp.addEventListener('keydown', e => {
+    if (box.hidden) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; mark(); }
+    else if ((e.key === 'Enter' || e.key === 'Tab') && sel >= 0) { e.preventDefault(); pick(items[sel]); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); box.hidden = true; }
+  });
+  inp.addEventListener('blur', () => { setTimeout(() => { box.hidden = true; }, 150); const v = inp.value.replace(/(@[\w-]+(?:\.[\w-]+)+)\s*,\s*/g, '$1; '); if (v !== inp.value) { inp.value = v; onChange(); } });
+  return { inp, wrap: el('div', { style: 'position:relative;flex:1;min-width:0' }, inp, box) };
+}
+async function newEmailDialog() {
+  if (!me()) return askName();
+  const S = DB.settings, G = S.general, own = String(G.mailbox || '').toLowerCase(); const known = nmKnown();
+  let draft = null; try { draft = await IDB.get(nmKey()); } catch { }
+  const ids = { outId: (draft && draft.outId) || 'out_' + Date.now().toString(36) + rand(4), ticketNo: (draft && draft.ticketNo) || '' };
+  const files = [], inlineImgs = new Map(); let saveTimer = 0, done = false;
+  const draftInfo = el('span', { class: 'small muted' });
+  const changed = () => { drawRecips(); clearTimeout(saveTimer); saveTimer = setTimeout(saveDraft, 1000); };
+  const To = nmRecipInput('To', known, changed), Cc = nmRecipInput('Cc', known, changed), Bcc = nmRecipInput('Bcc', known, changed);
+  const subj = el('input', { type: 'text', 'aria-label': 'Subject', dir: 'auto', maxlength: 250, style: 'width:100%', oninput: changed });
+  const ce = el('div', { class: 'ce', contenteditable: 'true', 'data-ph': 'Write your email… (the signature and the ticket number are added automatically)', role: 'textbox', 'aria-multiline': 'true', dir: 'auto', style: 'min-height:190px' });
+  const member = el('input', { type: 'text', inputmode: 'numeric', placeholder: 'e.g. 50048941', oninput: changed });
+  const link = el('input', { type: 'text', placeholder: 'CHR-000123', oninput: changed });
+  const groupSel = el('select', { onchange: changed }, opt('', '—', G.defaultGroup), S.groups.map(v => opt(v, v, G.defaultGroup)));
+  const prioSel = el('select', { onchange: changed }, S.priorities.map(v => opt(v, v, G.defaultPriority)));
+  const typeSel = el('select', { onchange: changed }, S.types.map(v => opt(v, v, G.defaultType)));
+  const tagsIn = el('input', { type: 'text', placeholder: 'e.g. renewal, follow-up', oninput: changed });
+  const afterSel = el('select', { onchange: changed }, opt('Pending|Awaiting customer info', 'Pending – Awaiting customer info (opens again when they reply)'), opt('Open', 'Keep Open'), opt('Closed', 'Closed (no reply expected)'),
+    el('optgroup', { label: 'Pending –' }, PENDING_REASONS.filter(r => r !== 'Awaiting customer info').map(r => opt('Pending|' + r, 'Pending – ' + r))));
+  const laterAt = el('input', { type: 'datetime-local', disabled: true, onchange: () => { drawFoot(); changed(); } });
+  const laterChk = el('input', { type: 'checkbox', onchange: () => { laterAt.disabled = !laterChk.checked; if (laterChk.checked && !laterAt.value) laterAt.value = nmLocal(new Date(Date.now() + 3600000)); drawFoot(); changed(); } });
+  const showCc = el('button', { class: 'btn ghost sm', type: 'button', onclick: () => { ccRow.hidden = false; bccRow.hidden = false; showCc.hidden = true; Cc.inp.focus(); } }, 'Cc / Bcc');
+  const fld = (label, node, extra) => el('div', { class: 'fld', ...(extra || {}) }, el('label', { class: 'small muted' }, label), node);
+  const ccRow = fld('Cc', Cc.wrap, { hidden: true }), bccRow = fld('Bcc', Bcc.wrap, { hidden: true, title: 'Hidden copy: the others do not see these addresses' });
+  // ---- attachments and pasted pictures (like the reply box) ----
+  const fileIn = el('input', { type: 'file', multiple: true, hidden: true, onchange: e => { addFiles([...e.target.files]); e.target.value = ''; } });
+  const filesBox = el('div', { class: 'row', style: 'padding:0 12px;flex-wrap:wrap' });
+  const totalSize = () => files.reduce((s, f) => s + f.size, 0) + [...inlineImgs.values()].reduce((s, f) => s + f.size, 0);
+  function addFiles(list) { for (const f of list) { if (!f || !f.size) continue; if (totalSize() + f.size > NM.maxTotal) { toast('Too large: the email would be over 20 MB – ' + f.name + ' not added'); continue; } files.push(f); } drawFiles(); changed(); }
+  function insertImage(file) {
+    if (totalSize() + file.size > NM.maxTotal) return toast('Too large: the email would be over 20 MB');
+    const ext = (file.type.split('/')[1] || 'png').replace('jpeg', 'jpg'); const cid = 'img' + Date.now().toString(36) + rand(4) + '@sarwa';
+    const named = new File([file], file.name && !/^image\.\w+$/.test(file.name) ? file.name : 'screenshot-' + new Date().toISOString().slice(0, 19).replace(/\D/g, '') + '.' + ext, { type: file.type || 'image/png' });
+    inlineImgs.set(cid, named); ce.focus(); document.execCommand('insertHTML', false, `<img src="${URL.createObjectURL(named)}" data-cid="${cid}" alt="${esc(named.name)}" style="max-width:100%;height:auto">&nbsp;`); drawFiles(); changed();
+  }
+  ce.addEventListener('paste', e => { const items = [...((e.clipboardData && e.clipboardData.items) || [])].filter(i => i.kind === 'file'); if (!items.length) return; e.preventDefault(); for (const it of items) { const f = it.getAsFile(); if (!f) continue; if (/^image\//.test(f.type)) insertImage(f); else addFiles([f]); } });
+  ce.addEventListener('dragover', e => { if ([...(e.dataTransfer.types || [])].includes('Files')) { e.preventDefault(); ce.classList.add('drop'); } });
+  ce.addEventListener('dragleave', () => ce.classList.remove('drop'));
+  ce.addEventListener('drop', e => { const fl = [...((e.dataTransfer && e.dataTransfer.files) || [])]; ce.classList.remove('drop'); if (!fl.length) return; e.preventDefault(); for (const f of fl) { if (/^image\//.test(f.type) && f.size < 5 * 1048576) insertImage(f); else addFiles([f]); } });
+  ce.addEventListener('input', () => { if (inlineImgs.size) drawFiles(); changed(); });
+  function drawFiles() {
+    for (const cid of [...inlineImgs.keys()]) if (!ce.querySelector(`img[data-cid="${cid}"]`)) inlineImgs.delete(cid);
+    filesBox.replaceChildren(...files.map((f, i) => el('span', { class: 'tag' }, '📎 ' + f.name + ' (' + fmtSize(f.size) + ')', el('button', { type: 'button', 'aria-label': 'Remove ' + f.name, onclick: () => { files.splice(i, 1); drawFiles(); changed(); } }, '×'))),
+      inlineImgs.size ? el('span', { class: 'small muted' }, '🖼 ' + inlineImgs.size + ' picture(s) in the text') : null,
+      el('span', { class: 'small muted' }, (files.length || inlineImgs.size ? fmtSize(totalSize()) + ' of ' : 'Attachments up to ') + '20 MB · drag & drop or paste'));
+  }
+  function bodyForSend() {
+    const box = document.createElement('div'); box.innerHTML = ce.innerHTML; const inl = [];
+    for (const img of box.querySelectorAll('img[data-cid]')) { const cid = img.dataset.cid; const f = inlineImgs.get(cid); if (!f) { img.remove(); continue; } img.setAttribute('src', 'cid:' + cid); img.removeAttribute('data-cid'); inl.push({ cid, file: f }); }
+    return { html: sanitize(box.innerHTML).trim(), inline: inl };
+  }
+  // ---- toolbar: same as the reply box; templates keep their {{placeholders}} until the ticket number exists (filled at send) ----
+  const cmd = (c, v) => { ce.focus(); document.execCommand(c, false, v); };
+  const tool = el('div', { class: 'tool' },
+    el('button', { type: 'button', title: 'Bold', onclick: () => cmd('bold') }, 'B'), el('button', { type: 'button', title: 'Italic', onclick: () => cmd('italic'), style: 'font-style:italic' }, 'I'), el('button', { type: 'button', title: 'Underline', onclick: () => cmd('underline'), style: 'text-decoration:underline' }, 'U'),
+    el('button', { type: 'button', title: 'Bulleted list', onclick: () => cmd('insertUnorderedList') }, '• List'), el('button', { type: 'button', title: 'Numbered list', onclick: () => cmd('insertOrderedList') }, '1. List'),
+    el('button', { type: 'button', title: 'Right-to-left (Arabic)', onclick: () => { ce.dir = ce.dir === 'rtl' ? 'ltr' : 'rtl'; changed(); } }, '⇄ RTL'),
+    el('select', { 'aria-label': 'Insert template', style: 'margin-left:auto', onchange: e => { const c = cannedList()[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(c.html)); changed(); } }, opt('', 'Insert template…'), cannedList().map((c, i) => opt(String(i), c.title))),
+    el('button', { type: 'button', onclick: () => fileIn.click() }, '📎 Attach'));
+  // ---- who receives it, shown before sending ----
+  const recipLine = el('div', { class: 'small', style: 'padding:4px 12px 0;overflow-wrap:anywhere', 'aria-live': 'polite' });
+  const allRecips = () => [...recipTokens(To.inp.value), ...recipTokens(Cc.inp.value), ...recipTokens(Bcc.inp.value)];
+  function drawRecips() {
+    // the address still being typed (focused box, no ";" after it yet) is not flagged until it is finished
+    const typing = [To, Cc, Bcc].find(b => b.inp === document.activeElement && !/;\s*$/.test(b.inp.value)); const cur = typing ? recipTokens(typing.inp.value).pop() : null;
+    const all = allRecips(), bad = all.filter(x => x !== cur && (!x.email || !NM_EMAIL.test(x.email)) && !(cur && recipKey(x) === recipKey(cur))), fresh = all.filter(x => x.email && NM_EMAIL.test(x.email) && !known.has(x.email)), mine = all.filter(x => x.email === own);
+    recipLine.replaceChildren(
+      all.length ? el('div', { class: 'muted' }, el('b', {}, all.length + ' recipient' + (all.length === 1 ? '' : 's')), all.length > NM.maxRecips ? el('span', { style: 'color:var(--bad);font-weight:600' }, ' – more than ' + NM.maxRecips + ' is not allowed (not a mass-mail tool)') : all.length > NM.warnRecips ? el('span', { style: 'color:#8a5200' }, ' – many recipients, check the list') : null) : null,
+      bad.length ? el('div', { style: 'color:var(--bad)' }, '⚠ Not a valid email address: ' + bad.map(x => x.name || x.email).join('; ')) : null,
+      mine.length ? el('div', { style: 'color:var(--bad)' }, '⚠ ' + G.mailbox + ' is our own mailbox (the sender) – remove it') : null,
+      fresh.length ? el('div', { style: 'color:#8a5200' }, '● Never emailed before – check the spelling: ' + fresh.map(x => x.email).join('; ')) : null);
+  }
+  const foot = el('span', { class: 'small muted' });
+  const drawFoot = () => { const la = new Date(laterAt.value); foot.textContent = laterChk.checked && !isNaN(la) ? '🕒 Will be sent ' + fmtDate(la.toISOString()) + ' – you can cancel it on the ticket until then.' : 'You get ' + NM.undoSecs + ' seconds to undo after Send.'; sendBtn.textContent = laterChk.checked ? 'Schedule' : 'Send'; };
+  const sendBtn = el('button', { class: 'btn primary', type: 'button', onclick: () => send() }, 'Send');
+  // ---- draft: saved on this PC (text, settings, files) every second of typing; restored when New email opens again ----
+  async function saveDraft() {
+    if (done) return;
+    const box = document.createElement('div'); box.innerHTML = ce.innerHTML; for (const img of box.querySelectorAll('img[data-cid]')) img.removeAttribute('src');
+    const d = { to: To.inp.value, cc: Cc.inp.value, bcc: Bcc.inp.value, subject: subj.value, html: box.innerHTML, dir: ce.dir, files: files.slice(), inline: [...inlineImgs.entries()], member: member.value, link: link.value, group: groupSel.value, priority: prioSel.value,
+      type: typeSel.value, tags: tagsIn.value, after: afterSel.value, later: laterChk.checked ? laterAt.value : '', outId: ids.outId, ticketNo: ids.ticketNo, savedAt: new Date().toISOString(), by: me() };
+    const empty = !d.to && !d.cc && !d.bcc && !d.subject.trim() && !htmlToPlain(d.html).trim() && !d.files.length && !d.inline.length && !d.ticketNo;
+    try { await IDB.set(nmKey(), empty ? null : d); draftInfo.textContent = empty ? '' : 'Draft saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { draftInfo.textContent = 'Draft not saved on this PC'; }
+  }
+  if (draft) {
+    To.inp.value = draft.to || ''; Cc.inp.value = draft.cc || ''; Bcc.inp.value = draft.bcc || ''; subj.value = draft.subject || ''; ce.dir = draft.dir || 'auto';
+    for (const f of draft.files || []) if (f && f.size) files.push(f);
+    for (const [cid, f] of draft.inline || []) if (f) inlineImgs.set(cid, f);
+    ce.innerHTML = draft.html || ''; for (const img of ce.querySelectorAll('img[data-cid]')) { const f = inlineImgs.get(img.dataset.cid); if (f) img.src = URL.createObjectURL(f); else img.remove(); }
+    member.value = draft.member || ''; link.value = draft.link || ''; groupSel.value = draft.group ?? groupSel.value; prioSel.value = draft.priority || prioSel.value; typeSel.value = draft.type || typeSel.value; tagsIn.value = draft.tags || ''; afterSel.value = draft.after || afterSel.value;
+    if (draft.later) { laterChk.checked = true; laterAt.disabled = false; laterAt.value = draft.later; }
+    if (draft.cc || draft.bcc) { ccRow.hidden = false; bccRow.hidden = false; showCc.hidden = true; }
+    draftInfo.textContent = 'Draft restored (saved ' + fmtDate(draft.savedAt) + ')';
+  }
+  const discard = el('button', { class: 'btn', type: 'button', onclick: async () => { if (!confirm('Discard this draft? The text and attachments are removed from this PC.')) return; done = true; clearTimeout(saveTimer); try { await IDB.set(nmKey(), null); } catch { } closeDialog(); toast('Draft discarded'); } }, 'Discard');
+  const grid2 = (...k) => el('div', { class: 'g2' }, ...k);
+  openDialog('✉ New email', [el('div', { style: 'display:grid;gap:8px' },
+    el('div', { class: 'editor', style: 'margin:0' },
+      fld('From', el('span', { style: 'padding:6px 0', title: 'The shared mailbox – sent by Outlook like every reply' }, G.mailbox)),
+      fld('To', el('div', { class: 'row', style: 'gap:6px;flex:1;min-width:0;flex-wrap:nowrap' }, To.wrap, showCc)), ccRow, bccRow, recipLine,
+      fld('Subject', subj), el('div', { class: 'small muted', style: 'padding:2px 12px 0' }, 'The ticket number is added to the subject, e.g. “' + (subj.value || 'Your subject') + ' [CHR-000123]”, so the reply comes back to the ticket.'),
+      tool, ce, filesBox, fileIn),
+    el('details', { open: !!(draft && (draft.member || draft.link || draft.tags)) }, el('summary', { class: 'small', style: 'cursor:pointer;font-weight:600' }, 'Ticket details – folder, priority, member card, link'),
+      el('div', { style: 'display:grid;gap:8px;margin-top:8px' },
+        grid2(el('label', {}, 'Folder (group)', groupSel), el('label', {}, 'Priority', prioSel)), grid2(el('label', {}, 'Type', typeSel), el('label', {}, 'Tags', tagsIn)),
+        grid2(el('label', {}, 'Member card no. (optional)', member), el('label', {}, 'Related ticket (optional)', link)))),
+    el('div', { class: 'row', style: 'gap:14px;flex-wrap:wrap;align-items:center' }, el('div', { class: 'row', style: 'gap:6px;align-items:center;flex-wrap:nowrap' }, el('span', { class: 'small muted', style: 'white-space:nowrap' }, 'After sending'), afterSel),
+      el('div', { class: 'row', style: 'gap:6px;align-items:center;flex-wrap:nowrap' }, laterChk, el('span', { class: 'small', style: 'white-space:nowrap;cursor:pointer', onclick: () => laterChk.click() }, '🕒 Send later'), laterAt)),
+    el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:wrap' }, foot, draftInfo))],
+    [discard, el('button', { class: 'btn', type: 'button', onclick: () => { saveDraft(); closeDialog(); } }, 'Close (keep draft)'), sendBtn], 'min(920px,96vw)');
+  $('#dlg').addEventListener('close', () => { clearTimeout(saveTimer); saveDraft(); }, { once: true });
+  drawFiles(); drawRecips(); drawFoot(); (To.inp.value ? (subj.value ? ce : subj) : To.inp).focus();
+  // ---- send: checks → one confirmation (who, which domains) → 10 s Undo → ticket + queue ----
+  function check() {
+    const to = recipTokens(To.inp.value), cc = recipTokens(Cc.inp.value), bcc = recipTokens(Bcc.inp.value), all = [...to, ...cc, ...bcc];
+    if (!to.length) { toast('Enter at least one address in To.'); To.inp.focus(); return null; }
+    const bad = all.filter(x => !x.email || !NM_EMAIL.test(x.email)); if (bad.length) { toast('Not a valid email address: ' + bad.map(x => x.name || x.email).join('; ')); return null; }
+    if (all.some(x => x.email === own)) { toast(G.mailbox + ' is the sender – remove it from the recipients'); return null; }
+    if (all.length > NM.maxRecips) { toast('At most ' + NM.maxRecips + ' recipients per email'); return null; }
+    drawFiles(); const B = bodyForSend(); const plain = htmlToPlain(B.html).trim();
+    if (!plain && !files.length && !B.inline.length) { toast('Write something first.'); ce.focus(); return null; }
+    const rel2 = link.value.trim().toUpperCase(); if (rel2 && !DB.tickets.get(rel2)) { toast('Related ticket ' + rel2 + ' not found'); link.focus(); return null; }
+    let sendAt = '';
+    if (laterChk.checked) { const d = new Date(laterAt.value); if (isNaN(d) || d.getTime() < Date.now() + 2 * 60000) { toast('Choose a send time at least 2 minutes from now'); laterAt.focus(); return null; } if (d.getTime() > Date.now() + 30 * 86400000) { toast('At most 30 days ahead'); return null; } sendAt = d.toISOString(); }
+    const sig = sameReplySig(To.inp.value + '|' + Cc.inp.value + '|' + Bcc.inp.value, B.html) + '|' + subj.value.trim();
+    if (sig === NM.lastSig && Date.now() - NM.lastAt < 120000) { toast('This exact email was sent a moment ago – not sent twice'); return null; }
+    const warn = [];
+    if (!subj.value.trim()) warn.push('• There is no subject.');
+    if (NM_ATTACH_WORDS.test(plain + ' ' + subj.value) && !files.length) warn.push('• The text mentions an attachment, but nothing is attached.');
+    if (all.length > NM.warnRecips) warn.push('• ' + all.length + ' recipients.');
+    const fresh = all.filter(x => !known.has(x.email)); if (fresh.length) warn.push('• Never emailed before (check the spelling): ' + fresh.map(x => x.email).join(', '));
+    const domains = [...new Set(all.map(x => x.email.split('@')[1]))];
+    const L = (k, l) => l.length ? '\n' + k + ': ' + l.map(recipText).join('; ') : '';
+    if (!confirm((sendAt ? 'Schedule' : 'Send') + ' this new email from ' + G.mailbox + '?\n' + L('To', to) + L('Cc', cc) + L('Bcc', bcc) + '\nDomains: ' + domains.join(', ') + '\nSubject: ' + (subj.value.trim() || '(none)') + (files.length ? '\nAttachments: ' + files.length : '') + (sendAt ? '\nSend at: ' + fmtDate(sendAt) : '') + (warn.length ? '\n\nPlease check:\n' + warn.join('\n') : ''))) return null;
+    return { to, cc, bcc, subject: subj.value.trim(), B, plain, files: files.slice(), sendAt, link: rel2, member: normDigits(member.value).trim(), group: groupSel.value, priority: prioSel.value, type: typeSel.value,
+      tags: tagsIn.value.split(',').map(s => s.trim()).filter(Boolean), after: afterSel.value, sig };
+  }
+  async function send() {
+    const v = check(); if (!v) return;
+    await saveDraft(); done = true; clearTimeout(saveTimer); closeDialog();
+    if (v.sendAt) return nmDeliver(v, ids);   // scheduled: it can be cancelled on the ticket until its time
+    nmUndoBar(NM.undoSecs, () => nmDeliver(v, ids), () => { toast('Not sent – your draft is open again'); newEmailDialog(); });
+  }
+}
+// "Sending in 10 s… Undo": nothing is written before the time is up; closing the page in between sends nothing (the draft stays)
+function nmUndoBar(secs, onGo, onUndo) {
+  let left = secs, over = false; const txt = el('span', {});
+  const bar = el('div', { role: 'status', style: 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:1000;background:#1f2937;color:#fff;border-radius:8px;padding:10px 14px;display:flex;gap:12px;align-items:center;box-shadow:0 6px 20px rgba(0,0,0,.3);font-size:14px;max-width:calc(100vw - 32px)' });
+  const stay = e => { e.preventDefault(); e.returnValue = ''; };
+  const end = go => { if (over) return; over = true; clearInterval(iv); window.removeEventListener('beforeunload', stay); bar.remove(); go ? onGo() : onUndo(); };
+  const draw = () => { txt.textContent = '✉ Sending in ' + left + ' s…'; };
+  const iv = setInterval(() => { if (--left <= 0) end(true); else draw(); }, 1000);
+  bar.append(txt, el('button', { class: 'btn sm', type: 'button', onclick: () => end(false) }, 'Undo'), el('button', { class: 'btn sm primary', type: 'button', onclick: () => end(true) }, 'Send now'));
+  draw(); document.body.append(bar); window.addEventListener('beforeunload', stay);
+}
+// the ticket, then the email in the queue. A retry after a lost connection reuses the same ticket and queue id (no double send)
+async function nmDeliver(v, ids) {
+  const G = DB.settings.general; let no = ids.ticketNo;
+  try {
+    let t = no && DB.tickets.get(no);
+    if (!t) {
+      const lang = isAr(v.plain + ' ' + v.subject) ? 'AR' : 'EN'; const first = v.to[0];
+      const n = await nextNo(); no = n.no;
+      await emit('ticket.create', no, { no, seq: n.seq, source: 'outbound', subject: v.subject || '(no subject)', requester: { name: first.name || '', email: first.email }, member: v.member, memberName: '', lang, status: 'Open', priority: v.priority, type: v.type,
+        group: v.group, agent: me(), tags: [...new Set(['New email', ...v.tags])], ruleNames: [], requestId: '', createdAt: new Date().toISOString(), outbound: { by: me(), from: G.mailbox } });
+      ids.ticketNo = no; try { const d = await IDB.get(nmKey()); if (d) await IDB.set(nmKey(), { ...d, ticketNo: no }); } catch { }
+      t = DB.tickets.get(no);
+    }
+    const lang = isAr(v.plain) ? 'AR' : /[A-Za-z]{3}/.test(v.plain) ? 'EN' : t.lang;
+    const html = `<div dir="${lang === 'AR' ? 'rtl' : 'ltr'}" style="font-family:Arial,sans-serif;font-size:11pt">${fillPlaceholders(v.B.html, t)}<br><br>${fillPlaceholders(DB.settings.signature[lang] || '', t)}</div>`;
+    const subject = (v.subject || '(no subject)') + ' [' + no + ']';
+    const R = x => x.map(recipText).join('; ');
+    await queueReply(t, { to: R(v.to), cc: R(v.cc), bcc: R(v.bcc), subject, html, files: v.files, inline: v.B.inline, exact: true, newEmail: true, sendAt: v.sendAt || '', fixedId: ids.outId });
+    NM.lastSig = v.sig; NM.lastAt = Date.now();
+    if (v.link) { await emit('note', no, { html: 'Related ticket: <a href="#/t/' + esc(v.link) + '">' + esc(v.link) + '</a> (new email started by ' + esc(me()) + ')' }); await emit('note', v.link, { html: 'New email sent as ticket <a href="#/t/' + esc(no) + '">' + esc(no) + '</a> to ' + esc(R(v.to)) + ' – ' + esc(v.subject) }); }
+    if (v.after && v.after !== 'Open') await emit('update', no, v.after.startsWith('Pending|') ? { status: 'Pending', pendingReason: v.after.slice(8) } : { status: v.after });
+    try { await IDB.set(nmKey(), null); } catch { }
+    toast((v.sendAt ? 'Scheduled for ' + fmtDate(v.sendAt) : 'Email queued – Outlook sends it within a few minutes') + ' · ticket ' + no);
+    location.hash = '#/t/' + no;
+  } catch (x) {
+    toast('Not sent: ' + x.message + ' – your draft is kept' + (no ? ' (ticket ' + no + ' is reused when you send again)' : ''));
+    if (no) try { const d = await IDB.get(nmKey()); if (d) await IDB.set(nmKey(), { ...d, ticketNo: no }); } catch { }
+  }
+}
+// a scheduled email can be cancelled until about a minute before its time (it stays on the ticket as "Cancelled – not sent")
+async function cancelScheduled(btn, m) {
+  if (!confirm('Cancel this scheduled email? It will not be sent. (It stays on the ticket as “Cancelled – not sent”.)')) return;
+  const t = [...DB.tickets.values()].find(x => x.msgs.includes(m)); if (!t) return;
+  btn.disabled = true;
+  const { data, error } = await SB.rpc('outbox_cancel', { p_id: m.outId });
+  if (error || data !== 'cancelled') { btn.disabled = false; return toast(error ? 'Not cancelled: ' + error.message : data === 'too_late' ? 'Too late – it is being sent now' : 'Not cancelled: the email is ' + data); }
+  await emit('out.status', t.no, { outId: m.outId, status: 'cancelled', sentAt: '' }); toast('Scheduled email cancelled');
+}
 function mergeDialog(nos) {
   const list = nos.map(n => DB.tickets.get(n)).filter(Boolean); let target = el('input', { type: 'text', placeholder: 'CHR-000123', value: list.length > 1 ? list.slice().sort((a, b) => a.seq - b.seq)[0].no : '' });
   openDialog('Merge tickets', [el('p', { style: 'margin:0' }, 'Merge ', el('b', {}, list.map(t => t.no).join(', ')), ' into the primary ticket. Their messages show inside the primary ticket and they are closed.'), el('label', {}, 'Primary ticket number', target)],
@@ -5174,7 +5425,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-25e';
+const APP_VERSION = '2026-11-26a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
@@ -5192,6 +5443,7 @@ setInterval(checkVersion, 5 * 60000); window.addEventListener('focus', checkVers
    ===================================================================== */
 $('#searchForm').addEventListener('submit', e => { e.preventDefault(); const q = $('#q').value.trim(); location.hash = '#/tickets?view=all' + (q ? '&q=' + encodeURIComponent(q) : ''); });
 $('#newBtn').onclick = () => DB ? newTicketDialog() : toast('Sign in first');
+$('#newMailBtn').onclick = () => DB ? newEmailDialog() : toast('Sign in first');
 $('#meBtn').onclick = () => accountDialog();
 $('#meBtn').onkeydown = e => { if (e.key === 'Enter') accountDialog(); };
 $('#installBtn').onclick = installApp;
@@ -5199,6 +5451,7 @@ document.addEventListener('keydown', e => {
   if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
   const tag = (e.target.tagName || '').toLowerCase(); if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
   if (e.key === '/') { e.preventDefault(); $('#q').focus(); return; }
+  if ((e.key === 'c' || e.key === 'C') && DB && !$('#dlg').open) { e.preventDefault(); newEmailDialog(); return; }   // C = compose a new email
   if (CUR.view && CUR.view.keys && CUR.view.keys(e.key)) e.preventDefault();
 });
 window.addEventListener('focus', () => poll());
