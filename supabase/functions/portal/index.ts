@@ -980,6 +980,15 @@ async function bridgeMccIngest(list: any[]) {
       const { data: link } = await db.from('mcc_links').select('*').eq('request_no', no).maybeSingle();
       // the bridge reads a Timeline only when the list row changed (fingerprint) or on the 10-minute full pass
       const tlRead = Array.isArray(q.timeline);
+      // the same team decision twice on the Timeline (same status, comment, person, day = same line id) is a double post
+      // (26 Nov 2026: CHR-000917's confirm did not recognise its own line) - counted and flagged, once a day per request
+      const teamIds = lines.filter((l) => l['Team Action Status']).map((l) => l._id as string);
+      if (tlRead && teamIds.length) {
+        const doubles = teamIds.length - new Set(teamIds).size;
+        await setState('mcc_tl:' + no, { at: new Date().toISOString(), rows: lines.length, team_lines: teamIds.length, identical_team_lines: doubles });
+        if (doubles) { const { data: go } = await db.rpc('portal_try_lock', { p_key: 'mcc_double:' + no, p_secs: 20 * 3600 });
+          if (go) await log({ direction: 'in', action: 'mcc_double_team_line', request_id: no, ticket: link?.ticket || null, ok: false, error: `${doubles + 1} identical team decisions on the portal Timeline of ${no} (same status, comment, person and day)` }); }
+      }
       const hash = await sha256(JSON.stringify([info, (tlRead ? lines.map((l) => l._id) : [...(link?.line_ids || [])]).sort()]));   // files are part of their Timeline line
       // the Call Center is still working on it (Current Status Open): watched only, NOT a ticket (approved 25 Nov 2026)
       const isOpen = /^open$/i.test(info.currentStatus || '');

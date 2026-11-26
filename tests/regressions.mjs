@@ -59,4 +59,13 @@ ok(/if \(same === 'decision-only'\) text = ''/.test(qp) && qp.indexOf("same === 
 ok(/login page not recognised – \$\{what\}/.test(bridge) && /document\.title/.test(bridge), 'the bridge says what the portal showed instead of the sign-in form');
 ok(/async function healthHtml/.test(srv) && /new_error_kind/.test(srv), 'daily health section + alert for a new kind of error');
 
+// ---- CHR-000917 re-post: "Partially_Approved_Rejected" on the portal vs "Partially Approved Rejected" in the job ----
+const K = load(bridge, ['mccStatusKey']);
+ok(K.mccStatusKey('Partially_Approved_Rejected') === K.mccStatusKey('Partially Approved Rejected'), 'underscores and spaces are the same team status');
+ok(K.mccStatusKey('Approved') !== K.mccStatusKey('Partially Approved Rejected'), 'different statuses stay different');
+const sm = grab(bridge, 'submitMcc');
+ok(/mccStatusKey\(l\['Team Action Status'\]\) === mccStatusKey\(job\.teamStatus\)/.test(sm), 'the Team Status submit compares statuses with mccStatusKey');
+ok(/tl1\.filter\(mine\)\.length > before/.test(sm) && !/known\.has\(mccLineIdOf/.test(sm), 'confirmed by one more matching line (day-only dates make identical lines share an id)');
+ok(/mcc_double_team_line/.test(srv), 'the server flags the same team decision twice on a Timeline');
+
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

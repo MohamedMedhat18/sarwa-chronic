@@ -986,6 +986,7 @@ async function mccCycle(page) {
 // one Info Desk reply: Team Status (decision + comment) on the request's Actions form, confirmed from its Timeline
 const MCC_STATUS_VALUE = { Approved: '1', 'Partially Approved Rejected': '2', Rejected: '3', Pending: '4' };
 const MCC_COMMENT_MAX = 1000;   // SL_MCC_REQUEST_HISTORY.TEAM_COMMENT (bytes)
+const mccStatusKey = (s) => String(s || '').replace(/_/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
 const mccCommentBytes = (s) => Buffer.byteLength(String(s || '').replace(/\r?\n/g, '\r\n'), 'utf8');
 async function submitMcc(page, job) {
   const no = String(job.request_id); const T = { start: Date.now() }; const core = norm(job.message);
@@ -1000,7 +1001,9 @@ async function submitMcc(page, job) {
     if (!row) return { result: 'closed', error: 'the request is no longer in the Call Center lists (closed by the Call Center)' };
     T.found = Date.now();
     const tl0 = await mccTimeline(page, row._timeline);
-    const mine = (l) => l['Team Action Status'] === job.teamStatus && (!core || norm(l['Team Comment']).includes(core.slice(0, 40)));
+    // the portal writes "Partially_Approved_Rejected" (underscores) for "Partially Approved Rejected": compared without them
+    // (26 Nov 2026, CHR-000917: the saved line was never recognised, so every retry saved again)
+    const mine = (l) => mccStatusKey(l['Team Action Status']) === mccStatusKey(job.teamStatus) && (!core || norm(l['Team Comment']).includes(core.slice(0, 40)));
     if (job.attempt > 1) { const hit = tl0.find(mine); if (hit) return { result: 'sent', portal: { team_status: job.teamStatus, status_name: job.teamStatus, line_id: mccLineIdOf(no, hit), last_update: new Date().toISOString() } }; }
     // the row's own Actions link (its page must be on screen)
     let el = null;
@@ -1029,11 +1032,13 @@ async function submitMcc(page, job) {
       if (!open) break;
     }
     await closeDialogs(page); T.saved = Date.now();
-    const known = new Set(tl0.map((l) => mccLineIdOf(no, l)));
+    // confirmed when there is ONE MORE matching line than before the save (the line date has no time, so an identical earlier
+    // line of the same day has the same id – the count tells them apart)
+    const before = tl0.filter(mine).length;
     for (let i = 0; i < 10; i++) {
       await page.waitForTimeout(i < 3 ? 1500 : 3000);
       const tl1 = await mccTimeline(page, row._timeline).catch(() => []);
-      const hit = tl1.find((l) => !known.has(mccLineIdOf(no, l)) && mine(l));
+      const hit = tl1.filter(mine).length > before ? tl1.find(mine) : null;
       if (hit) { log('timing', job.id, JSON.stringify({ find: ((T.found - T.start) / 1000).toFixed(1), save: ((T.saved - T.found) / 1000).toFixed(1), total: ((Date.now() - T.start) / 1000).toFixed(1), info_desk: true })); return { result: 'sent', portal: { team_status: job.teamStatus, status_name: job.teamStatus, line_id: mccLineIdOf(no, hit), last_update: new Date().toISOString() } }; }
     }
     return { result: 'retry', error: 'saved, but the Request Timeline did not show it yet - it is checked again before any resend' };
