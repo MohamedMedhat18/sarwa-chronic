@@ -29,8 +29,10 @@ try {
   $sig = ($files | ForEach-Object { $_.Name + ':' + $_.Length + ':' + $_.LastWriteTimeUtc.Ticks }) -join '|'
   $state = @{ sig = ''; csig = ''; hashes = @{} }
   if (Test-Path $StateFile) { $s = Get-Content $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json; $state.sig = $s.sig; $state.csig = "$($s.csig)"; foreach ($p in $s.hashes.PSObject.Properties) { $state.hashes[$p.Name] = $p.Value } }
-  # csig: the files the contract dates were last sent from (28 Nov 2026: contract dates added - sent once even if no file changed)
-  if (-not $Force -and $state.sig -eq $sig -and $state.csig -eq $sig) { Log 'no file changed - nothing to do'; return }
+  # csig: the files the contract dates were last sent from (28 Nov 2026: contract dates added - sent once even if no file changed;
+  # version 2: the policy number is the "Certificate NBR" column - the "Policy Number" column holds the holder's name)
+  $cver = '2'; $csigWant = "$cver|$sig"
+  if (-not $Force -and $state.sig -eq $sig -and $state.csig -eq $csigWant) { Log 'no file changed - nothing to do'; return }
 
   $culture = [Globalization.CultureInfo]::InvariantCulture
   function D($s) { $s = "$s".Trim(); if (-not $s) { return $null }; try { return [datetime]::ParseExact($s, 'dd-MMM-yy', $culture).ToString('yyyy-MM-dd') } catch { return $null } }
@@ -58,7 +60,7 @@ try {
       $rowsRead++
       $dist = D (& $g $c 'Distribution Date'); $key = "$member|$code"
       $cn = & $g $c 'Contract'
-      if ($cn -match '^\d{4,12}$') { $cc = $con[$cn]; if (-not $cc -or ($dist -and (-not $cc.seen -or $dist -gt $cc.seen))) { $con[$cn] = @{ contract = $cn; policy_holder = (& $g $c 'Policy Holder Name'); policy_no = (& $g $c 'Policy Number'); effective = (D (& $g $c 'Effective DATE')); expiry = (D (& $g $c 'Expiry DATE')); seen = $dist } } }
+      if ($cn -match '^\d{4,12}$') { $cc = $con[$cn]; if (-not $cc -or ($dist -and (-not $cc.seen -or $dist -gt $cc.seen))) { $con[$cn] = @{ contract = $cn; policy_holder = (& $g $c 'Policy Holder Name'); policy_no = $(if ((& $g $c 'Certificate NBR') -match '^\d{6,12}$') { & $g $c 'Certificate NBR' } else { & $g $c 'Policy Number' }); effective = (D (& $g $c 'Effective DATE')); expiry = (D (& $g $c 'Expiry DATE')); seen = $dist } } }
       $cur = $agg[$key]
       if ($cur) {
         if ($dist) { if (-not $cur.first_dist -or $dist -lt $cur.first_dist) { $cur.first_dist = $dist }; [void]$cur.mset.Add($dist.Substring(0, 7)) }
@@ -103,7 +105,7 @@ try {
   try {
     $cl = @($con.Values | ForEach-Object { [ordered]@{ contract = $_.contract; policy_holder = $_.policy_holder; policy_no = $_.policy_no; effective = $_.effective; expiry = $_.expiry; seen = $_.seen } })
     $cn = 0; for ($i = 0; $i -lt $cl.Count; $i += 1000) { $res = Bridge @{ action = 'contracts_upsert'; rows = @($cl[$i..([Math]::Min($i + 999, $cl.Count - 1))]) }; if ($res.error) { throw $res.error }; $cn += [int]$res.n }
-    Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn); $csig = $sig
+    Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn); $csig = $csigWant
   } catch { Log ('contract dates not sent: ' + $_.Exception.Message) }
   [IO.File]::WriteAllText($StateFile, ([pscustomobject]@{ sig = $sig; csig = $csig; at = (Get-Date).ToString('o'); hashes = $newHashes } | ConvertTo-Json -Depth 3 -Compress), $Utf8)
   Log ("done: {0:N0} uploaded, server has {1:N0} lines" -f $done, (Bridge @{ action = 'history_stats' }).rows)
