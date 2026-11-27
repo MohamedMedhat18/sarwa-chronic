@@ -649,6 +649,82 @@ function classify(a) {
   return { cls: 'unreadable', why: size > 20 * 1048576 ? 'larger than 20 MB' : 'open in Outlook / Word' };
 }
 function detectMember(text) { const m = normDigits(text).match(/(?<![\d\/.\-])\d{8}(?![\d\/.\-])/); return m ? m[0] : ''; }
+/* ---- Member card no. (28 Nov 2026) ----
+   CHR-001014: the subject ended in "-53809478" but detectMember skips a number after "-", so the first 8-digit number of the
+   body won – the sender's office phone in the signature. 33 tickets had a phone, policy or contract number as the card.
+   Now EVERY 8-digit number of the subject, the email text, the attachment names, the form (AI reader) and the Portal field is a
+   candidate, scored by where it is, the words in front of it, the GlobeMed files (known members; contract and policy numbers are
+   never cards) and the team's corrections. Member cards usually start with 5 – only a bonus, never a rule. */
+const CARD_W = { portal: 70, subject: 45, form: 40, file: 30, body: 20, quoted: 8 };
+const CARD_SRC = { portal: 'Portal', subject: 'subject', form: 'form (AI)', file: 'attachment name', body: 'email text', quoted: 'older email' };
+const CARD_PHONE_BEFORE = /(?:\b(?:tel|phone|ph|mob|mobile|cell|fax|hot ?line|ext|call|whats ?app|t|m|f)\b|هاتف|تليفون|تلفون|موبايل|جوال|فاكس|محمول|واتس)\s*[.:]?\s*(?:\+?\s*\d{1,3}[\s\-.]*)?\(?\d{0,3}\)?[\s\-.]*$|\+\s*\d{1,3}[\s\-.]*\(?\d{0,3}\)?[\s\-.]*$|\b0\d{1,2}[\s\-]+$/i;
+const CARD_NOT_BEFORE = /(?:polic(?:y|ies)|pol|contract|contr|عقد|العقد|وثيقة|الوثيقة|بوليصة|request|req|ticket|طلب|الطلب|claim|approval|موافقة|ref|reference|invoice|فاتورة|account|order|ssnbr|batch|sheet|tpa|code|كود)\s*(?:no\.?|number|nbr|num)?\s*[#:.\-\/]*\s*$/i;
+const CARD_YES_BEFORE = /(?:card|member|individual|indiv|ind|id|cn|insured|ins|كارت|الكارت|كارنيه|الكارنيه|عضوية|العضوية|رقم العضو|الرقم التأميني|بطاقة|البطاقة)\s*(?:no\.?|number|nbr|num|رقم)?\s*[#:.\-\/]*\s*$/i;
+function cardIsDate(n) { const y = +n.slice(0, 4), m = +n.slice(4, 6), d = +n.slice(6, 8), d2 = +n.slice(0, 2), m2 = +n.slice(2, 4), y2 = +n.slice(4, 8); return (y >= 2000 && y <= 2039 && m >= 1 && m <= 12 && d >= 1 && d <= 31) || (y2 >= 2000 && y2 <= 2039 && m2 >= 1 && m2 <= 12 && d2 >= 1 && d2 <= 31); }
+// parts: [{ src: 'subject'|'body'|'quoted'|'file'|'form'|'portal', text }]; ctx: { known: Map(no → {name, holder, contract}), notMember: Set, ignore: Set }
+function cardCandidates(parts, ctx) {
+  ctx = ctx || {}; const known = ctx.known || new Map(), notMember = ctx.notMember || new Set(), ignore = ctx.ignore || new Set();
+  const by = new Map();
+  for (const p of parts || []) {
+    const text = normDigits(String(p.text || '')).slice(0, 20000), w = CARD_W[p.src] || 10;
+    // a form or Portal field is the number itself (6–10 digits); text is searched for 8-digit numbers
+    const hits = p.src === 'form' || p.src === 'portal' ? (/^\d{6,10}$/.test(text.replace(/\D/g, '')) ? [{ no: text.replace(/\D/g, ''), i: 0, field: true }] : []) : [...text.matchAll(/(?<!\d)\d{8}(?!\d)/g)].map(m => ({ no: m[0], i: m.index }));
+    for (const h of hits) {
+      const no = h.no; if (/^0+$/.test(no) || ignore.has(no)) continue;
+      let s = w; const why = [];
+      if (!h.field) {
+        const before = text.slice(Math.max(0, h.i - 32), h.i), after = text.slice(h.i + 8, h.i + 16);
+        if (CARD_PHONE_BEFORE.test(before)) continue;                                       // "T +20 2 28110008", "Tel: 25778724"
+        if (cardIsDate(no) && !/^5/.test(no)) continue;                                      // 20261127, 27112026
+        if (/^\s*(?:egp|le|l\.e|ج\.?م|جنيه|pounds?)\b/i.test(after)) continue;               // an amount
+        if (CARD_NOT_BEFORE.test(before)) { s -= 60; why.push('after “' + before.trim().slice(-14) + '”'); }
+        else if (CARD_YES_BEFORE.test(before)) { s += 25; why.push('after “' + before.trim().slice(-14) + '”'); }
+        if (/^-\d/.test(after)) s -= 30;                                                     // "10100144-1-10300140-1" (policy-style)
+      }
+      const c = by.get(no) || { no, score: 0, srcs: [], why: [] };
+      const prev = c.srcs.find(x => x.src === p.src);
+      if (!prev) { c.srcs.push({ src: p.src, s }); c.score += s; } else if (s > prev.s) { c.score += s - prev.s; prev.s = s; }
+      c.why.push(...why); by.set(no, c);
+    }
+  }
+  const out = [];
+  for (const c of by.values()) {
+    const k = known.get(c.no);
+    if (!k && notMember.has(c.no)) continue;                                                 // a contract / policy number
+    if (/^5/.test(c.no)) c.score += 10;
+    if (k) { c.score += 40; c.known = k; }
+    if (c.score <= 0) continue;
+    c.conf = c.score >= 90 ? 'high' : c.score >= 50 ? 'medium' : 'low';
+    c.from = c.srcs.map(x => CARD_SRC[x.src] || x.src).join(' + ');
+    out.push(c);
+  }
+  return out.sort((a, b) => b.score - a.score || a.no.localeCompare(b.no));
+}
+// Verified / Needs review / Not found / Mismatch for the card saved on the ticket (x: { confirmed, icareOk, formName, text })
+const CARD_STATUS = { verified: ['✓ Verified', 'p-ok'], review: ['Needs review', 'p-due'], notfound: ['Not found', 'p-muted'], mismatch: ['⚠ Mismatch', 'p-over'] };
+function memberVerdict(card, cands, ctx, x) {
+  card = String(card || '').replace(/\D/g, ''); x = x || {}; ctx = ctx || {}; const known = ctx.known || new Map(), notMember = ctx.notMember || new Set();
+  const top = cands[0] || null, mine = cands.find(c => c.no === card) || null;
+  const better = top && top.no !== card && (top.known || top.conf !== 'low') ? top : null;
+  if (!card) return top ? { status: 'review', why: 'No card no. saved – ' + top.no + ' found in the ' + top.from, better: top } : { status: 'notfound', why: 'No card number in the subject, email, form or Portal' };
+  if (x.confirmed) return { status: 'verified', why: 'Confirmed by ' + x.confirmed };
+  if (x.icareOk) return { status: 'verified', why: 'Checked in i-CARE' };
+  const k = known.get(card);
+  if (!k && notMember.has(card)) return { status: 'mismatch', why: card + ' is a contract / policy number, not a member card', better };
+  if (!k) return { status: better && better.known ? 'mismatch' : 'notfound', why: (better && better.known ? better.no + ' (' + better.from + ') is in the GlobeMed files – ' : '') + card + ' is not in the GlobeMed chronic files (new member, or a wrong number): check i-CARE or confirm', better };
+  const nm = x.formName ? sameName(x.formName, k.name) : null;
+  if (nm === false) return { status: 'mismatch', why: 'Form says “' + x.formName + '”, the GlobeMed files say “' + k.name + '”', better };
+  if (better && better.score > (mine ? mine.score : 0) + 20) return { status: 'review', why: better.no + ' (' + better.from + ') looks more likely than ' + card, better };
+  const words = String(k.holder || '').toUpperCase().replace(/[^A-Z؀-ۿ ]+/g, ' ').split(/\s+/).filter(w => w.length >= 4 && !/^(COMPANY|EGYPT|GROUP|INDUSTRIES|SERVICES|INTERNATIONAL|TRADING|HOLDING|LIMITED|FOR|AND|THE|شركة|للتجارة|مصر)$/.test(w));
+  const holderHit = words.length && words.some(w => String(x.text || '').toUpperCase().includes(w));
+  if (nm === true) return { status: 'verified', why: 'Name matches the GlobeMed files (' + k.name + ')' };
+  if (mine && mine.srcs.some(s => s.src === 'portal')) return { status: 'verified', why: 'Portal member field, in the GlobeMed files (' + k.name + ')' };
+  if (mine && mine.srcs.length >= 2) return { status: 'verified', why: 'Same number in the ' + mine.from + ', in the GlobeMed files (' + k.name + ')' };
+  if (holderHit) return { status: 'verified', why: 'Company “' + k.holder + '” is named in the request (' + k.name + ')' };
+  return { status: 'review', why: 'In the GlobeMed files as ' + k.name + ' · ' + (k.holder || '') + ' – nothing in the request confirms it: confirm' };
+}
+// whole months from → to (inclusive): 01/11 → 31/03 = 5, 18/11 → 17/03 = 4
+function monthsSpan(from, to) { const a = new Date(from + 'T00:00:00'), b = new Date(to + 'T00:00:00'); if (isNaN(a) || isNaN(b) || b < a) return 0; return (b.getFullYear() - a.getFullYear()) * 12 + b.getMonth() - a.getMonth() + (b.getDate() + 1 > a.getDate() ? 1 : 0); }
 function detectLang(text) { const t = String(text || '').slice(0, 4000); const ar = (t.match(/[؀-ۿ]/g) || []).length, en = (t.match(/[A-Za-z]/g) || []).length; if (!ar && !en) return 'AR'; return ar >= en * 0.3 ? 'AR' : 'EN'; }
 const TICKET_RE = /CHR\s*-?\s*(\d{6})/i;
 function splitQuoted(text) {
@@ -840,7 +916,9 @@ function applyEv(S, e) {
         history: [{ ts: created, status: d.status || 'Open' }], firstResponseAt: null, resolvedAt: null, closedAt: d.status === 'Closed' ? created : null, mergedInto: '', mergedFrom: [], lastIn: null, lastOut: null, ruleNames: d.ruleNames || [],
         historical: !!d.historical,   // handled in Outlook before it reached the helpdesk (Outlook "Done" folder): closed, no SLA
         // portal request (Chronic Attach): request no., channel, policy holder, Starting Day, items – replies go back through the portal
-        portal: d.portal || null, mcc: d.mcc || null, mobile: d.mobile || '', portalSync: null
+        portal: d.portal || null, mcc: d.mcc || null, mobile: d.mobile || '', portalSync: null,
+        // member card no.: who set it, from where (history of every change; a manual change is never replaced automatically)
+        memberAuto: true, memberWhy: d.memberWhy || '', memberConfirm: null, memberHist: d.member ? [{ ts: e.ts, by: e.by, from: '', to: d.member, auto: true, why: d.memberWhy || 'set when the ticket was created' }] : []
       });
       S.maxSeq = Math.max(S.maxSeq, d.seq || 0);
       if (d.fromKey) { S.processed.add(d.fromKey); S.ignored.delete(d.fromKey); }
@@ -912,6 +990,10 @@ function applyEv(S, e) {
       if (!t) return;
       // an agent picking the ticket up (status change, "Start working") ends "customer response"; system updates do not
       if ((d.status || d._crAck) && !/^System/.test(e.by || '')) clearCR(t);
+      if ('member' in d && d.member !== t.member) {
+        (t.memberHist = t.memberHist || []).push({ ts: e.ts, by: e.by, from: t.member || '', to: d.member || '', auto: !!d._memberAuto, why: d._memberWhy || '' });
+        t.memberAuto = !!d._memberAuto; t.memberWhy = d._memberWhy || ''; if (t.memberConfirm && t.memberConfirm.no !== d.member) t.memberConfirm = null;
+      }
       for (const [k, v] of Object.entries(d)) {
         if (k === 'status') { setStatus(t, v, e.ts, e.by); continue; }
         if (k === 'pendingReason') { t.pendingReason = v; if (v) t.timeline.push({ ts: e.ts, by: e.by, text: 'Pending reason: ' + v }); continue; }
@@ -1035,7 +1117,7 @@ async function poll() {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
     await syncClock();
-    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)).then(() => autoCardFix()).catch(e => console.warn('card fix', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -1138,13 +1220,118 @@ async function autoFillMembers() {
   if (await loadEvents()) DB = fold();   // another device may have filled them meanwhile
   for (const t0 of need.slice(0, 30)) {
     const t = DB.tickets.get(t0.no); if (!t) continue; const ch = {};
-    if (!t.member && /^\d{6,10}$/.test(formNo(t))) ch.member = formNo(t);
+    if (!t.member && /^\d{6,10}$/.test(formNo(t))) { ch.member = formNo(t); ch._memberAuto = true; ch._memberWhy = 'card no. on the form (AI reader)'; }
     const m = ch.member || t.member;
     if (!t.memberName) {
       if (names.get(m)) { ch.memberName = names.get(m); ch._memberSrc = 'GlobeMed history'; }
       else if (t.aiRead && t.aiRead.data && t.aiRead.data.memberName) { ch.memberName = String(t.aiRead.data.memberName).trim(); ch._memberSrc = 'form (AI)'; }
     }
     if (Object.keys(ch).length) { try { await emit('update', t.no, ch); } catch { } }
+  }
+}
+/* ---- Member card check: candidates + Verified / Needs review / Not found / Mismatch (see cardCandidates) ---- */
+const CARDS = { known: new Map(), contracts: new Map(), notMember: new Set(), cAt: 0, cLoading: null, cache: new Map() };
+const CARD_V2_AT = '2026-11-28T00:00:00Z';   // tickets created from now on: the system may correct its own card when the form arrives
+function loadContracts(force) {
+  if (!force && CARDS.contracts.size && Date.now() - CARDS.cAt < 30 * 60000) return Promise.resolve(CARDS.contracts);
+  return CARDS.cLoading || (CARDS.cLoading = (async () => {
+    const m = new Map(), nm = new Set();
+    for (let from = 0; from < 20000; from += 1000) {
+      const { data, error } = await SB.from('contract_info').select('contract,policy_holder,policy_no,effective,expiry,start_day,day_share,members,second_day').range(from, from + 999);
+      if (error) throw error; for (const r of data) { m.set(r.contract, r); nm.add(r.contract); if (r.policy_no) nm.add(r.policy_no); } if (data.length < 1000) break;
+    }
+    CARDS.contracts = m; CARDS.notMember = nm; CARDS.cAt = Date.now(); return m;
+  })().catch(e => { console.warn('contracts', e); return CARDS.contracts; }).finally(() => { CARDS.cLoading = null; }));
+}
+async function loadKnown(nums) {
+  const need = [...new Set(nums)].filter(n => /^\d{6,10}$/.test(n) && !CARDS.known.has(n)).slice(0, 300);
+  if (!need.length) return;
+  const { data, error } = await SB.from('member_meds').select('member,member_name,policy_holder,contract,last_dist').in('member', need).limit(3000);
+  if (error) throw error;
+  const best = new Map(); for (const r of data || []) { const b = best.get(r.member); if (!b || String(r.last_dist || '') > String(b.last_dist || '')) best.set(r.member, r); }
+  for (const n of need) { const r = best.get(n); CARDS.known.set(n, r ? { name: r.member_name || '', holder: r.policy_holder || '', contract: r.contract || '' } : null); }
+}
+function cardIgnoreFor(email) { const S = (DB && DB.settings.cardIgnore) || {}; return new Set([...(S['*'] || []), ...(S[domainOf(email)] || [])]); }
+function cardCtx(t) { const known = new Map(); for (const [k, v] of CARDS.known) if (v) known.set(k, v); return { known, notMember: CARDS.notMember, ignore: cardIgnoreFor(t && t.requester && t.requester.email) }; }
+// what the ticket says, part by part (the first email's own text, older quoted mails, attachment names, form, Portal)
+function cardParts(t) {
+  const parts = [{ src: 'subject', text: t.subject || '' }];
+  const first = t.msgs.find(m => m.kind === 'in');
+  if (first) { const [own, quoted] = splitQuoted(first.text || stripHtml(first.html || '')); parts.push({ src: 'body', text: own }, { src: 'quoted', text: quoted }); }
+  const names = []; for (const m of t.msgs) if (m.kind === 'in') for (const a of m.atts || []) if (a.cls !== 'ignore' && a.name) names.push(a.name.replace(/[_.]/g, ' '));
+  if (names.length) parts.push({ src: 'file', text: names.join(' | ') });
+  const form = t.aiRead && t.aiRead.data && t.aiRead.data.member; if (form) parts.push({ src: 'form', text: String(form) });
+  const portal = (t.portal && t.portal.memberId) || ((t.source === 'portal' || t.mcc) && t.memberHist && t.memberHist[0] && t.memberHist[0].to) || '';
+  if (portal) parts.push({ src: 'portal', text: String(portal) });
+  return parts;
+}
+async function cardCheck(t) {
+  if (!t) return null;
+  const sig = [t.member, t.subject, (t.aiRead || {}).at, (t.icare || {}).at, (t.memberConfirm || {}).no, t.msgs.length, CARDS.cAt].join('|');
+  const c = CARDS.cache.get(t.no); if (c && c.sig === sig) return c.r;
+  await loadContracts();
+  const parts = cardParts(t); const pre = cardCandidates(parts, { notMember: CARDS.notMember });
+  try { await loadKnown([...pre.map(x => x.no), String(t.member || '')]); } catch (e) { console.warn('known', e); }
+  const ctx = cardCtx(t); const cands = cardCandidates(parts, ctx);
+  const a = (t.icare && t.icare.admin) || {};
+  const r = { cands, ...memberVerdict(t.member, cands, ctx, {
+    confirmed: t.memberConfirm && t.memberConfirm.no === t.member ? t.memberConfirm.by : '',
+    icareOk: a.individual && a.individual === t.member && !/problem/i.test(String(t.icare.verdict || '')),
+    formName: (t.aiRead && t.aiRead.data && t.aiRead.data.memberName) || (t.portal && t.portal.memberName) || '',
+    text: parts.filter(p => p.src === 'subject' || p.src === 'body').map(p => p.text).join('\n') }), known: CARDS.known.get(String(t.member || '')) || null };
+  CARDS.cache.set(t.no, { sig, r }); return r;
+}
+const cardOk = r => r && r.status === 'verified';
+// the person picks / types the card no. and confirms it belongs to this member; a number they replaced is learnt as "not a card"
+// for this sender (a signature phone is then never taken again)
+function confirmMemberDialog(t, r, then) {
+  const opts = [...new Map([...(t.member ? [[t.member, { no: t.member, from: 'saved on the ticket' }]] : []), ...(r ? r.cands.slice(0, 4).map(c => [c.no, c]) : [])]).values()];
+  let pick = (r && r.better && r.status !== 'verified' ? r.better.no : t.member) || (opts[0] && opts[0].no) || '';
+  const other = el('input', { type: 'text', inputmode: 'numeric', placeholder: 'Other card no.', style: 'width:150px', oninput: e => { pick = normDigits(e.target.value).replace(/\D/g, ''); [...list.querySelectorAll('input[type=radio]')].forEach(x => x.checked = false); } });
+  const list = el('div', { style: 'display:grid;gap:6px' }, opts.map(c => { const k = CARDS.known.get(c.no);
+    return el('label', { class: 'row', style: 'gap:8px;align-items:flex-start' }, el('input', { type: 'radio', name: 'cardpick', checked: c.no === pick, onchange: () => { pick = c.no; other.value = ''; } }),
+      el('div', {}, el('b', {}, c.no), el('span', { class: 'small muted' }, ' · ' + (c.from || '') + (c.conf ? ' · ' + c.conf : '')),
+        el('div', { class: 'small', dir: 'auto' }, k ? '📋 GlobeMed: ' + k.name + ' · ' + k.holder : el('span', { class: 'muted' }, 'not in the GlobeMed chronic files')))); }));
+  openDialog('Confirm member ID – ' + t.no, el('div', { style: 'display:grid;gap:10px' },
+    r ? el('div', { class: 'small' }, el('span', { class: 'pill ' + CARD_STATUS[r.status][1] }, CARD_STATUS[r.status][0]), ' ', r.why) : null,
+    el('div', { class: 'small muted' }, 'Check the number on the card / form / Portal and that it belongs to this member (name, company). Your name and the time are saved on the ticket.'),
+    list, el('div', { class: 'row' }, other)),
+    [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Cancel'), el('button', { class: 'btn primary', type: 'button', onclick: async () => {
+      if (!/^\d{6,10}$/.test(pick)) return toast('Choose or type the card number (6–10 digits)');
+      const ch = { _memberConfirm: { no: pick, by: me(), at: new Date().toISOString() } };
+      if (pick !== t.member) { ch.member = pick; const k = CARDS.known.get(pick); if (k && k.name && t.memberSrc !== 'i-CARE') { ch.memberName = k.name; ch._memberSrc = 'GlobeMed history'; } }
+      await emit('update', t.no, ch);
+      await cardLearn(t, t.member, pick);
+      CARDS.cache.delete(t.no); closeDialog(); toast('Member ID ' + pick + ' confirmed'); if (then) then();
+    } }, 'Confirm member ID')]);
+}
+// learn from a correction: the replaced number was in this sender's email but is not a member card (unless it is a known member)
+async function cardLearn(t, old, now) {
+  old = String(old || ''); const dom = domainOf(t.requester && t.requester.email);
+  if (!old || old === now || !dom || CARDS.known.get(old) || !cardParts(t).some(p => p.src !== 'form' && p.src !== 'portal' && normDigits(p.text).includes(old))) return;
+  const v = { ...((DB.settings.cardIgnore) || {}) }; const L = new Set(v[dom] || []); if (L.has(old)) return;
+  L.add(old); v[dom] = [...L].slice(-200); await emit('settings', null, { section: 'cardIgnore', value: v });
+}
+// medical decisions (validation, Approved / Partial / Rejected) need a verified card – the ticket itself is never blocked
+async function cardGate(t, then) {
+  let r = null; try { r = await cardCheck(t); } catch (e) { console.warn(e); }
+  if (cardOk(r)) return true;
+  confirmMemberDialog(t, r, then); return false;
+}
+// tickets created from CARD_V2_AT: when the form (AI reader) arrives, the system may correct the card IT set (never a person's)
+let cardFixAt = 0;
+async function autoCardFix() {
+  if (!DB || !STORE.connected || Date.now() - cardFixAt < 60000) return; cardFixAt = Date.now();
+  const list = [...DB.tickets.values()].filter(t => !t.mergedInto && !['Closed', 'Resolved'].includes(t.status) && t.created >= CARD_V2_AT && t.memberAuto !== false && !t.memberConfirm).slice(0, 40);
+  for (const t of list) {
+    let r; try { r = await cardCheck(t); } catch { continue; }
+    const top = r && r.cands[0]; if (!top || top.no === t.member || top.conf !== 'high') continue;
+    const cur = r.cands.find(c => c.no === t.member);
+    if (t.member && cur && (cur.known || top.score < cur.score + 30)) continue;
+    if (await loadEvents()) DB = fold(); const t2 = DB.tickets.get(t.no); if (!t2 || t2.member !== t.member || t2.memberAuto === false) continue;
+    const ch = { member: top.no, _memberAuto: true, _memberWhy: top.from + (top.known ? ', in the GlobeMed files' : '') + (t.member ? ' – replaced ' + t.member : '') };
+    if (t.memberName && t.memberSrc === 'GlobeMed history') ch.memberName = (top.known && top.known.name) || '';
+    try { await emit('update', t.no, ch); CARDS.cache.delete(t.no); } catch { }
   }
 }
 // same person? (Latin names: shared name parts; Arabic vs English cannot be compared)
@@ -1290,7 +1477,19 @@ async function importFile(name, opts) {
     await emit('email.ignored', null, { key: name, file: name, mid, why: isAutomatedMail(email) ? 'automatic message' : atts.length ? 'only signature pictures' : 'no attachments', subject: email.subject, fromName: email.fromName, fromEmail: email.fromEmail, date: email.date }); return;
   }
   const G = DB.settings.general;
-  const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: detectMember(email.subject) || detectMember(text), lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: senderGroupOf(email.fromEmail) || G.defaultGroup, agent: '', tags: [] };
+  // member card no.: the best-scored candidate (subject, email text, attachment names; GlobeMed files) – none when unsure
+  let pick = { no: '', why: '' };
+  try {
+    await loadContracts();
+    const [own, quoted] = splitQuoted(text), ign = cardIgnoreFor(email.fromEmail);
+    const parts = [{ src: 'subject', text: email.subject || '' }, { src: 'body', text: own }, { src: 'quoted', text: quoted }, { src: 'file', text: counted.map(a => String(a.name || '').replace(/[_.]/g, ' ')).join(' | ') }];
+    const pre = cardCandidates(parts, { notMember: CARDS.notMember, ignore: ign });
+    try { await loadKnown(pre.map(x => x.no)); } catch { }
+    const known = new Map(); for (const [k, v] of CARDS.known) if (v) known.set(k, v);
+    const c = cardCandidates(parts, { known, notMember: CARDS.notMember, ignore: ign })[0];
+    if (c && c.conf !== 'low') pick = { no: c.no, why: c.from + (c.known ? ', in the GlobeMed files' : '') + ' (' + c.conf + ' confidence)' };
+  } catch (e) { console.warn('card', e); const s = detectMember(email.subject); pick = { no: s, why: s ? 'subject' : '' }; }
+  const base = { subject: email.subject || '(no subject)', requester: { name: email.fromName, email: email.fromEmail }, member: pick.no, memberWhy: pick.why, lang: detectLang(email.subject + '\n' + email.body), status: 'Open', priority: G.defaultPriority, type: G.defaultType, group: senderGroupOf(email.fromEmail) || G.defaultGroup, agent: '', tags: [] };
   // historical import (already handled in Outlook, "Done" folder): closed straight away, tagged, no rules / auto-assign / auto-reply / SLA
   const fields = opts.historical ? { ...base, status: 'Closed', tags: ['Historical Import'], ruleNames: [] } : applyRules(base, email, counted.length > 0);
   const { seq, no } = await nextNo();
@@ -2162,13 +2361,14 @@ function ticketView(r) {
         const toPending = ch.status === 'Pending'; if (toPending) delete ch.status;
         if (!Object.keys(ch).length && !toPending) { toast('Nothing changed'); return; }
         if (Object.keys(ch).length) await emit('update', no, ch);
+        if ('member' in ch) { CARDS.cache.delete(no); cardLearn(t, t.member, ch.member).catch(() => { }); }
         if (toPending) return pendingDialog(DB.tickets.get(no));
         if (isDone(ch.status)) afterDone(no); else toast('Ticket updated');
       } }, 'Update'), !t.agent && me() ? el('button', { class: 'btn', type: 'button', onclick: () => emit('update', no, { agent: me() }) }, 'Assign to me') : null,
         isPSP(t) ? null : el('button', { class: 'btn ghost sm', type: 'button', title: 'Mark as PSP (needs an EOB approval before closing)', onclick: () => emit('update', no, { tags: [...new Set([...t.tags, 'PSP'])] }) }, '+ PSP')),
       isPSP(t) || (t.eobs || []).length ? pspPanel(t) : null,
       t.validation ? [el('h3', {}, 'Validation'), el('div', { class: 'slabox' },
-        (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to)) : null)),
+        (t.validation.result || []).map(x => el('div', { class: 'row', style: 'gap:6px' }, el('span', { class: 'pill ' + (DEC[x.final] || {}).c }, (DEC[x.final] || {}).en || x.final), el('span', { dir: 'auto' }, x.name), x.final === 'APPROVED' ? el('span', { class: 'small muted' }, x.finalQty + '/month · ' + dmy(x.to) + (x.tillRenewal ? ' (till renewal)' : '')) : null)),
         el('div', { class: 'small muted' }, 'by ' + t.validation.by + ' · ' + fmtDate(t.validation.at) + (t.exportedAt ? ' · exported to GlobeMed ' + fmtDate(t.exportedAt) : '')))] : null,
       el('h3', {}, 'SLA'),
       el('div', { class: 'slabox' }, s.isPaused ? el('div', { class: 'pill p-due' }, 'Timer paused – ' + t.status) : null,
@@ -2895,7 +3095,10 @@ function computeValidation(V, CY) {
     let from = V.start, nextWhy = '';
     if (final === 'APPROVED' && CY && CY.hist && it.name) { const m = histMatch(it.name, CY.hist); if (m && m.last_dist && m.last_dist >= V.start) { from = nextCycleStart(V.start, CY.day || +V.start.slice(8, 10)); nextWhy = 'dispensed ' + dmy(m.last_dist) + ' in this cycle → starts next cycle'; } }
     const code = medCode(it.name);
-    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', reason: it.reason || (final === s.d ? s.memReason || '' : ''), final, finalQty: fq, months, from: final === 'APPROVED' ? from : '', to: final === 'APPROVED' ? addMonths(from, months) : '', nextWhy, code: code ? code.med_code : '', overridden: (final !== s.d) || fq !== c.qty }; });
+    // "Till renewal date" (monthly / flank treatment): until the contract expiry instead of a number of months
+    const till = !!V.tillRenewal && /^\d{4}-\d{2}-\d{2}$/.test(V.renewalTo || '') && V.renewalTo >= from;
+    const to = final === 'APPROVED' ? (till ? V.renewalTo : addMonths(from, months)) : '';
+    return { ...it, n: i + 1, ...c, sug: s.d, why: s.why, req: s.req || '', reason: it.reason || (final === s.d ? s.memReason || '' : ''), final, finalQty: fq, months: till && final === 'APPROVED' ? monthsSpan(from, to) : months, from: final === 'APPROVED' ? from : '', to, tillRenewal: till && final === 'APPROVED', nextWhy, code: code ? code.med_code : '', overridden: (final !== s.d) || fq !== c.qty }; });
 }
 /* ---------------- Policy holders: starting (dispensing) day + member → holder ----------------
    Each holder's members are dispensed on the same day of the month (e.g. day 1). A new member / added medicine starts on that
@@ -2957,7 +3160,8 @@ function decisionEmail(t, V, R, lang) {
   const appr = R.filter(x => x.final === 'APPROVED');
   if (appr.length) {
     const from = dmy(appr.map(x => x.from || V.start).sort()[0]), to = dmy(appr.map(x => x.to).sort().pop());
-    out.push(H(AR ? 'الأدوية المعتمدة' : 'Approved medications'), `<p dir="${dir}">${AR ? `يمكن صرف الأدوية التالية بدءاً من ${from} وحتى ${to} وفقاً للجدول التالي:` : `You can dispense the following medications from ${from} until ${to} as per the table below:`}</p>`);
+    const till = appr.every(x => x.tillRenewal);   // "Till renewal date": until the contract expiry
+    out.push(H(AR ? 'الأدوية المعتمدة' : 'Approved medications'), `<p dir="${dir}">${AR ? `يمكن صرف الأدوية التالية بدءاً من ${from} وحتى ${to}${till ? ' (تاريخ تجديد التعاقد)' : ''} وفقاً للجدول التالي:` : `You can dispense the following medications from ${from} until ${to}${till ? ' (the contract renewal date)' : ''} as per the table below:`}</p>`);
     const unitAr = u => (UNITS.find(x => x[0] === u) || [u, u])[1];
     const dose = x => AR ? `${x.dose} ${unitAr(x.unit)} × ${x.times} ${PERIOD_AR[x.per] || ''}` : `${x.dose} ${x.unit} × ${x.times} per ${x.per}`;
     out.push(`<table dir="${dir}" style="border-collapse:collapse"><tr>${(AR ? ['م', 'الصنف', 'الجرعة', 'الكمية الشهرية', 'من', 'إلى'] : ['No.', 'Item', 'Dose', 'Qty / month', 'From', 'To']).map(h => `<th style="border:1px solid #999;padding:3px 8px;background:#eee">${h}</th>`).join('')}</tr>` +
@@ -3589,6 +3793,8 @@ async function queuePortal(t, { decision, text, reason = '', missing = [], files
 // Decision on a portal ticket: Approved / Partial / Rejected (final) or Pending – reason (not closed). "Refer to medical team"
 // = Pending – Awaiting medical team decision: internal only, nothing goes to the portal or the member.
 function portalDecisionDialog(t, d, preset, opts = {}) {
+  // a medical decision needs a verified member card (Pending – e.g. asking for the right card – is always allowed)
+  if (d !== 'Pending' && !opts.cardOk) { const go = () => portalDecisionDialog(DB.tickets.get(t.no), d, preset, { ...opts, cardOk: true }); cardGate(t, go).then(ok => { if (ok) go(); }); return; }
   const D = DECISIONS[d];
   if (D.status === 'Closed' && isPSP(t) && !(t.eobs || []).length) return toast('PSP ticket ' + t.no + ': upload the EOB approval first (PSP panel on the right)');
   if (portalBusy(t)) return toast('A decision for ' + t.no + ' is already on its way to the portal');
@@ -4432,9 +4638,10 @@ async function outboxWatch() {
     waitIn.length ? el('span', {}, '⚠ ', el('b', {}, waitIn.length + ' email(s) not turned into tickets for 10+ min'), waitIn.some(x => x.status === 'error') ? ' (import error: ' + waitIn.filter(x => x.status === 'error').length + ')' : ' – keep this page open a minute; if it stays, tell the admin') : null,
     lost.length ? el('span', {}, '⚠ ', el('b', {}, lost.length + ' email(s) received but not filed'), ' – tell the admin (', lost.slice(0, 3).map(x => x.subject || '(no subject)').join('; '), ')') : null);
 }
-function decisionDialog(t, d, preset) {
+function decisionDialog(t, d, preset, cardDone) {
   if (isPortal(t)) return portalDecisionDialog(t, d, preset);   // portal request: the decision goes back through the portal
   if (d === 'Pending') return pendingDialog(t, preset, { decision: true });   // one Pending flow: reason → sub-folder, request email
+  if (!cardDone) { const go = () => decisionDialog(DB.tickets.get(t.no), d, preset, true); cardGate(t, go).then(ok => { if (ok) go(); }); return; }   // verified member card first
   const needs = d === 'Pending' || d === 'Rejected' || d === 'Partially approved';
   const list = d === 'Pending' ? PENDING_REASONS : REJECT_REASONS;
   const reason = el('select', { style: 'width:100%' }, needs ? (d === 'Partially approved' ? [opt('', '— no rejected items —', preset || '')] : []).concat(list.map(x => opt(x, x, preset || list[0]))) : []);
@@ -4524,7 +4731,46 @@ function patientInfo(t) {
     t.icare ? null : el('div', { class: 'small muted' }, 'Full details and mobile after the i-CARE check below.'));
   fill(null);
   if (!t.icare && /^\d{6,10}$/.test(String(t.member || ''))) loadHistory(t.member).then(h => { if (h && h.length) fill(h.find(x => x.contract) || h[0]); }).catch(() => { });
-  return box;
+  return el('div', {}, cardBlock(t), box);
+}
+// standard starting day: a person's setting for the contract › for the holder › the contract's own day (GlobeMed files) › the holder's
+function contractDay(contract, holder) {
+  const o = ((DB && DB.settings.contractDays) || {})[contract]; if (contract && o) return { day: +o, manual: true, src: 'contract ' + contract, contract };
+  const h = holder ? holderDay(holder) : null; if (h && h.manual) return { ...h, src: 'holder ' + holder, contract };
+  const c = contract ? CARDS.contracts.get(contract) : null;
+  if (c && c.start_day && (c.members || 0) >= 3 && +c.day_share >= 0.6) return { day: c.start_day, share: +c.day_share, members: c.members, second: c.second_day, manual: false, src: 'contract ' + contract, contract };
+  if (h) return { ...h, src: 'holder ' + holder, contract };
+  return c && c.start_day ? { day: c.start_day, share: +c.day_share, members: c.members, second: c.second_day, manual: false, src: 'contract ' + contract + ' (few members)', contract } : null;
+}
+async function setContractDay(contract, day) { const v = { ...((DB.settings.contractDays) || {}) }; if (day) v[contract] = +day; else delete v[contract]; await emit('settings', null, { section: 'contractDays', value: v }); }
+// the member's contract: i-CARE › GlobeMed files (by card) › Portal
+function contractOf(t, known) { const a = (t.icare && t.icare.admin) || {}; return String(a.contract || (known && known.contract) || (t.portal && t.portal.contract) || '').replace(/\D/g, ''); }
+function cardBlock(t) {
+  const b = el('div', { class: 'slabox', style: 'display:grid;gap:6px;font-size:12.5px;margin-bottom:10px' }, el('div', { class: 'small muted' }, 'Checking the member card…'));
+  const line = (k, v, strong) => v ? el('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:nowrap' }, el('span', { class: 'muted' }, k), el(strong ? 'b' : 'span', { dir: 'auto', style: 'text-align:right' }, v)) : null;
+  Promise.all([cardCheck(t), loadHolderDays().catch(() => null)]).then(([r]) => {
+    if (!r) return; const st = CARD_STATUS[r.status];
+    const others = r.cands.filter(c => c.no !== t.member).slice(0, 3);
+    const conf = t.memberConfirm && t.memberConfirm.no === t.member ? t.memberConfirm : null;
+    const ctr = contractOf(t, r.known); const ci = ctr ? CARDS.contracts.get(ctr) : null; const cd = ctr || (r.known && r.known.holder) ? contractDay(ctr, r.known && r.known.holder) : null;
+    const expired = ci && ci.expiry && ci.expiry < new Date().toISOString().slice(0, 10);
+    const hist = (t.memberHist || []).slice().reverse();
+    b.replaceChildren(
+      el('div', { class: 'row', style: 'justify-content:space-between;gap:8px' }, el('span', {}, el('span', { class: 'muted' }, 'Member card no. '), el('b', { style: 'font-size:14px' }, t.member || '—')), el('span', { class: 'pill ' + st[1], title: r.why }, st[0])),
+      el('div', { class: 'small', style: 'color:' + (r.status === 'verified' ? '#2f8a4f' : r.status === 'mismatch' ? 'var(--bad)' : '#8a5200') }, r.why),
+      t.memberWhy && t.memberAuto !== false ? el('div', { class: 'small muted' }, 'Taken from: ' + t.memberWhy) : null,
+      r.better && r.status !== 'verified' ? el('div', { class: 'row', style: 'gap:6px;justify-content:space-between;flex-wrap:nowrap' }, el('span', { class: 'small' }, '💡 ', el('b', {}, r.better.no), ' – ' + r.better.from + (r.better.known ? ' · GlobeMed: ' + r.better.known.name : '')), el('button', { class: 'btn sm', type: 'button', onclick: () => confirmMemberDialog(t, r) }, 'Use')) : null,
+      others.length && !(r.better && others.length === 1 && others[0].no === r.better.no) ? el('div', { class: 'small muted' }, 'Other numbers: ' + others.map(c => c.no + ' (' + c.from + ', ' + c.conf + ')').join(' · ')) : null,
+      r.status !== 'verified' ? el('button', { class: 'btn sm primary', type: 'button', style: 'justify-self:start', title: 'Needed before a validation or a medical decision', onclick: () => confirmMemberDialog(t, r) }, '✓ Confirm member ID') : conf ? el('div', { class: 'small muted' }, 'Confirmed by ' + conf.by + ' · ' + fmtDate(conf.at)) : null,
+      ctr ? el('div', { style: 'display:grid;gap:3px;border-top:1px solid var(--line);padding-top:6px' },
+        line('Contract', ctr + (ci && ci.policy_holder ? ' · ' + ci.policy_holder : ''), true),
+        ci && (ci.effective || ci.expiry) ? line('Contract dates', (ci.effective ? dmy(ci.effective) : '?') + ' → ' + (ci.expiry ? dmy(ci.expiry) : '?')) : line('Contract dates', 'Not available – not in the GlobeMed files yet'),
+        expired ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract expired ' + dmy(ci.expiry) + ' (GlobeMed files)') : null,
+        cd ? line('Starting day', String(cd.day).padStart(2, '0') + (cd.manual ? ' (set by the team)' : cd.share ? ' (' + Math.round(cd.share * 100) + '% of ' + (cd.members || 0) + ' members, ' + cd.src + ')' : ' (' + cd.src + ')'), true) : line('Starting day', 'Not available')) : null,
+      hist.length > 1 || (hist.length && !hist[0].auto) ? el('details', { class: 'small' }, el('summary', { style: 'cursor:pointer' }, 'Card no. history (' + hist.length + ')'),
+        hist.map(h => el('div', { class: 'muted' }, fmtDate(h.ts) + ' · ' + (h.auto ? 'automatic' : h.by) + ': ' + (h.from || '—') + ' → ' + (h.to || '—') + (h.why ? ' (' + h.why + ')' : '')))) : null);
+  }).catch(e => b.replaceChildren(el('div', { class: 'small muted' }, 'Card check not available: ' + e.message)));
+  return b;
 }
 // direct sending (server function "notify": SMS gateway phone / WhatsApp Business Cloud API) – credentials never reach the browser
 let NOTIFY = null, NOTIFY_AT = 0;
@@ -4883,7 +5129,7 @@ function srcOwned(t, src) {
 function validationDialog(no) {
   const t = DB.tickets.get(no); if (!t) return;
   const today = new Date().toISOString().slice(0, 10);
-  const V = t.validation ? clone({ diagnosis: t.validation.diagnosis, start: t.validation.start, months: t.validation.months, daysPerMonth: t.validation.daysPerMonth, mismatch: t.validation.mismatch, noForm: t.validation.noForm, labs: t.validation.labs || [], items: t.validation.items || [] })
+  const V = t.validation ? clone({ diagnosis: t.validation.diagnosis, start: t.validation.start, months: t.validation.months, daysPerMonth: t.validation.daysPerMonth, mismatch: t.validation.mismatch, noForm: t.validation.noForm, labs: t.validation.labs || [], items: t.validation.items || [], tillRenewal: !!t.validation.tillRenewal, renewalTo: t.validation.renewalTo || '', renewalManual: !!t.validation.renewalManual })
     : { diagnosis: '', start: today, months: 3, daysPerMonth: 30, mismatch: false, noForm: false, labs: [], items: [] };
   if (!V.items.length) V.items.push({ name: '', cls: '', dose: 1, unit: 'tablet', times: 1, per: 'day', prior: 0, unreadable: false, final: '', finalQty: '', months: '', reason: '' });
   const box = el('div', { style: 'display:grid;gap:12px' });
@@ -5026,25 +5272,55 @@ function validationDialog(no) {
       el('div', { class: 'small muted', style: 'margin-top:4px' }, 'From the monthly GlobeMed chronic files (Chronic Validations › All chronic Sarwa). Green = coverage still running.'));
   }
   /* the member's policy holder → its starting day → the start of the current cycle (Start is set to it for a new validation) */
-  const CY = { hist: null, day: 0, holder: '' }; let autoStart = t.validation ? null : V.start;
+  // the member's contract → its standard starting day (contract › holder) → the start of the current cycle; its expiry date for
+  // "Till renewal date" (GlobeMed files, else i-CARE)
+  const CY = { hist: null, day: 0, holder: '', contract: '', cd: null, expiry: '', expirySrc: '' }; let autoStart = t.validation ? null : V.start;
   function applyCycle() {
     CY.hist = hist; CY.holder = (hist && hist[0] && hist[0].policy_holder) || holderOf(t) || '';
-    const hd = CY.holder ? holderDay(CY.holder) : null; CY.day = hd ? hd.day : 0;
+    CY.contract = contractOf(t, { contract: ((hist || []).find(x => x.contract) || {}).contract || '' });
+    const hd = CY.contract || CY.holder ? contractDay(CY.contract, CY.holder) : null; CY.cd = hd; CY.day = hd ? hd.day : 0;
     if (hd && autoStart !== null && V.start === autoStart) { const cs = cycleStart(hd.day); V.start = cs; autoStart = cs; }
+    const ci = CY.contract ? CARDS.contracts.get(CY.contract) : null, ie = t.icare && t.icare.admin && dmyDate(t.icare.admin.expiry);
+    CY.expiry = (ci && ci.expiry) || (ie ? isoOf(ie.getFullYear(), ie.getMonth(), ie.getDate()) : ''); CY.expirySrc = ci && ci.expiry ? 'GlobeMed files' : ie ? 'i-CARE' : '';
+    if (V.tillRenewal && !V.renewalManual && CY.expiry) V.renewalTo = CY.expiry;
   }
-  loadHolderDays().then(() => { applyCycle(); if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
+  Promise.all([loadHolderDays(), loadContracts()]).then(() => { applyCycle(); if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
+  // the member card must be verified before the validation is saved (Confirm right here – the work in this window stays)
+  let CARD = null; cardCheck(t).then(r => { CARD = r; if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
+  function cardLine() {
+    if (!CARD) return el('div', { class: 'small muted' }, 'Checking the member card…');
+    const st = CARD_STATUS[CARD.status], cur = DB.tickets.get(no) || t, want = normDigits(String(histMember || cur.member || '')).trim();
+    return el('div', { class: 'row small', style: 'gap:6px;align-items:flex-start' }, el('span', { class: 'pill ' + st[1] }, st[0]), el('span', { style: 'flex:1;min-width:200px' }, 'Card ' + (cur.member || '—') + ': ' + CARD.why),
+      cardOk(CARD) ? null : el('button', { class: 'btn sm primary', type: 'button', title: 'You checked that this card number belongs to this member', onclick: async () => {
+        if (!/^\d{6,10}$/.test(want)) return toast('Type the card number in “Member chronic history” below first');
+        if (!confirm('Card ' + want + ' belongs to this member (name / company checked)?')) return;
+        const ch = { _memberConfirm: { no: want, by: me(), at: new Date().toISOString() } }; if (want !== cur.member) ch.member = want;
+        await emit('update', no, ch); CARDS.cache.delete(no); CARD = await cardCheck(DB.tickets.get(no)); draw();
+      } }, '✓ Confirm member ID ' + want));
+  }
+  const dayWant = () => CY.day ? Math.min(CY.day, daysIn(+V.start.slice(0, 4), +V.start.slice(5, 7) - 1)) : 0;
+  const dayWrong = () => !!(CY.day && /^\d{4}-\d{2}-\d{2}$/.test(V.start || '') && +V.start.slice(8, 10) !== dayWant());
   function cycleLine() {
-    applyCycle(); if (!CY.holder) return el('div', { class: 'small muted' }, '🏢 Policy holder unknown – enter the card number to load the member history.');
-    const hd = holderDay(CY.holder); const cs = hd ? cycleStart(hd.day) : '';
+    applyCycle(); if (!CY.holder && !CY.contract) return el('div', { class: 'small muted' }, '🏢 Policy holder unknown – enter the card number to load the member history.');
+    const hd = CY.cd; const cs = hd ? cycleStart(hd.day) : '';
     const exp = t.icare && t.icare.admin && dmyDate(t.icare.admin.expiry), st = t.icare && t.icare.admin && dmyDate(t.icare.admin.start);
-    const ended = exp && exp < new Date(new Date().toDateString()), notYet = st && st > new Date();
+    const ci = CY.contract ? CARDS.contracts.get(CY.contract) : null;
+    const ended = (exp && exp < new Date(new Date().toDateString())) || (ci && ci.expiry && ci.expiry < V.start), notYet = st && st > new Date();
+    const fix = dayWrong() ? cycleStart(CY.day, V.start) : '';
+    const changeDay = async () => { const who = CY.contract ? 'contract ' + CY.contract : CY.holder; const v = prompt('Starting day of ' + who + ' (1–31). Empty = use the day from the GlobeMed files:', hd && hd.manual ? hd.day : ''); if (v === null) return; const d = parseInt(v, 10); if (v.trim() && !(d >= 1 && d <= 31)) return toast('Day must be 1–31'); if (CY.contract) await setContractDay(CY.contract, v.trim() ? d : 0); else await setHolderDay(CY.holder, v.trim() ? d : 0); autoStart = V.start; applyCycle(); draw(); toast('Starting day saved for ' + who); };
     return el('div', { class: 'small', style: 'display:grid;gap:3px' },
-      el('div', { dir: 'auto' }, '🏢 ', el('b', {}, CY.holder), hd ? ' · starting day ' : ' · no starting day on file', hd ? el('b', {}, String(hd.day)) : null,
-        hd ? el('span', { class: 'muted' }, hd.manual ? ' (set by the team)' : ' (' + Math.round(hd.share * 100) + '% of ' + (hd.members || 0).toLocaleString() + ' members' + (hd.second && hd.share < 0.8 ? ', also day ' + hd.second : '') + ')') : null),
+      el('div', { dir: 'auto' }, '🏢 ', el('b', {}, CY.holder || (ci && ci.policy_holder) || ''), CY.contract ? ' · contract ' + CY.contract : '', hd ? ' · starting day ' : ' · no starting day on file', hd ? el('b', {}, String(hd.day).padStart(2, '0')) : null,
+        hd ? el('span', { class: 'muted' }, hd.manual ? ' (set by the team)' : ' (' + Math.round((hd.share || 0) * 100) + '% of ' + (hd.members || 0).toLocaleString() + ' members, ' + hd.src + (hd.second && hd.share < 0.8 ? ', also day ' + hd.second : '') + ')') : null,
+        ci && (ci.effective || ci.expiry) ? el('span', { class: 'muted' }, ' · contract ' + (ci.effective ? dmy(ci.effective) : '?') + ' → ' + (ci.expiry ? dmy(ci.expiry) : '?')) : null),
       hd ? el('div', { class: 'row', style: 'gap:6px' }, 'Current cycle starts ', el('b', {}, dmy(cs)),
         V.start !== cs ? el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = cs; autoStart = cs; draw(); } }, 'Use ' + dmy(cs)) : el('span', { class: 'pill p-ok' }, '✓ Start'),
-        el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the starting day of this holder for the whole team', onclick: async () => { const v = prompt('Starting day of ' + CY.holder + ' (1–31). Empty = use the day from the GlobeMed files:', hd.manual ? hd.day : ''); if (v === null) return; const d = parseInt(v, 10); if (v.trim() && !(d >= 1 && d <= 31)) return toast('Day must be 1–31'); await setHolderDay(CY.holder, v.trim() ? d : 0); autoStart = V.start; applyCycle(); draw(); toast('Starting day saved for ' + CY.holder); } }, 'Change day')) : null,
-      ended ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract ended ' + t.icare.admin.expiry + ' (i-CARE) – no new approval without a renewal.') : null,
+        el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the starting day of this contract (or holder) for the whole team', onclick: changeDay }, 'Change day')) : null,
+      fix ? el('div', { class: 'row', style: 'gap:6px;color:var(--bad);font-weight:600' }, '⚠ Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + hd.src + ') – the start ' + dmy(V.start) + ' is a different day.', el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = fix; draw(); } }, 'Use ' + dmy(fix))) : null,
+      el('div', { class: 'row', style: 'gap:6px' }, el('label', { class: 'row', style: 'gap:4px' }, el('input', { type: 'checkbox', checked: !!V.tillRenewal, onchange: e => { V.tillRenewal = e.target.checked; if (!V.tillRenewal) V.renewalManual = false; applyCycle(); draw(); } }), el('b', {}, 'Till renewal date')),
+        V.tillRenewal ? (CY.expiry && !V.renewalManual ? el('span', {}, '→ until ', el('b', {}, dmy(V.renewalTo)), el('span', { class: 'muted' }, ' (contract expiry, ' + CY.expirySrc + ')'))
+          : [el('span', { style: 'color:#8a5200' }, CY.expiry ? 'Renewal date (changed by hand):' : '⚠ Contract expiry not known – enter the renewal date:'), el('input', { type: 'date', value: V.renewalTo || '', onchange: e => { V.renewalTo = e.target.value; V.renewalManual = true; draw(); } }),
+            CY.expiry && V.renewalManual ? el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.renewalManual = false; applyCycle(); draw(); } }, 'Use ' + dmy(CY.expiry)) : null]) : el('span', { class: 'muted' }, 'monthly (flank) treatment: until the contract expiry instead of a number of months')),
+      ended ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract ended ' + (exp && exp < new Date(new Date().toDateString()) ? t.icare.admin.expiry + ' (i-CARE)' : dmy(ci.expiry) + ' (GlobeMed files)') + ' – no new approval without a renewal.') : null,
       notYet ? el('div', { style: 'color:#8a5200;font-weight:600' }, '⚠ Contract starts ' + t.icare.admin.start + ' (i-CARE) – the treatment cannot start before it.') : null);
   }
   function recalc() { const R = computeValidation(V, CY); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
@@ -5076,7 +5352,7 @@ function validationDialog(no) {
     const caseRow = el('div', { class: 'g2' },
       el('label', {}, 'Diagnosis written on the form', el('textarea', { rows: 2, dir: 'auto', oninput: e => { V.diagnosis = e.target.value; recalc(); } }, V.diagnosis)),
       el('div', { style: 'display:grid;gap:6px' }, el('div', { class: 'row' }, el('label', {}, 'Start ', inp(V, 'start', { type: 'date' })), el('label', {}, 'Months ', inp(V, 'months', { type: 'number', min: 1, max: 12, style: 'width:64px' })), el('label', {}, 'Days/month ', inp(V, 'daysPerMonth', { type: 'number', min: 28, max: 31, style: 'width:64px' }))),
-        cycleLine(),
+        cardLine(), cycleLine(),
         el('label', { class: 'row' }, inp(V, 'mismatch', { type: 'checkbox', checked: V.mismatch }), 'Member card / name does not match'),
         el('label', { class: 'row' }, inp(V, 'noForm', { type: 'checkbox', checked: V.noForm }), 'No claim form / prescription attached')));
     const labs = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Lab / scan', 'Result value', 'Date', 'Interpretation', ''].map(h => el('th', {}, h)))),
@@ -5102,13 +5378,18 @@ function validationDialog(no) {
   }
   draw();
   const save = async (toReply) => {
+    // a medical decision needs a verified member card (V.mismatch = the request itself asks for the right card: allowed)
+    if (!cardOk(CARD) && !V.mismatch) return toast(CARD ? 'Member card not verified (' + CARD_STATUS[CARD.status][0] + ') – press “Confirm member ID” at the top first' : 'Still checking the member card – try again in a moment');
+    if (V.tillRenewal && !/^\d{4}-\d{2}-\d{2}$/.test(V.renewalTo || '')) return toast('“Till renewal date”: the contract expiry is not known – enter the renewal date');
+    if (V.tillRenewal && V.renewalTo < V.start) return toast('The renewal date ' + dmy(V.renewalTo) + ' is before the start ' + dmy(V.start));
+    if (dayWrong() && !confirm('Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + CY.cd.src + '), but the start is ' + dmy(V.start) + '.\nSuggested: ' + dmy(cycleStart(CY.day, V.start)) + '.\n\nSave with ' + dmy(V.start) + ' anyway?')) return;
     const R = computeValidation(V, CY); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
     const noWhy = R.filter(x => (x.final === 'NOT_COVERED' || x.final === 'NOT_JUSTIFIED') && !String(x.reason || '').trim());
     if (noWhy.length) return toast('Write the reason to the provider for item ' + noWhy.map(x => x.n).join(', ') + ' – e.g. "Zinctron: zinc supplement, not covered by the policy"');
     const notOk = V.items.map((x, i) => (x.name || x.cls) && !x.confirmed ? i + 1 : 0).filter(Boolean);
     if (notOk.length && !confirm(`Item ${notOk.join(', ')} not confirmed yet (name & dose checked against the form).\n\nSave anyway?`)) return;
-    await emit('validation', no, { ...V, member: histMember, holder: CY.holder || '', startDay: CY.day || '', result: R.map(x => ({ n: x.n, name: x.name, code: x.code || '', cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, req: x.req, reason: x.reason, overridden: x.overridden })) });
+    await emit('validation', no, { ...V, member: histMember, holder: CY.holder || '', contract: CY.contract || '', startDay: CY.day || '', startDaySrc: CY.cd ? CY.cd.src : '', startDayOff: dayWrong(), result: R.map(x => ({ n: x.n, name: x.name, code: x.code || '', cls: x.cls, upd: x.upd, qty: x.qty, sug: x.sug, why: x.why, final: x.final, finalQty: x.finalQty, months: x.months, from: x.from, to: x.to, tillRenewal: !!x.tillRenewal, req: x.req, reason: x.reason, overridden: x.overridden })) });
     // teach the AI reader: what it read vs. what the assessor confirmed / corrected
     const learn = [];
     V.items.forEach((it, i) => {
@@ -5516,7 +5797,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-27a';
+const APP_VERSION = '2026-11-28a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

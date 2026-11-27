@@ -319,13 +319,24 @@ Deno.serve(async (req) => {
         return json({ ok: true, rows: count || 0 });
       }
 
+      case 'contracts_upsert': {   // contract dates from the GlobeMed files (Effective / Expiry DATE, Policy Number); newer lines win
+        const rows = Array.isArray(body.rows) ? body.rows.slice(0, 5000) : [];
+        const clean = rows.filter((r: Record<string, unknown>) => r && /^\d{4,12}$/.test(String(r.contract || '')))
+          .map((r: Record<string, unknown>) => ({ contract: String(r.contract), policy_holder: String(r.policy_holder || '').slice(0, 200), policy_no: String(r.policy_no || '').replace(/\D/g, '').slice(0, 12),
+            effective: /^\d{4}-\d{2}-\d{2}$/.test(String(r.effective || '')) ? r.effective : '', expiry: /^\d{4}-\d{2}-\d{2}$/.test(String(r.expiry || '')) ? r.expiry : '', seen: /^\d{4}-\d{2}-\d{2}$/.test(String(r.seen || '')) ? r.seen : '' }));
+        if (!clean.length) return json({ ok: true, n: 0 });
+        const { data, error } = await db.rpc('contracts_merge', { rows: clean });
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, n: data });
+      }
+
       case 'catalog_refresh': {
-        // two separate requests: each request through the API may take at most 8 seconds
+        // separate requests: each request through the API may take at most 8 seconds
         const { data, error } = await db.rpc('refresh_med_catalog');
         if (error) return json({ error: error.message }, 400);
         const { data: holders, error: e2 } = await db.rpc('refresh_holder_days');
-        if (e2) return json({ ok: true, medicines: data, holdersError: e2.message });
-        return json({ ok: true, medicines: data, holders });
+        const { data: contracts, error: e3 } = await db.rpc('refresh_contract_days');
+        return json({ ok: true, medicines: data, holders, ...(e2 ? { holdersError: e2.message } : {}), contracts, ...(e3 ? { contractsError: e3.message } : {}) });
       }
     }
     return json({ error: 'Unknown action' }, 400);
