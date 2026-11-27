@@ -650,7 +650,7 @@ function classify(a) {
 }
 function detectMember(text) { const m = normDigits(text).match(/(?<![\d\/.\-])\d{8}(?![\d\/.\-])/); return m ? m[0] : ''; }
 /* ---- Member card no. (28 Nov 2026) ----
-   CHR-001014: the subject ended in "-53809478" but detectMember skips a number after "-", so the first 8-digit number of the
+   CHR-001014: the subject ended in "-<card no.>" but detectMember skips a number after "-", so the first 8-digit number of the
    body won – the sender's office phone in the signature. 33 tickets had a phone, policy or contract number as the card.
    Now EVERY 8-digit number of the subject, the email text, the attachment names, the form (AI reader) and the Portal field is a
    candidate, scored by where it is, the words in front of it, the GlobeMed files (known members; contract and policy numbers are
@@ -658,7 +658,8 @@ function detectMember(text) { const m = normDigits(text).match(/(?<![\d\/.\-])\d
 const CARD_W = { portal: 70, subject: 45, form: 40, file: 30, body: 20, quoted: 8 };
 const CARD_SRC = { portal: 'Portal', subject: 'subject', form: 'form (AI)', file: 'attachment name', body: 'email text', quoted: 'older email' };
 const CARD_PHONE_BEFORE = /(?:\b(?:tel|phone|ph|mob|mobile|cell|fax|hot ?line|ext|call|whats ?app|t|m|f)\b|هاتف|تليفون|تلفون|موبايل|جوال|فاكس|محمول|واتس)\s*[.:]?\s*(?:\+?\s*\d{1,3}[\s\-.]*)?\(?\d{0,3}\)?[\s\-.]*$|\+\s*\d{1,3}[\s\-.]*\(?\d{0,3}\)?[\s\-.]*$|\b0\d{1,2}[\s\-]+$/i;
-const CARD_NOT_BEFORE = /(?:polic(?:y|ies)|pol|contract|contr|عقد|العقد|وثيقة|الوثيقة|بوليصة|request|req|ticket|طلب|الطلب|claim|approval|موافقة|ref|reference|invoice|فاتورة|account|order|ssnbr|batch|sheet|tpa|code|كود)\s*(?:no\.?|number|nbr|num)?\s*[#:.\-\/]*\s*$/i;
+// policy / contract words always; request, approval, ticket… only with "No." / "#" / ":" ("Atlantic approval -52874285" is a card)
+const CARD_NOT_BEFORE = /(?:(?:polic(?:y|ies)|pol|contract|contr|عقد|العقد|وثيقة|الوثيقة|بوليصة|tpa)\s*(?:no\.?|number|nbr|num)?\s*[#:.\-\/]*\s*|(?:request|req|ticket|claim|approval|ref|reference|invoice|account|order|ssnbr|batch|code)\s*(?:no\.?|number|nbr|num|#|:)\s*[#:.\-\/]*\s*|(?:طلب|الطلب|موافقة|الموافقة|فاتورة|الفاتورة|كود)\s*[#:]?\s*)$/i;
 const CARD_YES_BEFORE = /(?:card|member|individual|indiv|ind|id|cn|insured|ins|كارت|الكارت|كارنيه|الكارنيه|عضوية|العضوية|رقم العضو|الرقم التأميني|بطاقة|البطاقة)\s*(?:no\.?|number|nbr|num|رقم)?\s*[#:.\-\/]*\s*$/i;
 function cardIsDate(n) { const y = +n.slice(0, 4), m = +n.slice(4, 6), d = +n.slice(6, 8), d2 = +n.slice(0, 2), m2 = +n.slice(2, 4), y2 = +n.slice(4, 8); return (y >= 2000 && y <= 2039 && m >= 1 && m <= 12 && d >= 1 && d <= 31) || (y2 >= 2000 && y2 <= 2039 && m2 >= 1 && m2 <= 12 && d2 >= 1 && d2 <= 31); }
 // parts: [{ src: 'subject'|'body'|'quoted'|'file'|'form'|'portal', text }]; ctx: { known: Map(no → {name, holder, contract}), notMember: Set, ignore: Set }
@@ -674,7 +675,7 @@ function cardCandidates(parts, ctx) {
       let s = w; const why = [];
       if (!h.field) {
         const before = text.slice(Math.max(0, h.i - 32), h.i), after = text.slice(h.i + 8, h.i + 16);
-        if (CARD_PHONE_BEFORE.test(before)) continue;                                       // "T +20 2 28110008", "Tel: 25778724"
+        if (CARD_PHONE_BEFORE.test(before)) continue;                                       // "T +20 2 2xxxxxxx", "Tel: 2xxxxxxx"
         if (cardIsDate(no) && !/^5/.test(no)) continue;                                      // 20261127, 27112026
         if (/^\s*(?:egp|le|l\.e|ج\.?م|جنيه|pounds?)\b/i.test(after)) continue;               // an amount
         if (CARD_NOT_BEFORE.test(before)) { s -= 60; why.push('after “' + before.trim().slice(-14) + '”'); }

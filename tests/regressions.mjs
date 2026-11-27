@@ -68,7 +68,7 @@ ok(/mccStatusKey\(l\['Team Action Status'\]\) === mccStatusKey\(job\.teamStatus\
 ok(/tl1\.filter\(mine\)\.length > before/.test(sm) && !/known\.has\(mccLineIdOf/.test(sm), 'confirmed by one more matching line (day-only dates make identical lines share an id)');
 ok(/mcc_double_team_line/.test(srv), 'the server flags the same team decision twice on a Timeline');
 
-// ---- CHR-001014: the signature phone became the member card; the subject's "-53809478" was skipped (28 Nov) ----
+// ---- CHR-001014: the signature phone became the member card; the subject's "-<card no.>" was skipped (28 Nov) ----
 // synthetic numbers only (99xxxxxx / 5999xxxx), the shapes of the real cases
 const C = load(app, ['normDigits', 'CARD_W', 'CARD_SRC', 'CARD_PHONE_BEFORE', 'CARD_NOT_BEFORE', 'CARD_YES_BEFORE', 'cardIsDate', 'cardCandidates', 'CARD_STATUS', 'sameName', 'memberVerdict', 'monthsSpan']);
 const top = (parts, ctx) => (C.cardCandidates(parts, ctx)[0] || {}).no || '';
@@ -81,6 +81,8 @@ ok(top([{ src: 'subject', text: 'TICKET/377056 #Testco 50048670# Chronic Renewal
 ok(top([{ src: 'subject', text: 'test delta || -10100144-1-10300140-1 || chronic || TEST NAME CN#59422481' }]) === '59422481', '"CN#" beats a policy-style number');
 ok(top([{ src: 'subject', text: 'طلب علاج شهري رقم الكارنيه ٥٩٨٠٩٤٧٨' }]) === '59809478', 'Arabic digits and "رقم الكارنيه" are read');
 ok(top([{ src: 'body', text: 'member id 14879295 please' }]) === '14879295', 'an ID that does not start with 5 is still accepted');
+ok(top([{ src: 'subject', text: 'RE: Testco approval -59874285 Some Name' }]) === '59874285', '"approval -<card>" is still a card (CHR-000154)');
+ok(top([{ src: 'body', text: 'Approval No. 12345678' }]) === '' && top([{ src: 'body', text: 'رقم الطلب 12345678' }]) === '', '"Approval No." / "رقم الطلب" numbers are not cards');
 ok(top([{ src: 'body', text: 'date 20261127 and 27112026' }]) === '', 'dates are not cards');
 ok(top([{ src: 'body', text: 'total 12345678 EGP' }]) === '', 'amounts are not cards');
 const known = new Map([['59809478', { name: 'TEST MEMBER ONE', holder: 'Testco Metal', contract: '59990001' }]]);

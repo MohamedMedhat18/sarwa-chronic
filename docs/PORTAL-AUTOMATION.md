@@ -251,3 +251,23 @@ Also: a warning when a reply names another ticket number (CHR-000917's letter na
 reply; the daily check has a **Health** section (kinds of errors of 24 h, NEW ones marked, double letters, emails not sent,
 Info Desk counts); a **new kind of error** is emailed at once (once per kind); admin action `health_report` (read only).
 Regression checks: `node tests/regressions.mjs` (23 checks, no network, synthetic texts).
+
+## Member card no., contract dates, starting day, Till renewal date (28 Nov 2026)
+* Why: one ticket got the sender's office phone (from the email signature) as the member card, because the old rule skipped a
+  number written after "-" (subject "XX-COMPANY-NAME-<card>") and took the first 8-digit number of the email. 33 tickets had a
+  phone, policy or contract number as the card; 9 sent replies quoted it.
+* Now every 8-digit number of the subject, the email text, attachment names, the form (AI reader) and the Portal field is a
+  candidate with a score: where it is, the words before it (card / member / CN# up; policy / contract / "Approval No." down;
+  Tel / Fax / +20 = dropped), dates and amounts dropped, the GlobeMed files (known member up; contract and policy numbers never a
+  card), numbers the team corrected away for that sender dropped. Starting with 5 is a small bonus, never a rule.
+* Ticket > Patient info: the card, its status (Verified / Needs review / Not found / Mismatch) and why, the other candidates,
+  "Confirm member ID" (who and when are saved) and the history of every change. A ticket is always created; only a validation
+  and Approved / Partially approved / Rejected (email and Portal) wait for a verified or confirmed card. Pending is always allowed.
+* The system corrects only a card IT set, on tickets created from 28 Nov, when the form gives a high-confidence number. Older
+  tickets are never changed automatically (the review list is kept outside the repository and approved by the team first).
+* Contracts (table contract_info): effective / expiry dates and policy number from the GlobeMed monthly files (sent by
+  Sync-ChronicHistory.ps1, newest line wins) and the standard starting day of each contract (the day most of its members start
+  on). Starting day used: set by the team for the contract › for the holder › the contract's own day › the holder's day.
+* Chronic validation: "Starting day must be 01" when the start is another day (warning + suggested date, never a block) and
+  "Till renewal date": the end date becomes the contract expiry (GlobeMed files, else i-CARE); unknown = the person enters it.
+  The decision email then says "until <date> (the contract renewal date)".
