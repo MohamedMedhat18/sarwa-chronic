@@ -335,8 +335,14 @@ Deno.serve(async (req) => {
         const { data, error } = await db.rpc('refresh_med_catalog');
         if (error) return json({ error: error.message }, 400);
         const { data: holders, error: e2 } = await db.rpc('refresh_holder_days');
-        const { data: contracts, error: e3 } = await db.rpc('refresh_contract_days');
-        return json({ ok: true, medicines: data, holders, ...(e2 ? { holdersError: e2.message } : {}), contracts, ...(e3 ? { contractsError: e3.message } : {}) });
+        if (e2) return json({ ok: true, medicines: data, holdersError: e2.message });
+        return json({ ok: true, medicines: data, holders });
+      }
+
+      case 'contracts_refresh': {   // the standard starting day of every contract – its own request (a 3rd step in catalog_refresh hit the time limit, 546)
+        const { data, error } = await db.rpc('refresh_contract_days');
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, contracts: data });
       }
     }
     return json({ error: 'Unknown action' }, 400);

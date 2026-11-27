@@ -110,6 +110,7 @@ try {
   [IO.File]::WriteAllText($StateFile, ([pscustomobject]@{ sig = $sig; csig = $csig; at = (Get-Date).ToString('o'); hashes = $newHashes } | ConvertTo-Json -Depth 3 -Compress), $Utf8)
   Log ("done: {0:N0} uploaded, server has {1:N0} lines" -f $done, (Bridge @{ action = 'history_stats' }).rows)
   try { $cr = Bridge @{ action = 'catalog_refresh' }; Log ("medicine search list: {0:N0} medicines" -f $cr.medicines) } catch { Log ('medicine list refresh failed: ' + $_.Exception.Message) }
+  try { $cd = Bridge @{ action = 'contracts_refresh' }; if ($cd.error) { throw $cd.error }; Log ("contract starting days: {0:N0} contracts" -f $cd.contracts) } catch { Log ('contract starting days not refreshed: ' + $_.Exception.Message) }
 }
 catch { Log ('FAILED: ' + $_.Exception.Message); exit 1 }
 finally { $mutex.ReleaseMutex() }
