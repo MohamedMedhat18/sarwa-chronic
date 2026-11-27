@@ -520,6 +520,8 @@ async function errorKinds(now: number, recentMs: number) {
   }
   return [...recent.values()].map((x) => ({ ...x, fresh: !before.has(x.kind) })).sort((a, b) => b.n - a.n);
 }
+// the Outlook PC's health as the mail bridge loop reports it (bridge action mail_health); older than 3 min = not reporting
+async function mailHealth() { const m = await getState('mail_health'); if (!m.at) return null; const age = (Date.now() - Date.parse(m.at)) / 60000; return { ...m, stale: age > 3, ageMin: Math.round(age) }; }
 async function healthHtml(now: number) {
   const kinds = await errorKinds(now, DAY); const esc2 = (s: unknown) => String(s ?? '').replace(/</g, '&lt;');
   // the same text sent twice to one portal request within 30 minutes (e.g. Message, then Approved with the same letter)
@@ -528,8 +530,9 @@ async function healthHtml(now: number) {
   for (const r of (ps || []) as any[]) { const tx = String(r.job?.text || '').trim(); if (!tx) continue; const key = r.request_id + '|' + tx; const at = Date.parse(r.created_at); const prev = seen.get(key); if (prev && at - prev < 1800000 && at > now - DAY) twice.push(`${r.ticket} (${r.request_id})`); seen.set(key, at); }
   const { data: em } = await db.from('outbox').select('ticket,status,error,created_at,job').or(`and(status.eq.error,created_at.gte.${new Date(now - DAY).toISOString()}),and(status.eq.queued,created_at.lte.${new Date(now - 15 * 60000).toISOString()})`).limit(50);
   const emails = ((em || []) as any[]).filter((x) => x.status === 'error' || !x.job?.sendAt);
-  const mr = await getState('mcc_reconcile');
+  const mr = await getState('mcc_reconcile'); const mh = await mailHealth();
   const html = `<h3 style="margin:12px 0 4px">Health (last 24 h)</h3>`
+    + (mh ? `<p>Outlook PC (${esc2(mh.pc)}): <b>${mh.stale ? 'not reporting for ' + mh.ageMin + ' min' : esc2(mh.state)}</b>${mh.detail ? ' – ' + esc2(mh.detail) : ''}${mh.av ? ' · antivirus: ' + esc2(mh.av) : ''}</p>` : '')
     + (kinds.length ? `<p>Kinds of errors (${kinds.length}):</p><ul>${kinds.slice(0, 25).map((k) => `<li>${k.fresh ? '<b style="color:#b0281c">NEW</b> ' : ''}${k.n}× ${esc2(k.kind)}${k.tickets.length ? ' – ' + k.tickets.slice(0, 6).join(', ') : ''}</li>`).join('')}</ul>` : '<p>No errors in the last 24 hours.</p>')
     + (twice.length ? `<p><b>The same text went twice to the same portal request</b> (member got it twice): ${esc2(twice.join(', '))}</p>` : '')
     + (emails.length ? `<p><b>Emails not sent</b>: ${esc2(emails.map((x) => x.ticket + ' ' + x.status + (x.error ? ' (' + String(x.error).slice(0, 80) + ')' : '')).join('; '))}</p>` : '')
@@ -1167,7 +1170,7 @@ Deno.serve(async (req) => {
           const h = await getState('health'); const rc = await getState('reconcile');
           const { count: waiting } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).in('status', ['queued', 'sending']);
           const mr = await getState('mcc_reconcile');
-          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length + (mr.missing || []).length, checkedAt: rc.at || null, infoDesk: mr.at ? { open: mr.portal_open, missing: (mr.missing || []).length, watching: mr.watching || 0, at: mr.at } : null };
+          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length + (mr.missing || []).length, checkedAt: rc.at || null, infoDesk: mr.at ? { open: mr.portal_open, missing: (mr.missing || []).length, watching: mr.watching || 0, at: mr.at } : null, mail: await mailHealth() };
           return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], sync });
         }
         const out = c.dryRun !== false ? { dryRun: true } : await pushOut(c);   // dry run pauses OUT only; requests still come IN

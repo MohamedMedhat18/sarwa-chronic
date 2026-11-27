@@ -180,12 +180,26 @@ Deno.serve(async (req) => {
           const paths: string[] = (r.job?.attachments || []).filter(Boolean);
           let files: { path: string; name: string; url: string }[] = [];
           if (paths.length) {
-            const { data: su } = await db.storage.from(BUCKET).createSignedUrls(paths, 900);
+            // 1 hour (was 15 min): a run frozen behind Outlook's security prompt for 34 min found its links expired - "(400) Bad Request" (CHR-000986, 27 Nov)
+            const { data: su } = await db.storage.from(BUCKET).createSignedUrls(paths, 3600);
             files = (su || []).map((s, i) => ({ path: paths[i], name: (r.job?.attachmentNames || [])[i] || paths[i].split('/').pop()!, url: s.signedUrl || '' }));
           }
           out.push({ id: r.id, ticket: r.ticket, job: r.job, files, created_at: r.created_at });
         }
         return json({ ok: true, jobs: out });
+      }
+
+      // the Outlook PC's own health, reported every minute by the bridge loop (27 Nov 2026): the app shows the real reason when
+      // replies wait (security prompt open, Outlook closed / not responding, a run stuck) instead of "check that Outlook is open"
+      case 'mail_health': {
+        const states = ['ok', 'security_prompt', 'outlook_closed', 'not_responding', 'run_stuck'];
+        const st = states.includes(body.state) ? body.state : 'unknown';
+        const { data: prev } = await db.from('portal_state').select('value').eq('key', 'mail_health').maybeSingle();
+        const p = (prev?.value || {}) as Record<string, unknown>; const now = new Date().toISOString();
+        const v = { at: now, state: st, since: p.state === st ? (p.since || now) : now, detail: str(body.detail, 400), av: str(body.av, 200), pc: str(body.pc, 80), run_secs: Math.max(0, +body.run_secs || 0) };
+        await db.from('portal_state').upsert({ key: 'mail_health', value: v, updated_at: now });
+        if (st !== p.state) await db.from('portal_sync_log').insert({ direction: 'system', action: 'mail_bridge', ok: st === 'ok', error: st === 'ok' ? null : `${st}: ${v.detail}`, detail: { from: p.state || null, to: st, pc: v.pc, av: v.av } });
+        return json({ ok: true });
       }
 
       case 'outbox_done': {

@@ -3452,8 +3452,21 @@ async function portalJobAction(btn, action, id) {
 }
 // the portal sync light next to "Synced": green = the bridge reported in the last 10 min; red = it did not, or it reports a
 // problem, or a Pending portal request has no ticket. Replies waiting are counted (they go out by themselves when it is back).
+// the Outlook PC as its bridge loop reports it (27 Nov 2026): the waiting-replies banner says WHY and what to do
+var MAIL_HEALTH = null;
+function mailReason() {
+  const m = MAIL_HEALTH, pc = (m && m.pc) || 'the Chronic PC';
+  if (!m) return 'check that Outlook is open and connected on the Chronic PC';
+  if (m.stale) return 'the Outlook PC (' + pc + ') has not reported for ' + m.ageMin + ' min – it may be off, asleep or signed out';
+  if (m.state === 'security_prompt') return 'Outlook on ' + pc + ' is showing a security question ("A program is trying to access email address information") – someone at that PC must answer it; replies go out by themselves after that. Cause: ' + (m.av || 'the antivirus is out of date') + ' (IT)';
+  if (m.state === 'outlook_closed') return 'Outlook is closed on ' + pc + ' – open Outlook; replies go out by themselves';
+  if (m.state === 'not_responding') return 'Outlook is not responding on ' + pc + ' – wait a minute or restart Outlook';
+  if (m.state === 'run_stuck') return 'the mail bridge on ' + pc + ' is busy for ' + Math.round((m.run_secs || 0) / 60) + ' min – ' + (m.detail || 'check Outlook on that PC');
+  return 'Outlook on ' + pc + ' reports OK – the replies should go out in a moment';
+}
 function portalSyncLight(s) {
   if (s && s.infoDesk) MCC_WATCH_N = s.infoDesk.watching || 0;
+  if (s && 'mail' in s) MAIL_HEALTH = s.mail;
   const a = document.getElementById('psync'), tx = document.getElementById('psyncT'); if (!a || !tx) return;
   if (!s) { a.hidden = true; return; }
   const age = s.at ? (Date.now() - Date.parse(s.at)) / 60000 : null;
@@ -4398,8 +4411,9 @@ const lastOutOf = t => t.msgs.filter(m => m.kind === 'out' && !m.outlook && !m.a
 const replyFailed = t => { const m = lastOutOf(t); return !!m && m.state === 'error' && !t.mergedInto; };
 async function outboxWatch() {
   if (!SB || !STORE.connected || Date.now() - (outboxWatch.at || 0) < 120000) return; outboxWatch.at = Date.now();
-  const since = new Date(Date.now() + CLOCK.off - 15 * 60000).toISOString(), since10 = new Date(Date.now() + CLOCK.off - 10 * 60000).toISOString();
-  const { data } = await SB.from('outbox').select('id,ticket,created_at').eq('status', 'queued').lt('created_at', since).limit(50);
+  const since = new Date(Date.now() + CLOCK.off - 5 * 60000).toISOString(), since10 = new Date(Date.now() + CLOCK.off - 10 * 60000).toISOString();
+  const { data: q5 } = await SB.from('outbox').select('id,ticket,created_at,sendAt:job->>sendAt').eq('status', 'queued').lt('created_at', since).limit(50);
+  const data = (q5 || []).filter(x => !x.sendAt || Date.parse(x.sendAt) < Date.now() + CLOCK.off - 5 * 60000);   // a scheduled email is not stuck before its time
   // incoming: an email waiting more than 10 minutes to become a ticket, or one the importer marked done without filing it anywhere
   const { data: mq } = await SB.from('mail_inbox').select('id,path,status,created_at,subject').or('status.eq.new,status.eq.claimed,status.eq.error').lt('created_at', since10).limit(50);
   const { data: recent } = await SB.from('mail_inbox').select('path,subject').eq('status', 'done').gt('created_at', new Date(Date.now() + CLOCK.off - 2 * DAY).toISOString()).lt('created_at', since10).limit(1000);
@@ -4411,7 +4425,7 @@ async function outboxWatch() {
   if (!stuck.length && !failed.length && !waitIn.length && !lost.length && !missed.length && !attMiss.length) { if (box) box.remove(); return; }
   if (!box) { box = el('div', { id: 'outboxAlert', class: 'banner', role: 'alert', style: 'margin:0;border-radius:0;display:flex;gap:12px;align-items:center;flex-wrap:wrap' }); const v = document.querySelector('.view'); if (v) v.before(box); }
   box.replaceChildren(
-    stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 15 min'), ' – check that Outlook is open and connected on the Chronic PC (' + [...new Set(stuck.map(x => x.ticket))].slice(0, 6).join(', ') + ')') : null,
+    stuck.length ? el('span', {}, '⚠ ', el('b', {}, stuck.length + ' repl' + (stuck.length > 1 ? 'ies' : 'y') + ' waiting for the Outlook PC over 5 min'), ' – ' + mailReason() + ' (' + [...new Set(stuck.map(x => x.ticket).filter(Boolean))].slice(0, 6).join(', ') + ')') : null,
     failed.length ? el('a', { href: '#/tickets?view=notsent', style: 'font-weight:600' }, '✕ ' + failed.length + ' repl' + (failed.length > 1 ? 'ies' : 'y') + ' not sent – open the ticket › Try again') : null,
     missed.length ? el('a', { href: '#/tickets?view=recipmiss', style: 'font-weight:600' }, '⚠ Reply All check: ' + missed.length + ' ticket(s) with a reply that did not reach everyone in copy') : null,
     attMiss.length ? el('a', { href: '#/tickets?view=attmiss', style: 'font-weight:600' }, '⚠ Attachments: ' + attMiss.length + ' open ticket(s) with a file missing or failed to load') : null,
@@ -5502,7 +5516,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-26c';
+const APP_VERSION = '2026-11-27a';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
