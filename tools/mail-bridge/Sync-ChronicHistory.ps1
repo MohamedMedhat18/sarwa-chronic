@@ -30,8 +30,9 @@ try {
   $state = @{ sig = ''; csig = ''; hashes = @{} }
   if (Test-Path $StateFile) { $s = Get-Content $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json; $state.sig = $s.sig; $state.csig = "$($s.csig)"; foreach ($p in $s.hashes.PSObject.Properties) { $state.hashes[$p.Name] = $p.Value } }
   # csig: the files the contract dates were last sent from (28 Nov 2026: contract dates added - sent once even if no file changed;
-  # version 2: the policy number is the "Certificate NBR" column - the "Policy Number" column holds the holder's name)
-  $cver = '2'; $csigWant = "$cver|$sig"
+  # version 2: the policy number is the "Certificate NBR" column - the "Policy Number" column holds the holder's name;
+  # version 3: the starting day of each contract is counted here and sent with the dates)
+  $cver = '3'; $csigWant = "$cver|$sig"
   if (-not $Force -and $state.sig -eq $sig -and $state.csig -eq $csigWant) { Log 'no file changed - nothing to do'; return }
 
   $culture = [Globalization.CultureInfo]::InvariantCulture
@@ -40,6 +41,8 @@ try {
 
   $agg = @{}   # key member|code -> hashtable row
   $con = @{}   # contract -> dates of its newest line (Effective / Expiry DATE, Policy Number, holder)
+  $cmd = @{}   # contract|member -> starting day (the server is too slow to work this out from 290,000 lines)
+  $since = (Get-Date).AddDays(-400).ToString('yyyy-MM-dd')
   $rowsRead = 0
   foreach ($f in $files) {
     # GlobeMed exports are Arabic Windows text (code page 1256), not UTF-8 – reading them as UTF-8 broke names such as
@@ -60,6 +63,8 @@ try {
       $rowsRead++
       $dist = D (& $g $c 'Distribution Date'); $key = "$member|$code"
       $cn = & $g $c 'Contract'
+      # starting day: per contract + member the day of the month of the newest line's Start Date (lines of the last 13 months)
+      if ($cn -match '^\d{4,12}$' -and $dist -and $dist -ge $since) { $sd = D (& $g $c 'Start Date'); if ($sd) { $mk = "$cn|$member"; $o = $cmd[$mk]; if (-not $o -or $dist -ge $o.d) { $cmd[$mk] = @{ d = $dist; day = [int]$sd.Substring(8, 2) } } } }
       if ($cn -match '^\d{4,12}$') { $cc = $con[$cn]; if (-not $cc -or ($dist -and (-not $cc.seen -or $dist -gt $cc.seen))) { $con[$cn] = @{ contract = $cn; policy_holder = (& $g $c 'Policy Holder Name'); policy_no = $(if ((& $g $c 'Certificate NBR') -match '^\d{6,12}$') { & $g $c 'Certificate NBR' } else { & $g $c 'Policy Number' }); effective = (D (& $g $c 'Effective DATE')); expiry = (D (& $g $c 'Expiry DATE')); seen = $dist } } }
       $cur = $agg[$key]
       if ($cur) {
@@ -103,14 +108,19 @@ try {
   # contract dates (a few thousand lines): all of them each time the files change; the server keeps the newest per contract
   $csig = $state.csig
   try {
-    $cl = @($con.Values | ForEach-Object { [ordered]@{ contract = $_.contract; policy_holder = $_.policy_holder; policy_no = $_.policy_no; effective = $_.effective; expiry = $_.expiry; seen = $_.seen } })
+    $days = @{}; foreach ($k in $cmd.Keys) { $cn = $k.Split('|')[0]; if (-not $days[$cn]) { $days[$cn] = @{} }; $dd = $cmd[$k].day; $days[$cn][$dd] = 1 + [int]$days[$cn][$dd] }
+    $cl = @($con.Values | ForEach-Object {
+      $row = [ordered]@{ contract = $_.contract; policy_holder = $_.policy_holder; policy_no = $_.policy_no; effective = $_.effective; expiry = $_.expiry; seen = $_.seen }
+      $dm = $days[$_.contract]
+      if ($dm) { $r = @($dm.GetEnumerator() | Sort-Object { -$_.Value }, { $_.Key }); $tot = ($dm.Values | Measure-Object -Sum).Sum
+        $row.start_day = [int]$r[0].Key; $row.day_share = [Math]::Round($r[0].Value / $tot, 3); $row.members = [int]$tot; if ($r.Count -gt 1) { $row.second_day = [int]$r[1].Key } }
+      $row })
     $cn = 0; for ($i = 0; $i -lt $cl.Count; $i += 1000) { $res = Bridge @{ action = 'contracts_upsert'; rows = @($cl[$i..([Math]::Min($i + 999, $cl.Count - 1))]) }; if ($res.error) { throw $res.error }; $cn += [int]$res.n }
     Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn); $csig = $csigWant
   } catch { Log ('contract dates not sent: ' + $_.Exception.Message) }
   [IO.File]::WriteAllText($StateFile, ([pscustomobject]@{ sig = $sig; csig = $csig; at = (Get-Date).ToString('o'); hashes = $newHashes } | ConvertTo-Json -Depth 3 -Compress), $Utf8)
   Log ("done: {0:N0} uploaded, server has {1:N0} lines" -f $done, (Bridge @{ action = 'history_stats' }).rows)
   try { $cr = Bridge @{ action = 'catalog_refresh' }; Log ("medicine search list: {0:N0} medicines" -f $cr.medicines) } catch { Log ('medicine list refresh failed: ' + $_.Exception.Message) }
-  try { $cd = Bridge @{ action = 'contracts_refresh' }; if ($cd.error) { throw $cd.error }; Log ("contract starting days: {0:N0} contracts" -f $cd.contracts) } catch { Log ('contract starting days not refreshed: ' + $_.Exception.Message) }
 }
 catch { Log ('FAILED: ' + $_.Exception.Message); exit 1 }
 finally { $mutex.ReleaseMutex() }
