@@ -530,9 +530,12 @@ async function healthHtml(now: number) {
   for (const r of (ps || []) as any[]) { const tx = String(r.job?.text || '').trim(); if (!tx) continue; const key = r.request_id + '|' + tx; const at = Date.parse(r.created_at); const prev = seen.get(key); if (prev && at - prev < 1800000 && at > now - DAY) twice.push(`${r.ticket} (${r.request_id})`); seen.set(key, at); }
   const { data: em } = await db.from('outbox').select('ticket,status,error,created_at,job').or(`and(status.eq.error,created_at.gte.${new Date(now - DAY).toISOString()}),and(status.eq.queued,created_at.lte.${new Date(now - 15 * 60000).toISOString()})`).limit(50);
   const emails = ((em || []) as any[]).filter((x) => x.status === 'error' || !x.job?.sendAt);
-  const mr = await getState('mcc_reconcile'); const mh = await mailHealth();
+  const mr = await getState('mcc_reconcile'); const mh = await mailHealth(); const ih = await getState('icare_health');
+  const { count: icDone } = await db.from('icare_queue').select('id', { count: 'exact', head: true }).eq('status', 'done').gte('done_at', new Date(now - DAY).toISOString());
+  const { count: icBad } = await db.from('icare_queue').select('id', { count: 'exact', head: true }).in('status', ['error', 'notfound']).gte('done_at', new Date(now - DAY).toISOString());
   const html = `<h3 style="margin:12px 0 4px">Health (last 24 h)</h3>`
     + (mh ? `<p>Outlook PC (${esc2(mh.pc)}): <b>${mh.stale ? 'not reporting for ' + mh.ageMin + ' min' : esc2(mh.state)}</b>${mh.detail ? ' – ' + esc2(mh.detail) : ''}${mh.av ? ' · antivirus: ' + esc2(mh.av) : ''}</p>` : '')
+    + (ih.at ? `<p>i-CARE reader: <b>${now - Date.parse(ih.at) > 30 * 60000 ? 'not reporting since ' + cairo(new Date(ih.at)) : esc2(ih.state)}</b>${ih.detail && ih.state !== 'ok' ? ' – ' + esc2(ih.detail) : ''} · ${icDone || 0} member(s) read, ${icBad || 0} not found / failed</p>` : '')
     + (kinds.length ? `<p>Kinds of errors (${kinds.length}):</p><ul>${kinds.slice(0, 25).map((k) => `<li>${k.fresh ? '<b style="color:#b0281c">NEW</b> ' : ''}${k.n}× ${esc2(k.kind)}${k.tickets.length ? ' – ' + k.tickets.slice(0, 6).join(', ') : ''}</li>`).join('')}</ul>` : '<p>No errors in the last 24 hours.</p>')
     + (twice.length ? `<p><b>The same text went twice to the same portal request</b> (member got it twice): ${esc2(twice.join(', '))}</p>` : '')
     + (emails.length ? `<p><b>Emails not sent</b>: ${esc2(emails.map((x) => x.ticket + ' ' + x.status + (x.error ? ' (' + String(x.error).slice(0, 80) + ')' : '')).join('; '))}</p>` : '')
@@ -561,6 +564,62 @@ async function alertAdmin(j: any, status: string, error: string) {
   const outId = 'out_portal_' + Date.now().toString(36) + rand(4);
   const html = `<p>The decision on <b>${j.ticket}</b> (portal request ${j.request_id}) could not be posted to the portal: <b>${status}</b>.</p><p>${String(error).replace(/</g, '&lt;')}</p><p>Open the ticket > Portal panel > Try again, or the "Portal - sync failed" queue. The request is still open on the portal.</p>`;
   await db.from('outbox').insert({ id: outId, ticket: j.ticket, status: 'queued', job: { outId, ticket: j.ticket, to, cc: '', replyAll: false, subject: `[Portal sync failed] ${j.ticket} / request ${j.request_id}`, html, replyToMid: '', attachments: [], attachmentNames: [], attachmentCids: [], mailbox: c.mailbox || 'Chronic@sarwa.life', queuedBy: 'Portal sync', queuedAt: new Date().toISOString(), internal: true } });
+}
+
+// ---------- i-CARE reader (28 Nov 2026) ----------
+// icare-bridge.mjs on the Chronic PC reads i-CARE (Administrative Info + the coverage report with the limits) for the jobs the app
+// queued and sends the result here; the result is written on the ticket ONCE (event icare.check, via 'bridge'), with the member's
+// name and mobile like the manual check. Member data goes only into the ticket's events – never into logs or the queue.
+const ICARE_ADMIN_KEYS = ['riskCarrier', 'holder', 'name', 'individual', 'mobile', 'cls', 'contract', 'contractType', 'dob', 'relation', 'gender', 'marital', 'start', 'expiry', 'uw', 'gr', 'grDate', 'baby', 'blacklistDate', 'blacklistReason'];
+const ICARE_COVER_KEYS = ['holder', 'effective', 'expiry', 'beneficiary', 'eligibility', 'cls', 'sheet', 'annualMax', 'printed'];
+const cleanStr = (v: unknown, n = 200) => String(v ?? '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, n);
+const cleanNum = (v: unknown) => v == null || v === '' || !isFinite(+v) ? null : Math.round(+v * 1000) / 1000;
+async function icareResult(b: any) {
+  const id = +b.id, ticket = cleanStr(b.ticket, 12), member = cleanStr(b.member, 12).replace(/\D/g, '');
+  const { data: job } = await db.from('icare_queue').select('id,ticket,member,status').eq('id', id).maybeSingle();
+  if (!job || job.ticket !== ticket || job.member !== member) return { error: 'unknown job' };
+  const status = ['done', 'notfound', 'error'].includes(b.status) ? b.status : 'error';
+  const short = cleanStr(b.error, 300);   // a reason, never member data (the reader sends only its own messages)
+  if (status === 'done') {
+    const a = b.admin || {}; const admin: Record<string, string> = {}; for (const k of ICARE_ADMIN_KEYS) admin[k] = cleanStr(a[k], 160);
+    if (admin.individual !== member) return { error: 'the details belong to another member – not saved' };
+    const cv = b.cover || {}; const cover: Record<string, unknown> = {}; for (const k of ICARE_COVER_KEYS) cover[k] = cleanStr(cv[k], 160);
+    cover.benefits = (Array.isArray(cv.benefits) ? cv.benefits : []).slice(0, 30).map((x: unknown) => cleanStr(x, 200));
+    cover.conditions = (Array.isArray(cv.conditions) ? cv.conditions : []).slice(0, 20).map((x: unknown) => cleanStr(x, 120));
+    cover.classes = (Array.isArray(cv.classes) ? cv.classes : []).slice(0, 10).map((x: any) => ({ name: cleanStr(x && x.name, 60), covered: cleanStr(x && x.covered, 20) }));
+    const limits = (Array.isArray(b.limits) ? b.limits : []).slice(0, 60).map((l: any) => ({ level: cleanStr(l.level, 60), desc: cleanStr(l.desc, 160), curr: cleanStr(l.curr, 6), limit: cleanNum(l.limit), used: cleanNum(l.used), balance: cleanNum(l.balance), perTransaction: !!l.perTransaction, pool: cleanStr(l.pool, 40) }));
+    const table = (rows: unknown, n: number) => (Array.isArray(rows) ? rows : []).slice(0, n).map((r: any) => Object.fromEntries(Object.entries(r || {}).slice(0, 12).map(([k, v]) => [cleanStr(k, 40), cleanStr(v, 120)])));
+    const d = { admin, limits, cover, dependants: table(b.dependants, 15), exclusions: table(b.exclusions, 30), notes: cleanStr(b.notes, 600), verdict: 'read by the i-CARE reader', issues: [], via: 'bridge', fetchedAt: cleanStr(b.fetchedAt, 30) || nowIso(), limitsNote: cleanStr(b.limitsNote, 200) };
+    await insertEv('i-CARE reader', 'icare.check', ticket, d);
+    // the member's name and mobile from i-CARE, like the manual check (a name set from i-CARE before is kept up to date)
+    const { data: evs } = await db.from('events').select('type,d').eq('t', ticket).in('type', ['ticket.create', 'update']).order('seq', { ascending: true });
+    let name = '', nameSrc = '', mobile = '';
+    for (const e of (evs || []) as any[]) { const x = e.d || {}; if ('memberName' in x) name = x.memberName || ''; if ('_memberSrc' in x) nameSrc = x._memberSrc || ''; if ('mobile' in x) mobile = x.mobile || ''; }
+    const ch: Record<string, unknown> = {};
+    if (admin.name && (!name || nameSrc !== 'i-CARE') && admin.name !== name) { ch.memberName = admin.name; ch._memberSrc = 'i-CARE'; }
+    const mob = phoneLocal(admin.mobile); if (/^01[0125]\d{8}$/.test(mob) && phoneLocal(mobile) !== mob) { ch.mobile = mob; ch._mobileSrc = 'i-CARE'; }
+    if (Object.keys(ch).length) await insertEv('i-CARE reader', 'update', ticket, ch);
+  }
+  await db.from('icare_queue').update({ status, done_at: nowIso(), error: status === 'done' ? null : short }).eq('id', id);
+  await log({ direction: 'icare', action: 'icare_read', ok: status !== 'error', error: status === 'done' ? null : status + (short ? ': ' + short : ''), detail: { ticket } });
+  return { ok: true };
+}
+async function icareHealth(b: any) {
+  const state = ['ok', 'login_failed', 'layout_changed', 'unreachable', 'error', 'no_account'].includes(b.state) ? b.state : 'error';
+  const prev = await getState('icare_health'); const now = nowIso();
+  const v = { at: now, state, detail: cleanStr(b.detail, 300), pc: cleanStr(b.pc, 60), since: prev.state === state ? (prev.since || now) : now, done: +b.done || 0 };
+  await setState('icare_health', v);
+  if (prev.state !== state) await log({ direction: 'icare', action: 'icare_health', ok: state === 'ok', error: state === 'ok' ? null : state + ': ' + v.detail });
+  // a sign-in or page-layout problem needs a person: one email to the admins per 6 hours
+  if (['login_failed', 'layout_changed', 'no_account'].includes(state)) {
+    const subject = '[i-CARE reader] ' + (state === 'login_failed' ? 'sign-in failed' : state === 'no_account' ? 'no i-CARE account on the Chronic PC' : 'an i-CARE page changed its layout');
+    const { data: sent } = await db.from('outbox').select('id').eq('job->>subject', subject).gte('created_at', new Date(Date.now() - 6 * 3600000).toISOString()).limit(1);
+    if (!(sent && sent.length)) {
+      const c = await config(); const to = c.alertTo || ((await db.from('profiles').select('email').eq('role', 'admin').eq('active', true)).data || []).map((p: any) => p.email).filter(Boolean).join('; ');
+      if (to) { const outId = 'out_portal_' + Date.now().toString(36) + rand(4); await db.from('outbox').insert({ id: outId, ticket: '', status: 'queued', job: { outId, ticket: '', to, cc: '', replyAll: false, subject, html: `<p>The i-CARE reader on the Chronic PC stopped: <b>${subject.replace('[i-CARE reader] ', '')}</b>.</p><p>${v.detail.replace(/</g, '&lt;')}</p><p>Nothing is changed in i-CARE. Tickets keep the i-CARE details they already have; new checks wait until this is fixed.</p>`, replyToMid: '', attachments: [], attachmentNames: [], attachmentCids: [], mailbox: c.mailbox || 'Chronic@sarwa.life', queuedBy: 'i-CARE reader', queuedAt: now, internal: true } }); }
+    }
+  }
+  return { ok: true };
 }
 
 // ---------- who is calling ----------
@@ -1170,7 +1229,7 @@ Deno.serve(async (req) => {
           const h = await getState('health'); const rc = await getState('reconcile');
           const { count: waiting } = await db.from('portal_outbox').select('id', { count: 'exact', head: true }).in('status', ['queued', 'sending']);
           const mr = await getState('mcc_reconcile');
-          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length + (mr.missing || []).length, checkedAt: rc.at || null, infoDesk: mr.at ? { open: mr.portal_open, missing: (mr.missing || []).length, watching: mr.watching || 0, at: mr.at } : null, mail: await mailHealth() };
+          const sync = { at: h.at || null, problem: bridgeProblem(c, h, Date.now()), waiting: waiting || 0, missing: (rc.missing || []).length + (mr.missing || []).length, checkedAt: rc.at || null, infoDesk: mr.at ? { open: mr.portal_open, missing: (mr.missing || []).length, watching: mr.watching || 0, at: mr.at } : null, mail: await mailHealth(), icare: await getState('icare_health') };
           return json({ ok: true, browser: true, dryRun: c.dryRun !== false, liveAll: (c as any).liveAll === true, liveRequests: (c as any).liveRequests || [], sync });
         }
         const out = c.dryRun !== false ? { dryRun: true } : await pushOut(c);   // dry run pauses OUT only; requests still come IN
@@ -1217,6 +1276,29 @@ Deno.serve(async (req) => {
         if (error) return json({ error: error.message }, 400);
         return json({ ok: true, rows: data });
       }
+    }
+
+    // ---- i-CARE reader (icare-bridge.mjs on the Chronic PC, read-only on i-CARE); portal token only ----
+    if (typeof body.action === 'string' && body.action.startsWith('icare_')) {
+      if (who.kind !== 'token') return json({ error: 'Bridge token required' }, 403);
+      switch (body.action) {
+        case 'icare_next': {   // one job at a time; a job taken 10+ minutes ago without a result is given out again (3 tries)
+          if ((await getState('icare_config')).off === true) return json({ ok: true, off: true, jobs: [] });   // kill switch
+          const stale = new Date(Date.now() - 10 * 60000).toISOString();
+          await db.from('icare_queue').update({ status: 'error', done_at: nowIso(), error: 'no result after 3 tries' }).eq('status', 'taken').lt('taken_at', stale).gte('tries', 3);
+          const { data } = await db.from('icare_queue').select('id,ticket,member,tries,status,taken_at').or(`status.eq.queued,and(status.eq.taken,taken_at.lt.${stale})`).order('requested_at').limit(Math.max(1, Math.min(5, +body.limit || 1)));
+          const out: unknown[] = [];
+          for (const r of (data || []) as any[]) {
+            const q = db.from('icare_queue').update({ status: 'taken', taken_at: nowIso(), tries: (r.tries || 0) + 1 }).eq('id', r.id).eq('status', r.status);
+            const { data: u } = await (r.taken_at ? q.eq('taken_at', r.taken_at) : q).select('id').maybeSingle();
+            if (u) out.push({ id: r.id, ticket: r.ticket, member: r.member });
+          }
+          return json({ ok: true, jobs: out });
+        }
+        case 'icare_result': return json(await icareResult(body));
+        case 'icare_health': return json(await icareHealth(body));
+      }
+      return json({ error: 'Unknown i-CARE action' }, 400);
     }
 
     // ---- browser bridge (local worker on the Outlook bridge PC); portal token only ----

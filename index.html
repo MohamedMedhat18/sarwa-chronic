@@ -1118,7 +1118,7 @@ async function poll() {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
     await syncClock();
-    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)).then(() => autoCardFix()).catch(e => console.warn('card fix', e)); loadContracts().catch(() => { }); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)).then(() => autoCardFix()).catch(e => console.warn('card fix', e)).then(() => icareAutoAsk()).catch(e => console.warn('i-CARE ask', e)); loadContracts().catch(() => { }); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -3180,6 +3180,8 @@ function decisionEmail(t, V, R, lang) {
     const dose = x => AR ? `${x.dose} ${unitAr(x.unit)} × ${x.times} ${PERIOD_AR[x.per] || ''}` : `${x.dose} ${x.unit} × ${x.times} per ${x.per}`;
     out.push(`<table dir="${dir}" style="border-collapse:collapse"><tr>${(AR ? ['م', 'الصنف', 'الجرعة', 'الكمية الشهرية', 'من', 'إلى'] : ['No.', 'Item', 'Dose', 'Qty / month', 'From', 'To']).map(h => `<th style="border:1px solid #999;padding:3px 8px;background:#eee">${h}</th>`).join('')}</tr>` +
       appr.map((x, i) => `<tr>${[i + 1, esc(x.name), esc(dose(x)), x.finalQty + (x.finalQty < x.qty ? (AR ? ` (المطلوب ${x.qty})` : ` (requested ${x.qty})`) : ''), dmy(x.from), dmy(x.to)].map(c => `<td style="border:1px solid #999;padding:3px 8px">${c}</td>`).join('')}</tr>`).join('') + '</table>');
+    // the contract's monthly dispensing day (28 Nov 2026), e.g. 01 for the first monthly treatment in a contract
+    if (+V._day >= 1 && +V._day <= 31) out.push(`<p dir="${dir}">${AR ? 'يوم بدء الصرف الشهري: ' : 'Starting day of the monthly dispensing: '}${String(V._day).padStart(2, '0')}</p>`);
   }
   const more = R.filter(x => x.final === 'MORE_INFO'), unread = R.filter(x => x.final === 'UNREADABLE');
   if (more.length || unread.length || V.mismatch || V.noForm) {
@@ -3610,24 +3612,89 @@ function icareSetupHint() {
     el('div', { style: 'margin-top:4px' }, el('b', {}, 'No click at all: '), 'the Sarwa i-CARE helper extension (works where the browser allows extensions – Edge on our PCs; in Chrome IT must allow it once). ',
       el('a', { href: 'sarwa-icare-helper.zip', download: 'sarwa-icare-helper.zip' }, 'Download'), ', unzip, then browser › Extensions › Developer mode › Load unpacked.')));
 }
+/* ---- i-CARE reader (28 Nov 2026): open tickets with a verified / confirmed card are read from i-CARE by the reader on the
+   Chronic PC (icare-bridge.mjs, read-only): Administrative Info, contract dates, class of cover and every limit, written on the
+   ticket by the server (event icare.check, via 'bridge'). Asked again after 24 h, or with "Read again". ---- */
+var ICARE_HEALTH = null;
+const ICARE_FRESH_MS = 24 * 3600000;
+const icareFresh = t => !!(t.icare && t.icare.admin && t.icare.admin.individual === String(t.member || '') && Date.now() - Date.parse(t.icare.at) < ICARE_FRESH_MS);
+async function icareAsk(t, by) {
+  const m = String(t.member || ''); if (!/^\d{6,10}$/.test(m)) throw new Error('No card number on this ticket');
+  const { error } = await SB.from('icare_queue').insert({ ticket: t.no, member: m, requested_by: by || me() || '' });
+  if (error && !/duplicate|unique/i.test(error.message)) throw new Error(error.message);
+}
+let icareAskAt = 0;
+async function icareAutoAsk() {
+  if (!DB || !STORE.connected || Date.now() - icareAskAt < 120000) return; icareAskAt = Date.now();
+  const list = [...DB.tickets.values()].filter(t => openT(t) && !t.mergedInto && /^\d{6,10}$/.test(String(t.member || '')) && !icareFresh(t)).slice(0, 60);
+  if (!list.length) return;
+  // asked in the last 24 h (waiting, read, not found or failed) = not asked again automatically
+  const { data } = await SB.from('icare_queue').select('ticket,member').in('ticket', list.map(t => t.no)).gte('requested_at', new Date(Date.now() - ICARE_FRESH_MS).toISOString());
+  const asked = new Set((data || []).map(r => r.ticket + '|' + r.member));
+  let n = 0;
+  for (const t of list) {
+    if (asked.has(t.no + '|' + t.member)) continue;
+    let r; try { r = await cardCheck(t); } catch { continue; } if (!cardOk(r)) continue;   // only a verified / confirmed card
+    try { await icareAsk(t, 'automatic'); n++; } catch (e) { console.warn('i-CARE ask', e.message); break; }
+    if (n >= 15) break;
+  }
+}
+function icareReaderLine(t) {
+  const box = el('div', { class: 'small muted' });
+  SB.from('icare_queue').select('status,error,requested_at,done_at,requested_by').eq('ticket', t.no).order('requested_at', { ascending: false }).limit(1).then(({ data }) => {
+    const j = (data || [])[0]; const h = ICARE_HEALTH;
+    const reader = h && h.at ? (Date.now() - Date.parse(h.at) > 30 * 60000 ? 'the i-CARE reader has not reported since ' + fmtDate(h.at) : h.state !== 'ok' ? 'the i-CARE reader is stopped: ' + (h.detail || h.state) : '') : '';
+    const txt = !j ? '' : j.status === 'queued' || j.status === 'taken' ? '⏳ Waiting for the i-CARE reader (asked ' + rel(j.requested_at) + ')' : j.status === 'notfound' ? '⚠ Not found in i-CARE: ' + (j.error || '') + ' (' + fmtDate(j.done_at) + ')' : j.status === 'error' ? '⚠ i-CARE could not be read: ' + (j.error || '') + ' (' + fmtDate(j.done_at) + ')' : '';
+    box.replaceChildren(...[txt, reader ? '⚠ ' + reader : ''].filter(Boolean).map(x => el('div', { style: /⚠/.test(x) ? 'color:#8a5200' : '' }, x)));
+  }).catch(() => { });
+  return box;
+}
+// i-CARE vs the GlobeMed chronic files: name, holder, contract number, contract dates
+function icareVsFiles(t, c) {
+  const a = c.admin || {}, out = [], k = CARDS.known.get(String(a.individual || '')) || null;
+  if (k) {
+    const s = sameName(a.name, k.name); out.push(s === false ? ['bad', 'Name: i-CARE “' + a.name + '” vs GlobeMed files “' + k.name + '”'] : s ? ['ok', 'Name matches the GlobeMed files'] : ['warn', 'Name: compare i-CARE “' + a.name + '” with the files “' + k.name + '”']);
+    const w = x => String(x || '').toUpperCase().replace(/[^A-Z0-9 ]+/g, ' ').split(/\s+/).filter(y => y.length >= 4);
+    if (a.holder && k.holder) out.push(w(a.holder).some(x => w(k.holder).includes(x)) ? ['ok', 'Policy holder matches the files'] : ['warn', 'Policy holder: i-CARE “' + a.holder + '” vs files “' + k.holder + '”']);
+    if (a.contract && k.contract) out.push(String(a.contract) === String(k.contract) ? ['ok', 'Contract ' + a.contract + ' matches the files'] : ['warn', 'Contract: i-CARE ' + a.contract + ' vs files ' + k.contract + ' (renewed?)']);
+  } else if (a.individual && CARDS.known.has(String(a.individual))) out.push(['warn', 'Not in the GlobeMed chronic files yet (first monthly treatment?)']);
+  const ci = a.contract ? CARDS.contracts.get(String(a.contract)) : null, cv = c.cover || {};
+  const iso = s => { const d = dmyDate(s); return d ? isoOf(d.getFullYear(), d.getMonth(), d.getDate()) : ''; };
+  if (ci && ci.expiry && (cv.expiry || a.expiry)) { const e = iso(cv.expiry || a.expiry); out.push(e === ci.expiry ? ['ok', 'Contract expiry ' + dmy(e) + ' matches the files'] : ['warn', 'Contract expiry: i-CARE ' + dmy(e) + ' vs files ' + dmy(ci.expiry)]); }
+  return out;
+}
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
   const nameWarn = formName && t.memberName && sameName(formName, t.memberName) === false;
-  const btns = el('div', { class: 'row', style: 'gap:6px' }, el('button', { class: 'btn sm primary', type: 'button', onclick: () => openICare(t) }, c ? '↻ Check again in i-CARE' : '🔎 Open i-CARE'), el('button', { class: 'btn sm', type: 'button', title: 'Paste copied i-CARE text (Administrative Info or Remaining limits)', onclick: () => icareDialog(t.no) }, '📋 Paste'), viaEdge() ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Open the member in Microsoft Edge, where the Sarwa i-CARE helper does it without any click; the details come back to this ticket', onclick: () => openICare(t, { edge: true }) }, 'Open in Edge') : null);
+  const readNow = el('button', { class: 'btn sm', type: 'button', title: 'The i-CARE reader on the Chronic PC reads this member (read-only): Administrative Info, contract dates and every limit', onclick: async e => { e.target.disabled = true; try { await icareAsk(t, me()); toast('Asked the i-CARE reader – the details arrive on this ticket in about a minute'); } catch (x) { toast(x.message); e.target.disabled = false; } } }, '⚡ Read from i-CARE');
+  const btns = el('div', { class: 'row', style: 'gap:6px' }, readNow, el('button', { class: 'btn sm ghost', type: 'button', onclick: () => openICare(t) }, c ? '↻ Open i-CARE' : '🔎 Open i-CARE'), el('button', { class: 'btn sm ghost', type: 'button', title: 'Paste copied i-CARE text (Administrative Info or Remaining limits)', onclick: () => icareDialog(t.no) }, '📋 Paste'), viaEdge() ? el('button', { class: 'btn sm ghost', type: 'button', title: 'Open the member in Microsoft Edge, where the Sarwa i-CARE helper does it without any click; the details come back to this ticket', onclick: () => openICare(t, { edge: true }) }, 'Open in Edge') : null);
   const unverified = [...DB.tickets.values()].filter(x => !['Closed', 'Resolved'].includes(x.status) && !x.mergedInto && !x.icare && /^\d{6,10}$/.test(memberNo(x))).length;
   const allBtn = unverified > 1 ? el('button', { class: 'btn sm ghost', type: 'button', style: 'justify-self:start', title: 'Opens i-CARE once; one click on ⭐ Sarwa i-CARE checks them (40 at a time) and saves each result to its ticket', onclick: verifyAllICare }, '✓ Check all unverified open tickets (' + unverified + ')') : null;
   if (!c) return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid var(--border)' },
-    el('div', { class: 'small muted' }, 'Not verified yet. Check the member, contract and remaining limits in i-CARE.'),
+    el('div', { class: 'small muted' }, 'Not read yet. With a verified card the i-CARE reader reads the member, contract and limits by itself.'),
     t.memberName ? el('div', { class: 'small' }, 'Name: ', el('b', { dir: 'auto' }, t.memberName), t.memberSrc ? el('span', { class: 'muted' }, ' (from ' + t.memberSrc + ')') : null) : null,
-    nameWarn ? el('div', { class: 'small', style: 'color:var(--bad)' }, '⚠ Form says “' + formName + '”') : null, btns, allBtn, icareSetupHint())];
-  const a = c.admin || {}; const v = icareVerdict(t, c); const bad = v.some(x => x[0] === 'bad'), warn = v.some(x => x[0] === 'warn');
+    nameWarn ? el('div', { class: 'small', style: 'color:var(--bad)' }, '⚠ Form says “' + formName + '”') : null, icareReaderLine(t), btns, allBtn, icareSetupHint())];
+  const a = c.admin || {}; const v = [...icareVerdict(t, c), ...icareVsFiles(t, c)]; const bad = v.some(x => x[0] === 'bad'), warn = v.some(x => x[0] === 'warn');
+  const cv = c.cover || {}; const NA = (k, why) => el('div', {}, el('span', { class: 'muted' }, k + ': '), el('span', { style: 'color:#8a5200' }, 'Not available – ' + why));
+  const lim = c.limits || [];
   return [el('h3', {}, 'GlobeMed i-CARE'), el('div', { class: 'slabox', style: 'display:grid;gap:8px;border-left:4px solid ' + (bad ? 'var(--bad)' : warn ? '#c98a00' : '#2f8a4f') },
     el('div', { class: 'row', style: 'justify-content:space-between' }, el('b', { dir: 'auto' }, a.name || '—'), el('span', { class: 'pill ' + (bad ? 'p-over' : warn ? 'p-due' : 'p-ok') }, bad ? '⚠ Check' : warn ? '⚠ Note' : '✓ Verified')),
     el('div', { style: 'display:grid;gap:3px' }, v.map(([k, txt]) => el('div', { class: 'small', style: 'color:' + (k === 'ok' ? '#2f8a4f' : k === 'bad' ? 'var(--bad)' : '#9a6a00') }, (k === 'ok' ? '✓ ' : '⚠ ') + txt))),
-    el('div', { class: 'small', style: 'display:grid;gap:2px' }, [['Holder', a.holder], ['Class', a.cls], ['Contract', a.contract], ['Born', a.dob], ['Relation', a.relation], ['Mobile', a.mobile], ['Valid', (a.start || '') + ' → ' + (a.expiry || '')]].filter(x => x[1] && x[1].trim() !== '→').map(([k, val]) => el('div', {}, el('span', { class: 'muted' }, k + ': '), val))),
-    (c.limits || []).filter(l => l.limit).map(l => { const p = l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between' }, el('span', {}, l.level === 'Disease Related Condition' ? 'Chronic (DRC)' : l.level === 'AML' ? 'Annual (AML)' : (l.desc || l.level)), el('b', {}, l.perTransaction ? l.limit.toLocaleString() + ' / visit' : (l.balance != null ? l.balance.toLocaleString() : '—') + ' left')),
-      p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); }),
-    el('div', { class: 'small muted' }, 'Checked by ' + (c.by || '—') + (c.via === 'bookmark' ? ' (automatic)' : '') + ' · ' + fmtDate(c.at)), btns)];
+    el('div', { class: 'small', style: 'display:grid;gap:2px' }, [['Holder', a.holder], ['Class', a.cls || cv.cls], ['Contract', [a.contract, a.contractType].filter(Boolean).join(' · ')], ['Contract dates', cv.effective || cv.expiry ? (cv.effective || '?') + ' → ' + (cv.expiry || '?') : ''], ['Member covered from', cv.eligibility || a.start], ['Contract expiry', !cv.expiry ? a.expiry : ''], ['Born', a.dob], ['Relation', a.relation], ['Mobile', a.mobile], ['Annual maximum', cv.annualMax], ['Technical sheet', cv.sheet]].filter(x => x[1] && String(x[1]).trim()).map(([k, val]) => el('div', {}, el('span', { class: 'muted' }, k + ': '), val)),
+      c.via === 'bridge' && !cv.effective ? NA('Contract dates', c.limitsNote || 'the coverage report could not be read') : null),
+    (cv.classes || []).length ? el('div', { class: 'chips' }, cv.classes.map(x => el('span', { style: x.covered === 'Covered' ? '' : 'opacity:.6;text-decoration:line-through' }, (x.covered === 'Covered' ? '✓ ' : '✗ ') + x.name.replace(/ Coverage$/i, '')))) : null,
+    el('div', { style: 'display:grid;gap:6px' }, el('b', { class: 'small' }, 'Limits'),
+      lim.length ? lim.map(l => { const p = l.limit && l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; const f = x => x == null ? '—' : (+x).toLocaleString(undefined, { maximumFractionDigits: 2 });
+        return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between;gap:6px' }, el('span', {}, (l.level === 'Disease Related Condition' ? 'Chronic / DRC' : l.level === 'AML' ? 'Annual (AML)' : l.level || '') + (l.desc ? ' – ' + l.desc : '') + (l.pool ? ' (' + l.pool + ')' : '')), el('b', {}, l.perTransaction ? f(l.limit) + ' ' + (l.curr || '') + ' per transaction' : f(l.balance) + ' left')),
+          !l.perTransaction ? el('div', { class: 'muted' }, 'Limit ' + f(l.limit) + ' · used ' + f(l.used) + ' · remaining ' + f(l.balance) + ' ' + (l.curr || '')) : null,
+          p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); })
+        : NA('Limits', c.limitsNote || (c.via === 'bridge' ? 'the coverage report had no limits table' : 'not read yet – press Read from i-CARE')),
+      lim.length && c.limitsNote ? el('div', { class: 'small', style: 'color:#8a5200' }, '⚠ ' + c.limitsNote) : null),
+    (cv.benefits || []).length || (cv.conditions || []).length || (c.exclusions || []).length ? el('details', { class: 'small' }, el('summary', { style: 'cursor:pointer' }, 'Benefits, restrictions and exclusions'),
+      (cv.conditions || []).length ? el('div', {}, el('span', { class: 'muted' }, 'Disease related conditions: '), cv.conditions.join(' · ')) : null,
+      (cv.benefits || []).map(x => el('div', {}, '• ' + x)),
+      (c.exclusions || []).map(x => el('div', { style: 'color:#8a5200' }, '⚠ ' + Object.entries(x).filter(([, v2]) => v2).map(([k2, v2]) => k2 + ': ' + v2).join(' · ')))) : null,
+    el('div', { class: 'small muted' }, (c.via === 'bridge' ? 'Read by the i-CARE reader' : 'Checked by ' + (c.by || '—') + (c.via === 'bookmark' ? ' (automatic)' : '')) + ' · ' + fmtDate(c.fetchedAt || c.at)), icareReaderLine(t), btns)];
 }
 /* =====================================================================
    Portal (Chronic Attach, Sarwa portal app 2009 / page 165)
@@ -3685,6 +3752,7 @@ function mailReason() {
 function portalSyncLight(s) {
   if (s && s.infoDesk) MCC_WATCH_N = s.infoDesk.watching || 0;
   if (s && 'mail' in s) MAIL_HEALTH = s.mail;
+  if (s && 'icare' in s) ICARE_HEALTH = s.icare;
   const a = document.getElementById('psync'), tx = document.getElementById('psyncT'); if (!a || !tx) return;
   if (!s) { a.hidden = true; return; }
   const age = s.at ? (Date.now() - Date.parse(s.at)) / 60000 : null;
@@ -4748,15 +4816,43 @@ function patientInfo(t) {
   return el('div', {}, cardBlock(t), box);
 }
 // standard starting day: a person's setting for the contract › for the holder › the contract's own day (GlobeMed files) › the holder's
+// 28 Nov 2026: a contract / holder where nobody takes monthly treatment yet → the FIRST one starts on day 01 (at the renewal the
+// member has already been dispensed, and new medicines can then start on any day without confusion)
 function contractDay(contract, holder) {
   const o = ((DB && DB.settings.contractDays) || {})[contract]; if (contract && o) return { day: +o, manual: true, src: 'contract ' + contract, contract };
   const h = holder ? holderDay(holder) : null; if (h && h.manual) return { ...h, src: 'holder ' + holder, contract };
   const c = contract ? CARDS.contracts.get(contract) : null;
-  if (c && c.start_day && (c.members || 0) >= 3 && +c.day_share >= 0.6) return { day: c.start_day, share: +c.day_share, members: c.members, second: c.second_day, manual: false, src: 'contract ' + contract, contract };
-  if (h) return { ...h, src: 'holder ' + holder, contract };
-  return c && c.start_day ? { day: c.start_day, share: +c.day_share, members: c.members, second: c.second_day, manual: false, src: 'contract ' + contract + ' (few members)', contract } : null;
+  // the contract's own members (one is enough: the first monthly treatment set the day for everyone after)
+  if (c && c.start_day && (c.members || 0) >= 1) return { day: c.start_day, share: +c.day_share, members: c.members, second: c.second_day, manual: false, mixed: (c.members || 0) >= 3 && +c.day_share < 0.6, src: 'contract ' + contract, contract };
+  if (h) return { ...h, src: 'holder ' + holder + ' (earlier contracts)', contract };
+  if (contract || holder) return { day: 1, firstTime: true, manual: false, src: 'first monthly treatment in ' + (contract ? 'contract ' + contract : holder), contract };
+  return null;
 }
-async function setContractDay(contract, day) { const v = { ...((DB.settings.contractDays) || {}) }; if (day) v[contract] = +day; else delete v[contract]; await emit('settings', null, { section: 'contractDays', value: v }); }
+async function setContractDay(contract, day, note) {
+  const v = { ...((DB.settings.contractDays) || {}) }; const old = v[contract] || '';
+  if (day) v[contract] = +day; else delete v[contract];
+  await emit('settings', null, { section: 'contractDays', value: v });
+  const L = [...(((DB.settings.contractDaysLog) || []))].slice(-500); L.push({ contract, from: old, to: day || '', by: me(), at: new Date().toISOString(), note: note || '' });
+  await emit('settings', null, { section: 'contractDaysLog', value: L });
+}
+// start of the treatment for a standard day: the latest such day on or before the requested start (the current cycle – 28 Nov
+// 2026: "current month 1st"), never before the contract start or the member's eligibility (then the next such day), with
+// warnings for the last month before expiry and unknown dates. Pure: { start, notes, warns }
+function startSuggest(o) {
+  const day = +o.day || 0, req = o.req, out = { start: req, notes: [], warns: [] };
+  if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(req || '')) return out;
+  const onOrAfter = iso => { const d = new Date(iso + 'T00:00:00'); let y = d.getFullYear(), m = d.getMonth(); let c = isoOf(y, m, Math.min(day, daysIn(y, m))); if (c < iso) { m++; if (m > 11) { m = 0; y++; } c = isoOf(y, m, Math.min(day, daysIn(y, m))); } return c; };
+  let s = cycleStart(day, req);
+  if (o.first) out.notes.push('First monthly treatment in this contract: starting day must be 01');
+  if (o.elig && s < o.elig) { s = onOrAfter(o.elig); out.notes.push('Member covered from ' + dmy(o.elig) + ' → first cycle ' + dmy(s) + ' (the days before can get a one-time supply)'); }
+  if (o.eff && s < o.eff) { s = onOrAfter(o.eff); out.notes.push('Contract starts ' + dmy(o.eff) + ' → first cycle ' + dmy(s) + ' (the days before can get a one-time supply)'); }
+  if (!o.eff && !o.exp) out.warns.push('Contract start / expiry not known – check i-CARE (nothing is guessed)');
+  if (o.exp) {
+    if (s >= o.exp) out.warns.push('The contract ends ' + dmy(o.exp) + ' – before this start: no approval without the renewal');
+    else { const left = Math.round((new Date(o.exp + 'T00:00:00') - new Date(s + 'T00:00:00')) / 86400000); if (left < 31) out.warns.push('Contract ends ' + dmy(o.exp) + ' (' + left + ' day(s) after the start) – approve until the renewal; the renewal adds the next cycle'); }
+  }
+  out.start = s; return out;
+}
 // the member's contract: i-CARE › GlobeMed files (by card) › Portal
 function contractOf(t, known) { const a = (t.icare && t.icare.admin) || {}; return String(a.contract || (known && known.contract) || (t.portal && t.portal.contract) || '').replace(/\D/g, ''); }
 function cardBlock(t) {
@@ -4780,7 +4876,8 @@ function cardBlock(t) {
         line('Contract', ctr + (ci && ci.policy_holder ? ' · ' + ci.policy_holder : ''), true),
         ci && (ci.effective || ci.expiry) ? line('Contract dates', (ci.effective ? dmy(ci.effective) : '?') + ' → ' + (ci.expiry ? dmy(ci.expiry) : '?')) : line('Contract dates', 'Not available – not in the GlobeMed files yet'),
         expired ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract expired ' + dmy(ci.expiry) + ' (GlobeMed files)') : null,
-        cd ? line('Starting day', String(cd.day).padStart(2, '0') + (cd.manual ? ' (set by the team)' : cd.share ? ' (' + Math.round(cd.share * 100) + '% of ' + (cd.members || 0) + ' members, ' + cd.src + ')' : ' (' + cd.src + ')'), true) : line('Starting day', 'Not available')) : null,
+        cd ? line('Starting day', cd.firstTime ? 'No monthly treatment yet – first one starts on 01' : String(cd.day).padStart(2, '0') + (cd.manual ? ' (set by the team)' : cd.share ? ' (' + Math.round(cd.share * 100) + '% of ' + (cd.members || 0) + ' members, ' + cd.src + ')' : ' (' + cd.src + ')'), true) : line('Starting day', 'Not available'),
+        (() => { const H = ((DB.settings.contractDaysLog) || []).filter(x => x.contract === ctr).slice(-5).reverse(); return H.length ? el('details', { class: 'small' }, el('summary', { style: 'cursor:pointer' }, 'Starting day changes (' + H.length + ')'), H.map(x => el('div', { class: 'muted' }, fmtDate(x.at) + ' · ' + x.by + ': ' + (x.from || 'files') + ' → ' + (x.to || 'files') + (x.note ? ' (' + x.note + ')' : '')))) : null; })()) : null,
       hist.length > 1 || (hist.length && !hist[0].auto) ? el('details', { class: 'small' }, el('summary', { style: 'cursor:pointer' }, 'Card no. history (' + hist.length + ')'),
         hist.map(h => el('div', { class: 'muted' }, fmtDate(h.ts) + ' · ' + (h.auto ? 'automatic' : h.by) + ': ' + (h.from || '—') + ' → ' + (h.to || '—') + (h.why ? ' (' + h.why + ')' : '')))) : null);
   }).catch(e => b.replaceChildren(el('div', { class: 'small muted' }, 'Card check not available: ' + e.message)));
@@ -5286,16 +5383,22 @@ function validationDialog(no) {
       el('div', { class: 'small muted', style: 'margin-top:4px' }, 'From the monthly GlobeMed chronic files (Chronic Validations › All chronic Sarwa). Green = coverage still running.'));
   }
   /* the member's policy holder → its starting day → the start of the current cycle (Start is set to it for a new validation) */
-  // the member's contract → its standard starting day (contract › holder) → the start of the current cycle; its expiry date for
-  // "Till renewal date" (GlobeMed files, else i-CARE)
-  const CY = { hist: null, day: 0, holder: '', contract: '', cd: null, expiry: '', expirySrc: '' }; let autoStart = t.validation ? null : V.start;
+  // the member's contract → its standard starting day (contract › holder › first monthly treatment = 01) → the start (startSuggest:
+  // current cycle, never before the contract start / the member's eligibility); its expiry for "Till renewal date" (GlobeMed files, else i-CARE)
+  const CY = { hist: null, day: 0, holder: '', contract: '', cd: null, expiry: '', expirySrc: '', eff: '', elig: '' }; let autoStart = t.validation ? null : V.start;
+  const isoD = s => { const d = dmyDate(s); return d ? isoOf(d.getFullYear(), d.getMonth(), d.getDate()) : ''; };
   function applyCycle() {
-    CY.hist = hist; CY.holder = (hist && hist[0] && hist[0].policy_holder) || holderOf(t) || '';
+    const ic = (t.icare && t.icare.admin) || {}, cov = (t.icare && t.icare.cover) || {};
+    CY.hist = hist; CY.holder = (hist && hist[0] && hist[0].policy_holder) || holderOf(t) || ic.holder || '';
     CY.contract = contractOf(t, { contract: ((hist || []).find(x => x.contract) || {}).contract || '' });
     const hd = CY.contract || CY.holder ? contractDay(CY.contract, CY.holder) : null; CY.cd = hd; CY.day = hd ? hd.day : 0;
-    if (hd && autoStart !== null && V.start === autoStart) { const cs = cycleStart(hd.day); V.start = cs; autoStart = cs; }
-    const ci = CY.contract ? CARDS.contracts.get(CY.contract) : null, ie = t.icare && t.icare.admin && dmyDate(t.icare.admin.expiry);
-    CY.expiry = (ci && ci.expiry) || (ie ? isoOf(ie.getFullYear(), ie.getMonth(), ie.getDate()) : ''); CY.expirySrc = ci && ci.expiry ? 'GlobeMed files' : ie ? 'i-CARE' : '';
+    const ci = CY.contract ? CARDS.contracts.get(CY.contract) : null;
+    CY.expiry = (ci && ci.expiry) || isoD(cov.expiry) || isoD(ic.expiry); CY.expirySrc = ci && ci.expiry ? 'GlobeMed files' : CY.expiry ? 'i-CARE' : '';
+    CY.eff = (ci && ci.effective) || isoD(cov.effective) || '';
+    CY.elig = isoD(cov.eligibility) || '';
+    if (hd && autoStart !== null && V.start === autoStart) { const s = startSuggest({ day: hd.day, first: hd.firstTime, req: new Date().toISOString().slice(0, 10), eff: CY.eff, exp: CY.expiry, elig: CY.elig }).start; V.start = s; autoStart = s; }
+    // first monthly treatment in the contract: "Till renewal date" ticked once (the person can untick it)
+    if (hd && hd.firstTime && V.tillRenewal == null && CY.expiry && !t.validation) V.tillRenewal = true;
     if (V.tillRenewal && !V.renewalManual && CY.expiry) V.renewalTo = CY.expiry;
   }
   Promise.all([loadHolderDays(), loadContracts()]).then(() => { applyCycle(); if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
@@ -5314,27 +5417,31 @@ function validationDialog(no) {
   }
   const dayWant = () => CY.day ? Math.min(CY.day, daysIn(+V.start.slice(0, 4), +V.start.slice(5, 7) - 1)) : 0;
   const dayWrong = () => !!(CY.day && /^\d{4}-\d{2}-\d{2}$/.test(V.start || '') && +V.start.slice(8, 10) !== dayWant());
+  const suggestNow = () => CY.day && /^\d{4}-\d{2}-\d{2}$/.test(V.start || '') ? startSuggest({ day: CY.day, first: CY.cd && CY.cd.firstTime, req: V.start, eff: CY.eff, exp: CY.expiry, elig: CY.elig }) : null;
   function cycleLine() {
     applyCycle(); if (!CY.holder && !CY.contract) return el('div', { class: 'small muted' }, '🏢 Policy holder unknown – enter the card number to load the member history.');
-    const hd = CY.cd; const cs = hd ? cycleStart(hd.day) : '';
+    const hd = CY.cd; const cs = hd ? startSuggest({ day: hd.day, first: hd.firstTime, req: new Date().toISOString().slice(0, 10), eff: CY.eff, exp: CY.expiry, elig: CY.elig }).start : '';
     const exp = t.icare && t.icare.admin && dmyDate(t.icare.admin.expiry), st = t.icare && t.icare.admin && dmyDate(t.icare.admin.start);
     const ci = CY.contract ? CARDS.contracts.get(CY.contract) : null;
-    const ended = (exp && exp < new Date(new Date().toDateString())) || (ci && ci.expiry && ci.expiry < V.start), notYet = st && st > new Date();
-    const fix = dayWrong() ? cycleStart(CY.day, V.start) : '';
-    const changeDay = async () => { const who = CY.contract ? 'contract ' + CY.contract : CY.holder; const v = prompt('Starting day of ' + who + ' (1–31). Empty = use the day from the GlobeMed files:', hd && hd.manual ? hd.day : ''); if (v === null) return; const d = parseInt(v, 10); if (v.trim() && !(d >= 1 && d <= 31)) return toast('Day must be 1–31'); if (CY.contract) await setContractDay(CY.contract, v.trim() ? d : 0); else await setHolderDay(CY.holder, v.trim() ? d : 0); autoStart = V.start; applyCycle(); draw(); toast('Starting day saved for ' + who); };
+    const ended = (exp && exp < new Date(new Date().toDateString())) || (CY.expiry && CY.expiry < V.start), notYet = st && st > new Date();
+    const SG = suggestNow(); const fix = SG && SG.start !== V.start ? SG.start : '';
+    const changeDay = async () => { const who = CY.contract ? 'contract ' + CY.contract : CY.holder; const v = prompt('Starting day of ' + who + ' (1–31). Empty = use the day from the GlobeMed files:', hd && hd.manual ? hd.day : ''); if (v === null) return; const d = parseInt(v, 10); if (v.trim() && !(d >= 1 && d <= 31)) return toast('Day must be 1–31'); const why = v.trim() ? (prompt('Why (kept in the history):', '') || '') : ''; if (CY.contract) await setContractDay(CY.contract, v.trim() ? d : 0, why); else await setHolderDay(CY.holder, v.trim() ? d : 0); autoStart = V.start; applyCycle(); draw(); toast('Starting day saved for ' + who); };
     return el('div', { class: 'small', style: 'display:grid;gap:3px' },
       el('div', { dir: 'auto' }, '🏢 ', el('b', {}, CY.holder || (ci && ci.policy_holder) || ''), CY.contract ? ' · contract ' + CY.contract : '', hd ? ' · starting day ' : ' · no starting day on file', hd ? el('b', {}, String(hd.day).padStart(2, '0')) : null,
-        hd ? el('span', { class: 'muted' }, hd.manual ? ' (set by the team)' : ' (' + Math.round((hd.share || 0) * 100) + '% of ' + (hd.members || 0).toLocaleString() + ' members, ' + hd.src + (hd.second && hd.share < 0.8 ? ', also day ' + hd.second : '') + ')') : null,
-        ci && (ci.effective || ci.expiry) ? el('span', { class: 'muted' }, ' · contract ' + (ci.effective ? dmy(ci.effective) : '?') + ' → ' + (ci.expiry ? dmy(ci.expiry) : '?')) : null),
+        hd ? el('span', { class: 'muted' }, hd.firstTime ? ' (no monthly treatment yet in this contract – the first one starts on 01)' : hd.manual ? ' (set by the team)' : ' (' + Math.round((hd.share || 0) * 100) + '% of ' + (hd.members || 0).toLocaleString() + ' members, ' + hd.src + (hd.second && hd.share < 0.8 ? ', also day ' + hd.second : '') + ')') : null,
+        CY.eff || CY.expiry ? el('span', { class: 'muted' }, ' · contract ' + (CY.eff ? dmy(CY.eff) : '?') + ' → ' + (CY.expiry ? dmy(CY.expiry) : '?')) : null),
+      hd && hd.mixed ? el('div', { style: 'color:#8a5200' }, '⚠ Members of this contract start on different days (' + Math.round((hd.share || 0) * 100) + '% on ' + hd.day + ', also ' + (hd.second || '?') + ') – check before choosing') : null,
       hd ? el('div', { class: 'row', style: 'gap:6px' }, 'Current cycle starts ', el('b', {}, dmy(cs)),
         V.start !== cs ? el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = cs; autoStart = cs; draw(); } }, 'Use ' + dmy(cs)) : el('span', { class: 'pill p-ok' }, '✓ Start'),
-        el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the starting day of this contract (or holder) for the whole team', onclick: changeDay }, 'Change day')) : null,
-      fix ? el('div', { class: 'row', style: 'gap:6px;color:var(--bad);font-weight:600' }, '⚠ Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + hd.src + ') – the start ' + dmy(V.start) + ' is a different day.', el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = fix; draw(); } }, 'Use ' + dmy(fix))) : null,
+        el('button', { class: 'btn sm ghost', type: 'button', title: 'Change the starting day of this contract (or holder) for the whole team – kept in the history', onclick: changeDay }, 'Change day')) : null,
+      SG ? SG.notes.map(n => el('div', { style: 'color:#1d5c9a' }, 'ℹ ' + n)) : null,
+      fix ? el('div', { class: 'row', style: 'gap:6px;color:var(--bad);font-weight:600' }, (dayWrong() ? '⚠ Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + hd.src + ') – the start ' + dmy(V.start) + ' is a different day.' : '⚠ The start ' + dmy(V.start) + ' is before the cover starts.'), el('button', { class: 'btn sm', type: 'button', onclick: () => { V.start = fix; draw(); } }, 'Use ' + dmy(fix))) : null,
+      SG ? SG.warns.map(w => el('div', { style: 'color:#8a5200;font-weight:600' }, '⚠ ' + w)) : null,
       el('div', { class: 'row', style: 'gap:6px' }, el('label', { class: 'row', style: 'gap:4px' }, el('input', { type: 'checkbox', checked: !!V.tillRenewal, onchange: e => { V.tillRenewal = e.target.checked; if (!V.tillRenewal) V.renewalManual = false; applyCycle(); draw(); } }), el('b', {}, 'Till renewal date')),
         V.tillRenewal ? (CY.expiry && !V.renewalManual ? el('span', {}, '→ until ', el('b', {}, dmy(V.renewalTo)), el('span', { class: 'muted' }, ' (contract expiry, ' + CY.expirySrc + ')'))
           : [el('span', { style: 'color:#8a5200' }, CY.expiry ? 'Renewal date (changed by hand):' : '⚠ Contract expiry not known – enter the renewal date:'), el('input', { type: 'date', value: V.renewalTo || '', onchange: e => { V.renewalTo = e.target.value; V.renewalManual = true; draw(); } }),
             CY.expiry && V.renewalManual ? el('button', { class: 'btn sm ghost', type: 'button', onclick: () => { V.renewalManual = false; applyCycle(); draw(); } }, 'Use ' + dmy(CY.expiry)) : null]) : el('span', { class: 'muted' }, 'monthly (flank) treatment: until the contract expiry instead of a number of months')),
-      ended ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract ended ' + (exp && exp < new Date(new Date().toDateString()) ? t.icare.admin.expiry + ' (i-CARE)' : dmy(ci.expiry) + ' (GlobeMed files)') + ' – no new approval without a renewal.') : null,
+      ended ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ Contract ended ' + (exp && exp < new Date(new Date().toDateString()) ? t.icare.admin.expiry + ' (i-CARE)' : dmy(CY.expiry) + ' (' + CY.expirySrc + ')') + ' – no new approval without a renewal.') : null,
       notYet ? el('div', { style: 'color:#8a5200;font-weight:600' }, '⚠ Contract starts ' + t.icare.admin.start + ' (i-CARE) – the treatment cannot start before it.') : null);
   }
   function recalc() { const R = computeValidation(V, CY); if (resultBox) resultBox.replaceChildren(...R.map(resRow)); }
@@ -5396,7 +5503,14 @@ function validationDialog(no) {
     if (!cardOk(CARD) && !V.mismatch) return toast(CARD ? 'Member card not verified (' + CARD_STATUS[CARD.status][0] + ') – press “Confirm member ID” at the top first' : 'Still checking the member card – try again in a moment');
     if (V.tillRenewal && !/^\d{4}-\d{2}-\d{2}$/.test(V.renewalTo || '')) return toast('“Till renewal date”: the contract expiry is not known – enter the renewal date');
     if (V.tillRenewal && V.renewalTo < V.start) return toast('The renewal date ' + dmy(V.renewalTo) + ' is before the start ' + dmy(V.start));
-    if (dayWrong() && !confirm('Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + CY.cd.src + '), but the start is ' + dmy(V.start) + '.\nSuggested: ' + dmy(cycleStart(CY.day, V.start)) + '.\n\nSave with ' + dmy(V.start) + ' anyway?')) return;
+    // a start on another day (or before the cover starts) is allowed with a short note – kept on the validation
+    const SG = suggestNow(); V.startDayNote = '';
+    if (SG && SG.start !== V.start) {
+      const n = prompt((dayWrong() ? 'Starting day must be ' + String(dayWant()).padStart(2, '0') + ' (' + CY.cd.src + ')' : 'The start is before the cover starts') + ', but the start is ' + dmy(V.start) + '.\nSuggested: ' + dmy(SG.start) + '.\n\nTo keep ' + dmy(V.start) + ', write why (kept on the ticket). Cancel = go back and change it:', '');
+      if (n === null || !n.trim()) return toast('Not saved – use ' + dmy(SG.start) + ' or write why the start stays ' + dmy(V.start));
+      V.startDayNote = n.trim().slice(0, 300);
+    }
+    V._day = CY.day || 0;
     const R = computeValidation(V, CY); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
     const noWhy = R.filter(x => (x.final === 'NOT_COVERED' || x.final === 'NOT_JUSTIFIED') && !String(x.reason || '').trim());
@@ -5811,7 +5925,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-28b';
+const APP_VERSION = '2026-11-28c';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

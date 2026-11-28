@@ -109,4 +109,56 @@ ok(/if \(!cardOk\(CARD\) && !V\.mismatch\) return toast/.test(grab(app, 'validat
 ok(/cardGate\(t, go\)/.test(grab(app, 'decisionDialog')) && /cardGate\(t, go\)/.test(grab(app, 'portalDecisionDialog')), 'Approved / Partial / Rejected need a verified card (email and Portal)');
 ok(/Starting day must be/.test(grab(app, 'validationDialog')), 'a start on another day than the contract day is flagged');
 
+// ---- first monthly treatment in a contract: starting day 01 + edge cases (28 Nov 2026) ----
+const S = load(app, ['pad', 'dmy', 'daysIn', 'isoOf', 'cycleStart', 'startSuggest']);
+const ex = S.startSuggest({ day: 1, first: true, req: '2026-12-10', exp: '2027-01-05', eff: '2026-01-06' });
+ok(ex.start === '2026-12-01' && ex.notes.some(n => /starting day must be 01/.test(n)) && !ex.warns.length, 'your example: expiry 05/01/2027, request 10/12/2026 → 01/12/2026, "starting day must be 01"');
+ok(S.startSuggest({ day: 18, req: '2026-11-20', eff: '2026-02-18', exp: '2027-02-18' }).start === '2026-11-18', 'existing standard day 18 → current cycle 18/11');
+ok(S.startSuggest({ day: 1, first: true, req: '2026-02-20', eff: '2026-02-18', exp: '2027-02-17' }).start === '2026-03-01', 'contract starts mid-month → the next 1st (never before the contract)');
+ok(S.startSuggest({ day: 1, req: '2026-06-20', eff: '2026-01-01', elig: '2026-06-15', exp: '2026-12-31' }).start === '2026-07-01', 'member joined mid-year → the first cycle after the eligibility date');
+const last = S.startSuggest({ day: 1, req: '2027-01-02', eff: '2026-01-06', exp: '2027-01-05' });
+ok(last.start === '2027-01-01' && last.warns.some(w => /ends 05\/01\/2027/.test(w)), 'last month before expiry → warning, the renewal adds the next cycle');
+ok(S.startSuggest({ day: 1, req: '2026-12-10' }).warns.some(w => /not known/.test(w)), 'unknown contract dates → warning, nothing guessed');
+ok(S.startSuggest({ day: 1, req: '2027-02-10', exp: '2027-01-05', eff: '2026-01-06' }).warns.some(w => /before this start/.test(w)), 'a start after the expiry → no approval without the renewal');
+ok(S.startSuggest({ day: 31, req: '2026-11-30', eff: '2026-01-01', exp: '2027-01-01' }).start === '2026-11-30', 'day 31 in a 30-day month = its last day (30/11)');
+const CD = load(app, ['contractDay'], "const DB = { settings: { contractDays: { '1111': 5 } } }; const CARDS = { contracts: new Map([['2222', { start_day: 18, day_share: 0.9, members: 1 }]]) }; const holderDay = h => h === 'Old Holder' ? { day: 10, manual: false } : null;\n");
+ok(CD.contractDay('3333', 'New Holder').firstTime && CD.contractDay('3333', 'New Holder').day === 1, 'no monthly treatment in the contract or holder → first one on 01');
+ok(CD.contractDay('2222', 'New Holder').day === 18 && !CD.contractDay('2222', '').firstTime, 'one member already on day 18 → 18 for everyone after');
+ok(CD.contractDay('3333', 'Old Holder').day === 10, 'new contract number of a holder with earlier treatment (renewal) → the holder day');
+ok(CD.contractDay('1111', 'Old Holder').day === 5 && CD.contractDay('1111', '').manual, 'a day set by the team wins');
+ok(/Starting day of the monthly dispensing/.test(grab(app, 'decisionEmail')), 'the reply names the starting day');
+
+// ---- i-CARE reader (28 Nov 2026): parsers on synthetic copies of the real layouts (positions real, member data replaced) ----
+const P = await import(new URL('../tools/portal-bridge/icare-parse.mjs', import.meta.url));
+const covItems = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/icare-coverage-items.json'), 'utf8'));
+const cov = P.parseCoverage(covItems);
+ok(!cov.problems.length && cov.limits.length === 3, 'coverage report: 3 limit rows, no problem');
+const [aml, drc, dv] = cov.limits;
+ok(aml.level === 'AML' && aml.limit === 70000 && aml.used === 12345.678 && aml.balance === 57654.322, 'AML: limit, used and balance in the right columns');
+ok(drc.level === 'Disease Related Condition' && drc.desc === 'Exception cases - Egypt' && drc.pool === 'Pool DRC' && drc.limit === 150000 && drc.balance === 88500, 'DRC pool row: two-line level, the red "Pool DRC" kept with its own row');
+ok(dv.desc === 'Doctors Visit' && dv.perTransaction && dv.limit === 300 && dv.used === null, 'Doctors Visit: per transaction');
+ok(cov.cover.beneficiary === '59999999' && cov.cover.effective === '01/04/2026' && cov.cover.expiry === '01/04/2027' && cov.cover.eligibility === '01/04/2026', 'coverage report: beneficiary, contract dates, eligibility');
+ok(cov.cover.conditions.includes('Chronic related conditions - Egypt') && cov.cover.benefits.some(b => /copayment/i.test(b)), 'coverage report: disease conditions and restrictions');
+// a limits table with many rows (synthetic: the same columns, 12 rows)
+const lvl = covItems.find(i => i.s.trim() === 'Level'); const hdr = covItems.filter(i => i.page === lvl.page && Math.abs(i.y - lvl.y) < 3 && ['Level', 'Description', 'Curr', 'Financial Limit', 'Used', 'Balance'].includes(i.s.trim()));
+const X = Object.fromEntries(hdr.map(h => [h.s.trim(), h.x])), Y = hdr[0].y, pg = hdr[0].page;
+const manyRows = [...hdr]; for (let i = 0; i < 12; i++) { const y = Y - 20 - i * 14; manyRows.push({ page: pg, x: X.Level, y, s: 'Sub Category' }, { page: pg, x: X.Description, y, s: 'Test item ' + i }, { page: pg, x: X.Curr, y, s: 'EGP' }, { page: pg, x: X['Financial Limit'] + 10, y, s: (1000 + i) + '.000' }, { page: pg, x: X.Used + 10, y, s: (100 + i) + '.000' }, { page: pg, x: X.Balance + 10, y, s: (900) + '.000' }); }
+manyRows.push({ page: pg, x: 40, y: 200, s: 'COVERAGE DESCRIPTION' }, { page: pg, x: 40, y: 190, s: '- Beneficiary Number: 59999999' });
+const mr = P.parseCoverage(manyRows);
+ok(mr.limits.length === 12 && mr.limits[11].desc === 'Test item 11' && mr.limits[11].limit === 1011 && mr.limits.every(l => l.balance === 900), 'a limits table with 12 rows: every row, every column');
+// the report that comes back empty (the i-CARE link expired / another session): no table, no beneficiary → nothing saved
+const empty = P.parseCoverage([{ page: 1, x: 300, y: 740, s: 'COVERAGE DESCRIPTION' }, { page: 1, x: 40, y: 700, s: 'Contract:' }]);
+ok(empty.problems.includes('limits table not found') && empty.cover.beneficiary === '', 'empty report: "limits table not found", no beneficiary');
+ok(/C\.cover\.beneficiary !== member/.test(fs.readFileSync(path.join(root, 'tools/portal-bridge/icare-bridge.mjs'), 'utf8')), 'the reader checks the report belongs to the member (else retries / "Not available")');
+const adm = P.parseAdmin(JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/icare-admin-rows.json'), 'utf8')));
+ok(!adm.missing.length && adm.admin.name === 'TEST MEMBER ONE' && adm.admin.individual === '59999999' && adm.admin.contract === '59990001' && adm.admin.expiry === '01/04/2027' && adm.admin.start === '01/04/2026' && adm.admin.gr === 'No', 'Administrative Info: every label ("Contract Expiey Date" spelling included)');
+ok(adm.dependants.length === 1 && adm.dependants[0]['Adherent Eligibility Date'] === '01/04/2026 - Active' && adm.exclusions.length === 1 && adm.exclusions[0]['Max per Year'] === '5000' && adm.notes === '', 'Administrative Info: dependants, exclusions, no notes');
+ok(P.parseAdmin([['Something else', 'x']]).missing.includes('name'), 'a page without the usual labels → "layout changed", nothing guessed');
+const rd = fs.readFileSync(path.join(root, 'tools/portal-bridge/icare-bridge.mjs'), 'utf8');
+ok(/SignedOut && k === 0\) \{ log\(job\.ticket, 'signed out – signing in again'\); await login\(page\)/.test(rd), 'signed out → signs in again once per job');
+ok(/throw new Blocked\('i-CARE did not accept the sign-in'/.test(rd) && /process\.exit\(10\)/.test(rd), 'sign-in refused → stop + health alert (no retry loop)');
+ok(/AbortSignal\.timeout\(90000\)/.test(rd) && /health\('unreachable'/.test(rd), 'a timeout → "unreachable" health, the job is given out again later');
+ok(/const safe = \(s\) => norm\(s\)\.replace\(\/\\d\{6,\}\/g, '#'\)/.test(rd) && !/console\.log\([^)]*admin\.name/.test(rd), 'no member numbers or names in the reader log');
+ok(/if \(admin\.individual !== member\) return \{ error: 'the details belong to another member/.test(srv) && /icare_config'\)\)\.off === true/.test(srv), 'server: saves only the asked member; kill switch');
+
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
