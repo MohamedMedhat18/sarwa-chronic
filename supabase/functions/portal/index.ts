@@ -1325,7 +1325,12 @@ Deno.serve(async (req) => {
           await setState('aml_report', { ...cur, to: to.join('; '), threshold: th, setBy: who.kind === 'user' ? who.name : 'token', setAt: nowIso() });
           await log({ direction: 'system', action: 'aml_report_config', ok: true, detail: { recipients: to.length, threshold: th } });
         }
-        const v = await getState('aml_report'); return json({ ok: true, to: v.to || '', threshold: +v.threshold || 10, lastMonth: v.lastMonth || '', lastSentAt: v.lastSentAt || '', lastRows: v.lastRows ?? null, night: await getState('aml_night') });
+        const v = await getState('aml_report');
+        if (body.preview) {   // admin: what the monthly email would contain now (the rows, as the CSV has them) – nothing is sent
+          if (!isAdmin(who)) return json({ error: 'Admin only' }, 403);
+          const rows = await amlReportRows(+v.threshold > 0 ? +v.threshold : 10); return json({ ok: true, columns: AML_COLS.map((x) => x[1]), rows });
+        }
+        return json({ ok: true, to: v.to || '', threshold: +v.threshold || 10, lastMonth: v.lastMonth || '', lastSentAt: v.lastSentAt || '', lastRows: v.lastRows ?? null, night: await getState('aml_night') });
       }
       case 'health_report': {   // read only: what the daily check would list now (error kinds of 24 h, new ones marked)
         if (!isAdmin(who)) return json({ error: 'Admin only' }, 403);
