@@ -4,7 +4,7 @@
     .\Start-IcareBridge.ps1 -SupabaseUrl https://<project>.supabase.co              # keeps running (restarts itself)
     .\Start-IcareBridge.ps1 -SupabaseUrl ... -Test 12345678                         # read ONE card number, print what was found, send nothing
 #>
-param([Parameter(Mandatory)] [string] $SupabaseUrl, [string] $Test = '', [switch] $Visible)
+param([Parameter(Mandatory)] [string] $SupabaseUrl, [string] $Test = '', [string] $Dump = '', [switch] $Visible)   # -Dump <file>: with -Test, the limits area of the report for layout checks
 $ErrorActionPreference = 'Stop'
 $dir = Join-Path $env:LOCALAPPDATA 'ChronicPortalBridge'
 if (Test-Path (Join-Path $dir 'node\node.exe')) { $env:Path = (Join-Path $dir 'node') + ";$env:Path" }
@@ -19,7 +19,7 @@ $env:NODE_USE_SYSTEM_CA = '1'
 $env:HEADLESS = $(if ($Visible) { '0' } else { '1' })
 try {
   Push-Location $PSScriptRoot
-  $args2 = @('icare-bridge.mjs'); if ($Test) { $args2 += @('--test', $Test) }
+  $args2 = @('icare-bridge.mjs'); if ($Test) { $args2 += @('--test', $Test) }; if ($Test -and $Dump) { $args2 += @('--dump', $Dump) }
   $ErrorActionPreference = 'Continue'
   while ($true) {
     if ($Test) { & node @args2 2>&1 | ForEach-Object { "$_" }; break }

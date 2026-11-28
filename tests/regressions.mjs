@@ -151,6 +151,16 @@ const grp = [...hdr]; ['Disease Related Condition', '', ''].forEach((lv, i) => {
 grp.push({ page: pg, x: 40, y: 200, s: 'COVERAGE DESCRIPTION' });
 const gr = P.parseCoverage(grp);
 ok(gr.limits.length === 3 && gr.limits.every(l => l.level === 'Disease Related Condition') && !gr.problems.length, 'a level printed once for a group: every row of the group gets it, no "could not be read"');
+// first run: a grouped report (two-line group level, a four-line description, pool, per transaction) – limits area only
+const gItems = JSON.parse(fs.readFileSync(path.join(root, 'tests/fixtures/icare-limits-grouped.json'), 'utf8')); gItems.push({ page: 1, x: 40, y: 700, s: 'COVERAGE DESCRIPTION' });
+const gp = P.parseCoverage(gItems);
+ok(!gp.problems.length && gp.limits.length === 8 && gp.limits.filter(l => l.level === 'Disease Related Condition').length === 3, 'grouped report: 8 rows, a two-line group level on all 3 rows of its group');
+ok(/Medical \/ Legal abortion \/ Miscarriage$/.test(gp.limits[4].desc) && gp.limits[5].pool === 'Pool DRC' && gp.limits[7].perTransaction && gp.limits[7].curr === 'EGP', 'grouped report: every line of a long description, the pool on its own row, no page number in Curr');
+// the table goes on to the next page: rows there are read, the next page's header block (member name) is not
+const cont = gItems.map(x => ({ ...x })); for (const x of cont) if (x.y < 140 && x.y > 100) { x.page = 2; x.y += 400; }
+cont.push({ page: 2, x: 120, y: 651, s: 'TEST MEMBER NAME' }, { page: 2, x: 52, y: 651, s: 'Beneficiary :' }, { page: 2, x: 120, y: 669, s: 'TESTCO' }, { page: 2, x: 52, y: 669, s: 'Contract:' }, { page: 1, x: 297, y: 65, s: '1 / 2' });
+const cp = P.parseCoverage(cont);
+ok(cp.limits.length === 8 && cp.limits[7].desc === 'Doctors Visit' && !cp.limits.some(l => /TEST MEMBER|TESTCO/.test(l.desc + l.level)), 'a table that goes on to the next page: its rows are read, the page header (member name) is not');
 // the report that comes back empty (the i-CARE link expired / another session): no table, no beneficiary → nothing saved
 const empty = P.parseCoverage([{ page: 1, x: 300, y: 740, s: 'COVERAGE DESCRIPTION' }, { page: 1, x: 40, y: 700, s: 'Contract:' }]);
 ok(empty.problems.includes('limits table not found') && empty.cover.beneficiary === '', 'empty report: "limits table not found", no beneficiary');

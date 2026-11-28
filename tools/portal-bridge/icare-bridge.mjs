@@ -21,6 +21,7 @@ const HEADLESS = env.HEADLESS !== '0';
 const ICARE = 'https://i-care.globemedegypt.com:8034';
 const REPORTS = /^https:\/\/i-gemereports\.globemedegypt\.com(:443)?\/reports\/rwservlet\?/;
 const GAP_MS = 10000, POLL_MS = 20000, PC = env.COMPUTERNAME || '';
+const DUMP = process.argv.includes('--test') && process.argv.includes('--dump') ? process.argv[process.argv.indexOf('--dump') + 1] : '';
 
 class Blocked extends Error {}     // needs a person: no account, sign-in refused
 class Layout extends Error {}      // a page without its usual labels
@@ -108,7 +109,9 @@ async function readMember(page, member) {
     if (!REPORTS.test(rep)) { limitsNote = 'i-CARE gave no coverage report link'; continue; }
     const res = await fetch(rep, { signal: AbortSignal.timeout(90000) });
     const buf = Buffer.from(await res.arrayBuffer());
-    let C; try { C = parseCoverage(pdfItems(buf)); } catch (e) { limitsNote = 'the coverage report could not be read (' + safe(e.message) + ')'; continue; }
+    let C, IT; try { IT = pdfItems(buf); C = parseCoverage(IT); } catch (e) { limitsNote = 'the coverage report could not be read (' + safe(e.message) + ')'; continue; }
+    // --dump <file> (test mode only): the limits area of the report (positions + text, the pages from the limits header on) for layout checks
+    if (DUMP) { const h = IT.find((x) => x.s.trim() === 'Level'); const { writeFileSync } = await import('node:fs'); writeFileSync(DUMP, JSON.stringify(h ? IT.filter((x) => x.page > h.page || (x.page === h.page && x.y <= h.y + 3)).filter((x) => !/Beneficiary|Contract:/.test(x.s)) : [])); }
     if (C.cover.beneficiary !== member) { limitsNote = C.cover.beneficiary ? 'the coverage report showed another member' : 'the coverage report came back empty'; continue; }
     if (C.problems.length) { limitsNote = 'coverage report: ' + C.problems.join('; '); if (C.problems.includes('limits table not found')) await health('layout_changed', 'coverage report: the limits table (Level / Description / Financial Limit / Used / Balance) was not found'); }
     cov = C;

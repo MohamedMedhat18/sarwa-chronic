@@ -122,38 +122,53 @@ export function parseCoverage(items) {
     conditions: [...new Set(lines.flatMap((l) => l.split(/•/)).map((l) => l.trim()).filter((l) => /-\s*Egypt$|COVID/i.test(l)))].slice(0, 20),
   };
   if (!/COVERAGE DESCRIPTION/i.test(text)) problems.push('not the coverage report');
-  // limits table: the header row Level / Description / Curr / Financial Limit / Used / Balance (same page, same height)
+  // limits table: the header row Level / Description / Curr / Financial Limit / Used / Balance (same page, same height).
+  // First run (28 Nov 2026) taught: a Level is printed once for a group of rows and may take two lines ("Disease Related" /
+  // "Condition"); a description takes as many lines as it needs (a list of conditions); the table can go on to the next page
+  // (under that page's header block, which names the member); the page number sits in the Curr column.
   const H = ['Level', 'Description', 'Curr', 'Financial Limit', 'Used', 'Balance'];
   const heads = items.filter((it) => H.includes(it.s.trim()));
   let hdr = null;
   for (const lv of heads.filter((h) => h.s.trim() === 'Level')) { const row = H.map((h) => heads.find((x) => x.s.trim() === h && x.page === lv.page && Math.abs(x.y - lv.y) < 3)); if (row.every(Boolean)) { hdr = row; break; } }
   const limits = [];
   if (!hdr) { problems.push('limits table not found'); return { cover, limits, problems, lines }; }
-  const page = hdr[0].page, hy = hdr[0].y, xs = hdr.map((h) => h.x);
+  const xs = hdr.map((h) => h.x);
   const colOf = (x) => { let c = -1; for (let i = 0; i < xs.length; i++) if (x >= xs[i] - 4) c = i; return c; };
-  // rows end at the next section title / the page footer
-  const body = items.filter((it) => it.page === page && it.y < hy - 2 && !H.includes(it.s.trim()));
-  const stop = body.filter((it) => /^\d+-\s|Please refer|Pool limitation|GlobeMed offers/i.test(it.s)).reduce((m, it) => Math.max(m, it.y), -Infinity);
-  const cells = body.filter((it) => it.y > stop && colOf(it.x) >= 0);
-  const anchors = cells.filter((it) => colOf(it.x) === 3 && num(it.s) != null).sort((a, b) => b.y - a.y);
-  if (!anchors.length) problems.push('no limit rows');
-  const rows = anchors.map((a) => ({ y: a.y, c: [[], [], [], [], [], []] }));
-  // a row starts at its limit amount and continues below it ("Disease Related" / "Condition", the red "Pool DRC" under the
-  // description): each piece belongs to the nearest row at or above it
-  for (const it of cells) {
-    if (!rows.length) break;
-    const above = rows.filter((r) => r.y >= it.y - 3); let best = above.length ? above[above.length - 1] : rows[0];
-    if (!above.length) for (const r of rows) if (Math.abs(r.y - it.y) < Math.abs(best.y - it.y)) best = r;
-    if (Math.abs(best.y - it.y) < 30) best.c[colOf(it.x)].push(it);
+  const STOP = /^\d+-\s|Please refer|Pool limitation|GlobeMed offers|Complaint Help Desk/i, SKIP = /^\d+\s*\/\s*\d+$/;
+  const gy = (it) => -it.page * 10000 + it.y;   // one vertical scale across pages (higher = earlier)
+  const cells = [];
+  const maxPage = items.reduce((m, it) => Math.max(m, it.page), 0);
+  for (let p = hdr[0].page; p <= maxPage; p++) {
+    const pi = items.filter((it) => it.page === p);
+    let top = p === hdr[0].page ? hdr[0].y - 2 : Infinity;
+    if (p > hdr[0].page) {   // a following page: below its header block (Beneficiary line) or below a repeated column header
+      const rep = pi.find((it) => it.s.trim() === 'Level'); const ben = pi.filter((it) => /Beneficiary\s*:|Contract\s*:/i.test(it.s)).reduce((m, it) => Math.min(m, it.y), Infinity);
+      top = rep ? rep.y - 2 : ben !== Infinity ? ben - 6 : -Infinity;
+    }
+    const below = pi.filter((it) => it.y < top && !H.includes(it.s.trim()));
+    const stopY = below.filter((it) => STOP.test(it.s.trim())).reduce((m, it) => Math.max(m, it.y), -Infinity);
+    const part = below.filter((it) => it.y > stopY && colOf(it.x) >= 0 && !SKIP.test(it.s.trim()));
+    cells.push(...part);
+    if (stopY > -Infinity) break;   // the table ended on this page
+    if (p > hdr[0].page && !part.length) break;
   }
+  const anchors = cells.filter((it) => colOf(it.x) === 3 && num(it.s) != null).sort((a, b) => gy(b) - gy(a));
+  if (!anchors.length) problems.push('no limit rows');
+  const rows = anchors.map((a) => ({ g: gy(a), c: [[], [], [], [], [], []], lv: '' }));
+  const rowAbove = (g) => { const above = rows.filter((r) => r.g >= g - 3); return above.length ? above[above.length - 1] : rows[0]; };
+  // the Level column: lines less than a line apart are one label, given to the row nearest to its first line
+  const lvItems = cells.filter((it) => colOf(it.x) === 0).sort((a, b) => gy(b) - gy(a)); const labels = [];
+  for (const it of lvItems) { const last = labels[labels.length - 1]; if (last && last.end - gy(it) < 11) { last.s += ' ' + it.s.trim(); last.end = gy(it); } else labels.push({ top: gy(it), end: gy(it), s: it.s.trim() }); }
+  for (const l of labels) { if (!rows.length) break; let best = rows[0]; for (const r of rows) if (Math.abs(r.g - l.top) < Math.abs(best.g - l.top)) best = r; best.lv = (best.lv ? best.lv + ' ' : '') + l.s; }
+  // every other piece belongs to the nearest row at or above it (a description's next lines, the red "Pool DRC")
+  for (const it of cells) { const c = colOf(it.x); if (c <= 0 || !rows.length) continue; rowAbove(gy(it)).c[c].push(it); }
   for (const r of rows) {
-    const t = (i) => r.c[i].sort((a, b) => b.y - a.y || a.x - b.x).map((x) => x.s.trim()).join(' ').replace(/\s+/g, ' ').trim();
+    const t = (i) => r.c[i].sort((a, b) => gy(b) - gy(a) || a.x - b.x).map((x) => x.s.trim()).join(' ').replace(/\s+/g, ' ').trim();
     const desc = t(1), used = t(4);
     const pool = (desc.match(/\bPool\b.*$/i) || [''])[0];
-    limits.push({ level: t(0), desc: desc.replace(/\s*\bPool\b.*$/i, '').trim(), pool, curr: t(2), limit: num(t(3)), used: /per transaction/i.test(used) ? null : num(used), balance: num(t(5)), perTransaction: /per transaction/i.test(used) });
+    limits.push({ level: r.lv.replace(/\s+/g, ' ').trim(), desc: desc.replace(/\s*\bPool\b.*$/i, '').trim(), pool, curr: t(2), limit: num(t(3)), used: /per transaction/i.test(used) ? null : num(used), balance: num(t(5)), perTransaction: /per transaction/i.test(used) });
   }
-  // the report prints a Level once for a group of rows (like a merged cell: "Disease Related Condition" over several conditions,
-  // "Item List" over dental / optical items) – a row without its own level belongs to the group above (first run, 28 Nov 2026)
+  // a row without its own level belongs to the group above (the level is printed once for the group)
   for (let i = 1; i < limits.length; i++) if (!limits[i].level) limits[i].level = limits[i - 1].level;
   for (const l of limits) if (l.limit == null || !l.level) problems.push('a limit row could not be read');
   return { cover, limits, problems, lines };
