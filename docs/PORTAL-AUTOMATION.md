@@ -271,3 +271,23 @@ Regression checks: `node tests/regressions.mjs` (23 checks, no network, syntheti
 * Chronic validation: "Starting day must be 01" when the start is another day (warning + suggested date, never a block) and
   "Till renewal date": the end date becomes the contract expiry (GlobeMed files, else i-CARE); unknown = the person enters it.
   The decision email then says "until <date> (the contract renewal date)".
+
+## i-CARE reader and the first-monthly-treatment rule (28 Nov 2026)
+* i-CARE reader (tools/portal-bridge/icare-bridge.mjs, task ChronicIcareReader): read-only, its own Chrome profile next to the
+  portal bridge. Signs in (account from Set-IcareCredential.ps1, DPAPI), types the card in Patient Information and presses its
+  search button, then reads Administrative Info (all labels, dependants, exclusions, notes), the Notice of Insurance Coverage
+  (class of cover) and the coverage report PDF from the GlobeMed report server (policy dates, eligibility, class, restrictions,
+  disease conditions and the limits table read by position: level, description, pool, limit, used, balance, per transaction).
+  The report link is short-lived and reflects the last search: it is asked for right after the search and must name the same
+  beneficiary, else it is retried once and the ticket says "Not available – reason".
+* Jobs: the app queues open tickets with a verified / confirmed card (icare_queue), again after 24 h or with "Read from i-CARE".
+  The server writes the result on the ticket once (icare.check via bridge, plus name / mobile like the manual check), refuses a
+  result for another member, and has a kill switch (portal_state icare_config.off). One member at a time, 10 s apart.
+* Health: ok / login_failed / no_account / layout_changed / unreachable in portal_state icare_health, the daily Health section
+  and one admin email per 6 h for a problem that needs a person. No member data in the reader's log or the queue.
+* i-CARE allows ONE session per account: the reader needs its own read-only user, or it signs out whoever uses the same account.
+* Starting day: contract set by the team › holder set by the team › the contract's own members (one is enough) › the holder's
+  earlier contracts › none = first monthly treatment → day 01. Start = the current cycle (latest standard day on or before the
+  requested start), never before the contract start or the member's eligibility (then the next one), with warnings for the last
+  month before expiry and unknown dates. "Till renewal date" is ticked for the first one when the expiry is known. Another day
+  can be kept with a note; contract day changes are kept with who / when / why; the decision email names the starting day.
