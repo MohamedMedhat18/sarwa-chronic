@@ -163,13 +163,14 @@ export function parseCoverage(items) {
   // every other piece belongs to the nearest row at or above it (a description's next lines, the red "Pool DRC")
   for (const it of cells) { const c = colOf(it.x); if (c <= 0 || !rows.length) continue; rowAbove(gy(it)).c[c].push(it); }
   for (const r of rows) {
-    const t = (i) => r.c[i].sort((a, b) => gy(b) - gy(a) || a.x - b.x).map((x) => x.s.trim()).join(' ').replace(/\s+/g, ' ').trim();
-    const desc = t(1), used = t(4);
-    const pool = (desc.match(/\bPool\b.*$/i) || [''])[0];
-    limits.push({ level: r.lv.replace(/\s+/g, ' ').trim(), desc: desc.replace(/\s*\bPool\b.*$/i, '').trim(), pool, curr: t(2), limit: num(t(3)), used: /per transaction/i.test(used) ? null : num(used), balance: num(t(5)), perTransaction: /per transaction/i.test(used) });
+    // the pool marker is its own small label under the description ("Pool DRC"); "Combined POOL DRC Limitation for: …" is a description
+    const isPool = (x) => /^Pool(\s+[A-Z]{2,5})?$/i.test(x.s.trim());
+    const t = (i, f = () => true) => r.c[i].filter(f).sort((a, b) => gy(b) - gy(a) || a.x - b.x).map((x) => x.s.trim()).join(' ').replace(/\s+/g, ' ').trim();
+    const desc = t(1, (x) => !isPool(x)), pool = t(1, isPool), used = t(4);
+    limits.push({ level: r.lv.replace(/\s+/g, ' ').trim(), desc, pool, curr: t(2), limit: num(t(3)), used: /per transaction/i.test(used) ? null : num(used), balance: num(t(5)), perTransaction: /per transaction/i.test(used) });
   }
   // a row without its own level belongs to the group above (the level is printed once for the group)
   for (let i = 1; i < limits.length; i++) if (!limits[i].level) limits[i].level = limits[i - 1].level;
   for (const l of limits) if (l.limit == null || !l.level) problems.push('a limit row could not be read');
-  return { cover, limits, problems, lines };
+  return { cover, limits, problems, lines, cells };   // cells: the table pieces only (layout checks; never sent)
 }

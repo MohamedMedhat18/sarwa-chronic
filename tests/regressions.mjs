@@ -161,6 +161,10 @@ const cont = gItems.map(x => ({ ...x })); for (const x of cont) if (x.y < 140 &&
 cont.push({ page: 2, x: 120, y: 651, s: 'TEST MEMBER NAME' }, { page: 2, x: 52, y: 651, s: 'Beneficiary :' }, { page: 2, x: 120, y: 669, s: 'TESTCO' }, { page: 2, x: 52, y: 669, s: 'Contract:' }, { page: 1, x: 297, y: 65, s: '1 / 2' });
 const cp = P.parseCoverage(cont);
 ok(cp.limits.length === 8 && cp.limits[7].desc === 'Doctors Visit' && !cp.limits.some(l => /TEST MEMBER|TESTCO/.test(l.desc + l.level)), 'a table that goes on to the next page: its rows are read, the page header (member name) is not');
+// "Combined POOL DRC Limitation for: …" is a description, not the pool marker (CHR-001032, first run)
+const pl = gItems.map(x => ({ ...x })); const cmb = pl.find(x => x.s.trim() === 'Combined DRC Limitation for:'); cmb.s = 'Combined POOL DRC Limitation';
+const plr = P.parseCoverage(pl).limits[4];
+ok(/^Combined POOL DRC Limitation • Normal delivery/.test(plr.desc) && plr.pool === '', 'a description with the word POOL stays whole; only the separate "Pool DRC" label is the pool');
 // the report that comes back empty (the i-CARE link expired / another session): no table, no beneficiary → nothing saved
 const empty = P.parseCoverage([{ page: 1, x: 300, y: 740, s: 'COVERAGE DESCRIPTION' }, { page: 1, x: 40, y: 700, s: 'Contract:' }]);
 ok(empty.problems.includes('limits table not found') && empty.cover.beneficiary === '', 'empty report: "limits table not found", no beneficiary');

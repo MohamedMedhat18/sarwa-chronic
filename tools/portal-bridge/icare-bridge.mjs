@@ -111,7 +111,7 @@ async function readMember(page, member) {
     const buf = Buffer.from(await res.arrayBuffer());
     let C, IT; try { IT = pdfItems(buf); C = parseCoverage(IT); } catch (e) { limitsNote = 'the coverage report could not be read (' + safe(e.message) + ')'; continue; }
     // --dump <file> (test mode only): the limits area of the report (positions + text, the pages from the limits header on) for layout checks
-    if (DUMP) { const h = IT.find((x) => x.s.trim() === 'Level'); const { writeFileSync } = await import('node:fs'); writeFileSync(DUMP, JSON.stringify(h ? IT.filter((x) => x.page > h.page || (x.page === h.page && x.y <= h.y + 3)).filter((x) => !/Beneficiary|Contract:/.test(x.s)) : [])); }
+    if (DUMP) { const { writeFileSync } = await import('node:fs'); writeFileSync(DUMP, JSON.stringify(C.cells || [])); }   // the table cells only
     if (C.cover.beneficiary !== member) { limitsNote = C.cover.beneficiary ? 'the coverage report showed another member' : 'the coverage report came back empty'; continue; }
     if (C.problems.length) { limitsNote = 'coverage report: ' + C.problems.join('; '); if (C.problems.includes('limits table not found')) await health('layout_changed', 'coverage report: the limits table (Level / Description / Financial Limit / Used / Balance) was not found'); }
     cov = C;
