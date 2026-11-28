@@ -146,6 +146,11 @@ const manyRows = [...hdr]; for (let i = 0; i < 12; i++) { const y = Y - 20 - i *
 manyRows.push({ page: pg, x: 40, y: 200, s: 'COVERAGE DESCRIPTION' }, { page: pg, x: 40, y: 190, s: '- Beneficiary Number: 59999999' });
 const mr = P.parseCoverage(manyRows);
 ok(mr.limits.length === 12 && mr.limits[11].desc === 'Test item 11' && mr.limits[11].limit === 1011 && mr.limits.every(l => l.balance === 900), 'a limits table with 12 rows: every row, every column');
+// a level printed once for a group of rows (first run: "Disease Related Condition" over 3 conditions) – the rows below take it
+const grp = [...hdr]; ['Disease Related Condition', '', ''].forEach((lv, i) => { const y = Y - 20 - i * 14; if (lv) grp.push({ page: pg, x: X.Level, y, s: lv }); grp.push({ page: pg, x: X.Description, y, s: 'Condition ' + i }, { page: pg, x: X.Curr, y, s: 'EGP' }, { page: pg, x: X['Financial Limit'] + 10, y, s: '1000.000' }, { page: pg, x: X.Used + 10, y, s: '10.000' }, { page: pg, x: X.Balance + 10, y, s: '990.000' }); });
+grp.push({ page: pg, x: 40, y: 200, s: 'COVERAGE DESCRIPTION' });
+const gr = P.parseCoverage(grp);
+ok(gr.limits.length === 3 && gr.limits.every(l => l.level === 'Disease Related Condition') && !gr.problems.length, 'a level printed once for a group: every row of the group gets it, no "could not be read"');
 // the report that comes back empty (the i-CARE link expired / another session): no table, no beneficiary → nothing saved
 const empty = P.parseCoverage([{ page: 1, x: 300, y: 740, s: 'COVERAGE DESCRIPTION' }, { page: 1, x: 40, y: 700, s: 'Contract:' }]);
 ok(empty.problems.includes('limits table not found') && empty.cover.beneficiary === '', 'empty report: "limits table not found", no beneficiary');

@@ -152,6 +152,9 @@ export function parseCoverage(items) {
     const pool = (desc.match(/\bPool\b.*$/i) || [''])[0];
     limits.push({ level: t(0), desc: desc.replace(/\s*\bPool\b.*$/i, '').trim(), pool, curr: t(2), limit: num(t(3)), used: /per transaction/i.test(used) ? null : num(used), balance: num(t(5)), perTransaction: /per transaction/i.test(used) });
   }
+  // the report prints a Level once for a group of rows (like a merged cell: "Disease Related Condition" over several conditions,
+  // "Item List" over dental / optical items) – a row without its own level belongs to the group above (first run, 28 Nov 2026)
+  for (let i = 1; i < limits.length; i++) if (!limits[i].level) limits[i].level = limits[i - 1].level;
   for (const l of limits) if (l.limit == null || !l.level) problems.push('a limit row could not be read');
   return { cover, limits, problems, lines };
 }
