@@ -118,19 +118,9 @@ try {
       $row })
     $cn = 0; for ($i = 0; $i -lt $cl.Count; $i += 1000) { $res = Bridge @{ action = 'contracts_upsert'; rows = @($cl[$i..([Math]::Min($i + 999, $cl.Count - 1))]) }; if ($res.error) { throw $res.error }; $cn += [int]$res.n }
     Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn)
-    # each member's monthly treatment cost (active medicines: Monthly x Unit Price) - for the AML report's night reads and the
-    # months a limit balance covers; members not sent this time (no active medicine) are removed on the server
-    $today = (Get-Date).ToString('yyyy-MM-dd'); $mc = @{}
-    foreach ($v in $agg.Values) {
-      if (-not $v.cov_end -or $v.cov_end -lt $today) { continue }
-      $m = $mc[$v.member]; if (-not $m) { $m = @{ member = $v.member; monthly_cost = 0.0; active_lines = 0; holder = $v.policy_holder; contract = $v.contract }; $mc[$v.member] = $m }
-      $m.active_lines++; if ($v.monthly -and $v.unit_price) { $m.monthly_cost += [double]$v.monthly * [double]$v.unit_price }
-    }
-    $ml = @($mc.Values | ForEach-Object { [ordered]@{ member = $_.member; monthly_cost = [Math]::Round($_.monthly_cost, 2); active_lines = $_.active_lines; holder = $_.holder; contract = $_.contract } })
-    $since = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString('o'); $mn = 0
-    for ($i = 0; $i -lt $ml.Count; $i += 1000) { $res = Bridge @{ action = 'member_cost_upsert'; rows = @($ml[$i..([Math]::Min($i + 999, $ml.Count - 1))]) }; if ($res.error) { throw $res.error }; $mn += [int]$res.n }
-    $pr = Bridge @{ action = 'member_cost_prune'; since = $since }
-    Log ("member monthly costs: {0:N0} members on active treatment, {1:N0} no longer active removed" -f $mn, [int]$pr.n); $csig = $csigWant
+    # (each member's monthly treatment cost is recalculated every night inside the database from all the history - job
+    #  member_cost_nightly - the files in this folder hold only part of it)
+    $csig = $csigWant
   } catch { Log ('contract dates / member costs not sent: ' + $_.Exception.Message) }
   [IO.File]::WriteAllText($StateFile, ([pscustomobject]@{ sig = $sig; csig = $csig; at = (Get-Date).ToString('o'); hashes = $newHashes } | ConvertTo-Json -Depth 3 -Compress), $Utf8)
   Log ("done: {0:N0} uploaded, server has {1:N0} lines" -f $done, (Bridge @{ action = 'history_stats' }).rows)
