@@ -601,7 +601,7 @@ async function icareResult(b: any) {
     if (Object.keys(ch).length) await insertEv('i-CARE reader', 'update', ticket, ch);
   }
   await db.from('icare_queue').update({ status, done_at: nowIso(), error: status === 'done' ? null : short }).eq('id', id);
-  await log({ direction: 'icare', action: 'icare_read', ok: status !== 'error', error: status === 'done' ? null : status + (short ? ': ' + short : ''), detail: { ticket } });
+  await log({ direction: 'system', action: 'icare_read', ok: status !== 'error', error: status === 'done' ? null : status + (short ? ': ' + short : ''), detail: { ticket } });
   return { ok: true };
 }
 async function icareHealth(b: any) {
@@ -609,7 +609,7 @@ async function icareHealth(b: any) {
   const prev = await getState('icare_health'); const now = nowIso();
   const v = { at: now, state, detail: cleanStr(b.detail, 300), pc: cleanStr(b.pc, 60), since: prev.state === state ? (prev.since || now) : now, done: +b.done || 0 };
   await setState('icare_health', v);
-  if (prev.state !== state) await log({ direction: 'icare', action: 'icare_health', ok: state === 'ok', error: state === 'ok' ? null : state + ': ' + v.detail });
+  if (prev.state !== state) await log({ direction: 'system', action: 'icare_health', ok: state === 'ok', error: state === 'ok' ? null : state + ': ' + v.detail });
   // a sign-in or page-layout problem needs a person: one email to the admins per 6 hours
   if (['login_failed', 'layout_changed', 'no_account'].includes(state)) {
     const subject = '[i-CARE reader] ' + (state === 'login_failed' ? 'sign-in failed' : state === 'no_account' ? 'no i-CARE account on the Chronic PC' : 'an i-CARE page changed its layout');
