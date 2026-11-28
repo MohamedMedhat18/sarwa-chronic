@@ -291,3 +291,24 @@ Regression checks: `node tests/regressions.mjs` (23 checks, no network, syntheti
   requested start), never before the contract start or the member's eligibility (then the next one), with warnings for the last
   month before expiry and unknown dates. "Till renewal date" is ticked for the first one when the expiry is known. Another day
   can be kept with a note; contract day changes are kept with who / when / why; the decision email names the starting day.
+
+## Limits: one Chronic & Pre-existing limit, exhausted / partial replies, AML report (28 Nov 2026)
+* The chronic limit is ONE line: a Disease Related Condition line naming both chronic and pre-existing conditions ("Combined
+  (POOL) DRC Limitation for: Chronic related conditions … Pre-existing conditions …"). Dental / Sight related conditions are
+  Dental / Optical; delivery / pregnancy lines are Maternity; Exception cases and Congenital are named but not chronic; any other
+  DRC line is "Other DRC line (needs review)" and never used for decisions. No combined line = chronic and pre-existing are
+  covered up to the AML ("balance = AML balance"). The usable chronic balance is the combined balance capped by the AML balance.
+  Same rules in the app (limitKind / chronicLimit) and the server (monthly report) – a regression check compares them.
+* Levels: 80% used = watch, 90% = warning, 100% = exhausted. AML exhausted / chronic exhausted = red note on the ticket and in
+  the validation, the matching reply first in the reply box (team wording: "المخصص المالي السنوي تم استنفاذه ولذلك نعتذر عن
+  التغطية التأمينية" / "المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد تم استنفاذه"). A balance shorter than the request:
+  months covered estimated from GlobeMed prices (full price, co-payment not deducted) and a partial reply with amount and period.
+  An approving reply / decision while a limit is exhausted is asked about before sending (Email, Info Desk, Portal). Nothing is
+  sent automatically.
+* AML – needs attention: members whose AML is used up or has <= threshold % (default 10, admin-set) left, from member_icare (the
+  latest i-CARE read of each member: tickets + monthly night reads). Excel download, views and downloads recorded (audit). Monthly
+  email on the 1st (07:00 Cairo, internal addresses only) once an admin sets the address; preview: portal action
+  aml_report_config {preview:true}. The system never stops an ID.
+* Night reads: from the 1st, the 1,500 members with the highest monthly treatment cost not read for 25 days are queued; the
+  reader takes them only 20:00–07:00 Cairo and always after ticket jobs. Member monthly cost (member_cost) is recalculated every
+  night inside the database (pg_cron job member_cost_nightly, 01:30 UTC) from all of member_meds.
