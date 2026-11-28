@@ -332,6 +332,21 @@ Deno.serve(async (req) => {
         return json({ ok: true, n: data });
       }
 
+      case 'member_cost_upsert': {   // each active member's monthly treatment cost (counted by the history sync from the GlobeMed files)
+        const rows = Array.isArray(body.rows) ? body.rows.slice(0, 2000) : [];
+        const clean = rows.filter((r: Record<string, unknown>) => r && /^\d{4,12}$/.test(String(r.member || ''))).map((r: Record<string, unknown>) => ({ member: String(r.member), monthly_cost: isFinite(+(r.monthly_cost as number)) ? Math.round(+(r.monthly_cost as number) * 100) / 100 : '', active_lines: Math.max(0, Math.round(+(r.active_lines as number) || 0)), holder: String(r.holder || '').slice(0, 200), contract: String(r.contract || '').replace(/\D/g, '').slice(0, 12) }));
+        if (!clean.length) return json({ ok: true, n: 0 });
+        const { data, error } = await db.rpc('member_cost_upsert', { rows: clean });
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, n: data });
+      }
+      case 'member_cost_prune': {   // after a full upload: members not sent (no longer on active treatment) are removed
+        const since = String(body.since || ''); if (!/^\d{4}-\d{2}-\d{2}T/.test(since)) return json({ error: 'bad since' }, 400);
+        const { data, error } = await db.rpc('member_cost_prune', { since });
+        if (error) return json({ error: error.message }, 400);
+        return json({ ok: true, n: data });
+      }
+
       case 'catalog_refresh': {
         // separate requests: each request through the API may take at most 8 seconds
         const { data, error } = await db.rpc('refresh_med_catalog');

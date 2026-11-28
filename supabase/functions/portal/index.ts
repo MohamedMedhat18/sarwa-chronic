@@ -536,6 +536,7 @@ async function healthHtml(now: number) {
   const html = `<h3 style="margin:12px 0 4px">Health (last 24 h)</h3>`
     + (mh ? `<p>Outlook PC (${esc2(mh.pc)}): <b>${mh.stale ? 'not reporting for ' + mh.ageMin + ' min' : esc2(mh.state)}</b>${mh.detail ? ' – ' + esc2(mh.detail) : ''}${mh.av ? ' · antivirus: ' + esc2(mh.av) : ''}</p>` : '')
     + (ih.at ? `<p>i-CARE reader: <b>${now - Date.parse(ih.at) > 30 * 60000 ? 'not reporting since ' + cairo(new Date(ih.at)) : esc2(ih.state)}</b>${ih.detail && ih.state !== 'ok' ? ' – ' + esc2(ih.detail) : ''} · ${icDone || 0} member(s) read, ${icBad || 0} not found / failed</p>` : '')
+    + await (async () => { const ar = await getState('aml_report'); const { count: mi } = await db.from('member_icare').select('member', { count: 'exact', head: true }); return `<p>AML report: ${ar.to ? 'monthly to ' + esc2(String(ar.to).split(';').length) + ' internal address(es), threshold ' + (+ar.threshold || 10) + '%' + (ar.lastMonth ? ', last sent for ' + esc2(ar.lastMonth) + ' (' + (ar.lastRows ?? '?') + ' members)' : '') : '<b>no address set yet</b> (Needs attention › AML report › Settings)'} · ${mi || 0} member(s) with an i-CARE read${ar.lastError ? ' · last error: ' + esc2(ar.lastError) : ''}</p>`; })()
     + (kinds.length ? `<p>Kinds of errors (${kinds.length}):</p><ul>${kinds.slice(0, 25).map((k) => `<li>${k.fresh ? '<b style="color:#b0281c">NEW</b> ' : ''}${k.n}× ${esc2(k.kind)}${k.tickets.length ? ' – ' + k.tickets.slice(0, 6).join(', ') : ''}</li>`).join('')}</ul>` : '<p>No errors in the last 24 hours.</p>')
     + (twice.length ? `<p><b>The same text went twice to the same portal request</b> (member got it twice): ${esc2(twice.join(', '))}</p>` : '')
     + (emails.length ? `<p><b>Emails not sent</b>: ${esc2(emails.map((x) => x.ticket + ' ' + x.status + (x.error ? ' (' + String(x.error).slice(0, 80) + ')' : '')).join('; '))}</p>` : '')
@@ -580,7 +581,13 @@ async function icareResult(b: any) {
   if (!job || job.ticket !== ticket || job.member !== member) return { error: 'unknown job' };
   const status = ['done', 'notfound', 'error'].includes(b.status) ? b.status : 'error';
   const short = cleanStr(b.error, 300);   // a reason, never member data (the reader sends only its own messages)
-  if (status === 'done') {
+  if (status === 'done' && !ticket) {   // a night read for the monthly AML report (no ticket): only the member's latest read is kept
+    const a = b.admin || {}; const admin: Record<string, string> = {}; for (const k of ICARE_ADMIN_KEYS) admin[k] = cleanStr(a[k], 160);
+    if (admin.individual !== member) return { error: 'the details belong to another member – not saved' };
+    const limits = (Array.isArray(b.limits) ? b.limits : []).slice(0, 60).map((l: any) => ({ level: cleanStr(l.level, 60), desc: cleanStr(l.desc, 160), curr: cleanStr(l.curr, 6), limit: cleanNum(l.limit), used: cleanNum(l.used), balance: cleanNum(l.balance), perTransaction: !!l.perTransaction, pool: cleanStr(l.pool, 40) }));
+    const cv = b.cover || {};
+    await db.from('member_icare').upsert({ member, d: { admin: { name: admin.name, holder: admin.holder, contract: admin.contract, start: admin.start, expiry: admin.expiry }, limits, cover: { effective: cleanStr(cv.effective, 12), expiry: cleanStr(cv.expiry, 12) }, fetchedAt: cleanStr(b.fetchedAt, 30) || nowIso() }, read_at: nowIso(), ticket: '' });
+  } else if (status === 'done') {
     const a = b.admin || {}; const admin: Record<string, string> = {}; for (const k of ICARE_ADMIN_KEYS) admin[k] = cleanStr(a[k], 160);
     if (admin.individual !== member) return { error: 'the details belong to another member – not saved' };
     const cv = b.cover || {}; const cover: Record<string, unknown> = {}; for (const k of ICARE_COVER_KEYS) cover[k] = cleanStr(cv[k], 160);
@@ -591,6 +598,8 @@ async function icareResult(b: any) {
     const table = (rows: unknown, n: number) => (Array.isArray(rows) ? rows : []).slice(0, n).map((r: any) => Object.fromEntries(Object.entries(r || {}).slice(0, 12).map(([k, v]) => [cleanStr(k, 40), cleanStr(v, 120)])));
     const d = { admin, limits, cover, dependants: table(b.dependants, 15), exclusions: table(b.exclusions, 30), notes: cleanStr(b.notes, 600), verdict: 'read by the i-CARE reader', issues: [], via: 'bridge', fetchedAt: cleanStr(b.fetchedAt, 30) || nowIso(), limitsNote: cleanStr(b.limitsNote, 200) };
     await insertEv('i-CARE reader', 'icare.check', ticket, d);
+    // the member's latest read (for the monthly AML report – members with tickets and the night reads together)
+    await db.from('member_icare').upsert({ member, d: { admin: { name: admin.name, holder: admin.holder, contract: admin.contract, start: admin.start, expiry: admin.expiry }, limits, cover: { effective: cover.effective, expiry: cover.expiry }, fetchedAt: d.fetchedAt }, read_at: nowIso(), ticket });
     // the member's name and mobile from i-CARE, like the manual check (a name set from i-CARE before is kept up to date)
     const { data: evs } = await db.from('events').select('type,d').eq('t', ticket).in('type', ['ticket.create', 'update']).order('seq', { ascending: true });
     let name = '', nameSrc = '', mobile = '';
@@ -620,6 +629,97 @@ async function icareHealth(b: any) {
     }
   }
   return { ok: true };
+}
+
+// ---------- limits: the chronic & pre-existing limit (same rules as the app: limitKind / chronicLimit in index.html) ----------
+function limitKind(l: any) {
+  const lv = String((l && l.level) || ''), ds = String((l && l.desc) || '');
+  if (/^AML/i.test(lv) || /annual maximum/i.test(ds)) return 'aml';
+  if (/disease/i.test(lv)) {
+    const chronic = /chronic|مزمن/i.test(ds), pre = /pre-?\s*existing|سابق/i.test(ds);
+    if (chronic && pre) return 'chronic';
+    if (chronic) return 'chronic_only';
+    if (/dental|أسنان|اسنان/i.test(ds)) return 'dental_drc';
+    if (/sight|optic|vision|\beye|بصر|عيون/i.test(ds)) return 'optical_drc';
+    if (/deliver|pregnan|natal|partum|abortion|miscarr|matern|ولادة|حمل/i.test(ds)) return 'maternity_drc';
+    if (/exception/i.test(ds)) return 'exception_drc';
+    if (/congenital|خلق/i.test(ds)) return 'congenital_drc';
+    return 'other_drc';
+  }
+  if (/dental/i.test(ds)) return 'dental';
+  if (/optic|sight/i.test(ds)) return 'optical';
+  if (/doctor|visit/i.test(ds)) return 'visit';
+  return 'other';
+}
+function chronicLimit(limits: any) {
+  const L = limits || []; const aml = L.find((l: any) => limitKind(l) === 'aml') || null;
+  const ch = L.find((l: any) => limitKind(l) === 'chronic') || L.find((l: any) => limitKind(l) === 'chronic_only') || null;
+  const amlBal = aml && aml.balance != null ? +aml.balance : null;
+  if (ch) { const bal = ch.balance != null ? +ch.balance : null; return { kind: 'combined', limit: ch.limit, used: ch.used, balance: bal, effective: bal == null ? amlBal : amlBal == null ? bal : Math.min(bal, amlBal), aml }; }
+  if (aml) return { kind: 'aml', limit: aml.limit, used: aml.used, balance: amlBal, effective: amlBal, aml };
+  return { kind: 'unknown', limit: null, used: null, balance: null, effective: null, aml: null };
+}
+// the AML report: members whose AML balance is 0 or <= threshold % of the limit (latest i-CARE read of each member)
+async function amlReportRows(threshold: number) {
+  const rows: any[] = [];
+  for (let from = 0; from < 100000; from += 1000) {
+    const { data } = await db.from('member_icare').select('member,d,read_at').range(from, from + 999); const L = (data || []) as any[];
+    for (const r of L) {
+      const CL = chronicLimit(r.d?.limits || []); const a = CL.aml; if (!a || a.limit == null || a.balance == null || !(+a.limit > 0)) continue;
+      const pct = +a.balance / +a.limit; if (+a.balance > 0 && pct > threshold / 100) continue;
+      rows.push({ member: r.member, d: r.d, read_at: r.read_at, CL, a, pct });
+    }
+    if (L.length < 1000) break;
+  }
+  const ids = rows.map((r) => r.member); const cost = new Map(); const tk = new Map();
+  for (let i = 0; i < ids.length; i += 300) {
+    const part = ids.slice(i, i + 300);
+    const { data: mc } = await db.from('member_cost').select('member,monthly_cost').in('member', part); for (const m of (mc || []) as any[]) cost.set(m.member, m.monthly_cost);
+    const { data: q } = await db.from('icare_queue').select('member,ticket').in('member', part).neq('ticket', ''); for (const x of (q || []) as any[]) { const s = tk.get(x.member) || new Set(); s.add(x.ticket); tk.set(x.member, s); }
+  }
+  return rows.sort((x, y) => x.pct - y.pct).map((r) => ({
+    card: r.member, name: r.d?.admin?.name || '', holder: r.d?.admin?.holder || '', contract: r.d?.admin?.contract || '', start: r.d?.cover?.effective || r.d?.admin?.start || '', expiry: r.d?.cover?.expiry || r.d?.admin?.expiry || '',
+    amlLimit: r.a.limit, amlUsed: r.a.used, amlBalance: r.a.balance, amlPct: Math.round(r.pct * 1000) / 10,
+    chronic: r.CL.kind === 'combined' ? `${r.CL.limit} / ${r.CL.used} / ${r.CL.balance}` : 'up to AML', monthly: cost.has(r.member) ? 'yes (' + Math.round(+cost.get(r.member)) + ' EGP / month)' : 'no',
+    readAt: String(r.read_at).slice(0, 10), tickets: [...(tk.get(r.member) || [])].sort().join(' '),
+    action: +r.a.balance <= 0 ? 'AML exhausted - review stopping the ID' : 'Under ' + threshold + '% - monitor',
+  }));
+}
+const AML_COLS: [string, string][] = [['card', 'Member card'], ['name', 'Name'], ['holder', 'Policy holder'], ['contract', 'Contract'], ['start', 'Contract start'], ['expiry', 'Contract expiry'], ['amlLimit', 'AML limit'], ['amlUsed', 'AML used'], ['amlBalance', 'AML balance'], ['amlPct', 'AML balance %'], ['chronic', 'Chronic & Pre-existing limit / used / balance'], ['monthly', 'Monthly chronic treatment'], ['readAt', 'Read from i-CARE'], ['tickets', 'Tickets'], ['action', 'Suggested action']];
+const csvCell = (v: unknown) => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+// monthly jobs (from the 1st): the night reads of the 1,500 members with the highest monthly treatment cost (not read for 25 days),
+// and the AML report email once the internal address is set (Settings: aml_report_config). Nothing is sent to members.
+async function monthlyLimitJobs(c: Cfg, now: number) {
+  const month = new Date(now + 2 * 3600000).toISOString().slice(0, 7), day = +new Date(now + 2 * 3600000).toISOString().slice(8, 10);
+  const cfg = await getState('aml_report');
+  const night = await getState('aml_night');
+  if (night.month !== month && day <= 5 && (await getState('icare_health')).at) {
+    const { data: go } = await db.rpc('portal_try_lock', { p_key: 'aml_night_enqueue', p_secs: 3600 });
+    if (go) {
+      const since = new Date(now - 25 * 86400000).toISOString(); const { data: fresh } = await db.from('member_icare').select('member').gte('read_at', since).limit(20000);
+      const skip = new Set(((fresh || []) as any[]).map((r) => r.member));
+      const { data: top } = await db.from('member_cost').select('member').order('monthly_cost', { ascending: false }).limit(2500);
+      if ((top || []).length) {   // (no member costs yet = the history sync has not sent them – tried again later)
+      const pick = ((top || []) as any[]).map((r) => r.member).filter((m) => /^\d{6,10}$/.test(m) && !skip.has(m)).slice(0, 1500);
+      for (let i = 0; i < pick.length; i += 500) await db.from('icare_queue').insert(pick.slice(i, i + 500).map((m) => ({ ticket: '', member: m, requested_by: 'monthly night read' })));
+      await setState('aml_night', { month, queued: pick.length, at: nowIso() });
+      await log({ direction: 'system', action: 'aml_night_reads', ok: true, detail: { month, queued: pick.length } });
+      }
+    }
+  }
+  if (cfg.to && cfg.lastMonth !== month && day <= 5 && new Date(now).getUTCHours() >= 5) {
+    const { data: go } = await db.rpc('portal_try_lock', { p_key: 'aml_report_send', p_secs: 3600 });
+    if (go) {
+      const th = +cfg.threshold > 0 ? +cfg.threshold : 10; const rows = await amlReportRows(th);
+      const csv = '﻿' + [AML_COLS.map((x) => x[1]).join(','), ...rows.map((r: any) => AML_COLS.map(([k]) => csvCell(r[k])).join(','))].join('\r\n');
+      const outId = 'out_portal_' + Date.now().toString(36) + rand(4); const name = `AML-report-${month}.csv`; const path = `hd/outbox/${outId}/${name}`;
+      const up = await db.storage.from(BUCKET).upload(path, new TextEncoder().encode(csv), { contentType: 'text/csv', upsert: true });
+      const html = `<p>Members whose annual limit (AML) is used up or has ${th}% or less left – ${rows.length} member(s), from the latest i-CARE read of each member (members with tickets and the monthly night reads).</p><p>Exhausted: <b>${rows.filter((r: any) => +r.amlBalance <= 0).length}</b> · ${th}% or less left: <b>${rows.filter((r: any) => +r.amlBalance > 0).length}</b>.</p><p>The file opens in Excel. "Suggested action" is for a person to decide – no ID is stopped by the system. Sensitive member data: internal use only.</p>`;
+      if (!up.error) await db.from('outbox').insert({ id: outId, ticket: '', status: 'queued', job: { outId, ticket: '', to: cfg.to, cc: '', replyAll: false, subject: `[Sarwa Chronic] AML report ${month}: ${rows.length} member(s) exhausted or under ${th}%`, html, replyToMid: '', attachments: [path], attachmentNames: [name], attachmentCids: [], mailbox: c.mailbox || 'Chronic@sarwa.life', queuedBy: 'AML report', queuedAt: nowIso(), internal: true } });
+      await setState('aml_report', { ...cfg, lastMonth: up.error ? cfg.lastMonth : month, lastSentAt: up.error ? cfg.lastSentAt : nowIso(), lastRows: rows.length, lastError: up.error ? up.error.message : '' });
+      await log({ direction: 'system', action: 'aml_report', ok: !up.error, error: up.error ? up.error.message : null, detail: { month, rows: rows.length } });
+    }
+  }
 }
 
 // ---------- who is calling ----------
@@ -897,6 +997,8 @@ async function sweep(c: Cfg, force = false) {
       await internalMail(c, '', `[Portal] daily check: ${list.length} not confirmed, ${dups.length} duplicate send(s), ${(rcd.missing || []).length} missing, ${hh.kinds} error kind(s)${hh.fresh ? ' (' + hh.fresh + ' new)' : ''}`, rcHtml + (list.length ? `<p>Replies to the portal that are not confirmed (last 7 days):</p><ul>${list.map((x) => `<li><b>${x.ticket}</b> / request ${x.request_id} - <b>${x.status}</b> since ${String(x.waiting_since).slice(0, 16).replace('T', ' ')} UTC - ${String(x.job?.decision || '')} by ${String(x.job?.agent || '').replace(/</g, '&lt;')}${x.error ? ': ' + String(x.error).slice(0, 300).replace(/</g, '&lt;') : ''}</li>`).join('')}</ul><p>Open each ticket: Try again, or Cancel if it is no longer needed. Refused (conflict) means the request was decided on the portal first.</p>` : '') + dupHtml).catch(() => {});
     }
   }
+  // 7) limits, monthly: night reads of the top-cost members, and the AML report email (once the internal address is set)
+  await monthlyLimitJobs(c, now).catch((e) => log({ direction: 'system', action: 'aml_monthly', ok: false, error: errMsg(e) }));
   // 6) a NEW kind of error (not seen in the 7 days before): one alert at once, per kind, at most once a week (checked every 10 min)
   { const { data: go } = await db.rpc('portal_try_lock', { p_key: 'new_error_scan', p_secs: 600 });
     if (go) for (const k of await errorKinds(now, 15 * 60000)) if (k.fresh) {
@@ -1213,6 +1315,18 @@ Deno.serve(async (req) => {
     switch (body.action) {
       case 'status': await sweep(c).catch(() => null); return json({ ok: true, ...(await statusOf(c)) });
       case 'sweep': { if (!isAdmin(who)) return json({ error: 'Admin only' }, 403); return json({ ok: true, sweep: await sweep(c, true) }); }
+      case 'aml_report_config': {   // the AML report: internal address + threshold (anyone signed in reads, an admin changes)
+        const cur = await getState('aml_report');
+        if (body.set) {
+          if (!isAdmin(who)) return json({ error: 'Admin only' }, 403);
+          const to = String(body.to || '').split(/[;,]/).map((x) => x.trim()).filter(Boolean);
+          if (to.some((x) => !/^[^@\s]+@sarwa\.(life|insurance)$/i.test(x))) return json({ error: 'Internal addresses only (@sarwa.life / @sarwa.insurance)' }, 400);
+          const th = Math.max(1, Math.min(50, Math.round(+body.threshold || 10)));
+          await setState('aml_report', { ...cur, to: to.join('; '), threshold: th, setBy: who.kind === 'user' ? who.name : 'token', setAt: nowIso() });
+          await log({ direction: 'system', action: 'aml_report_config', ok: true, detail: { recipients: to.length, threshold: th } });
+        }
+        const v = await getState('aml_report'); return json({ ok: true, to: v.to || '', threshold: +v.threshold || 10, lastMonth: v.lastMonth || '', lastSentAt: v.lastSentAt || '', lastRows: v.lastRows ?? null, night: await getState('aml_night') });
+      }
       case 'health_report': {   // read only: what the daily check would list now (error kinds of 24 h, new ones marked)
         if (!isAdmin(who)) return json({ error: 'Admin only' }, 403);
         const now = Date.now(); const h = await healthHtml(now);
@@ -1286,7 +1400,11 @@ Deno.serve(async (req) => {
           if ((await getState('icare_config')).off === true) return json({ ok: true, off: true, jobs: [] });   // kill switch
           const stale = new Date(Date.now() - 10 * 60000).toISOString();
           await db.from('icare_queue').update({ status: 'error', done_at: nowIso(), error: 'no result after 3 tries' }).eq('status', 'taken').lt('taken_at', stale).gte('tries', 3);
-          const { data } = await db.from('icare_queue').select('id,ticket,member,tries,status,taken_at').or(`status.eq.queued,and(status.eq.taken,taken_at.lt.${stale})`).order('requested_at').limit(Math.max(1, Math.min(5, +body.limit || 1)));
+          // ticket jobs first; the monthly night reads (no ticket) only 20:00–07:00 Cairo, so the account is free in the day
+          const night = (() => { const h = new Date().getUTCHours(); return h >= 18 || h < 5; })();
+          const pick = (q: any) => q.or(`status.eq.queued,and(status.eq.taken,taken_at.lt.${stale})`).order('requested_at').limit(Math.max(1, Math.min(5, +body.limit || 1)));
+          let { data } = await pick(db.from('icare_queue').select('id,ticket,member,tries,status,taken_at').neq('ticket', ''));
+          if ((!data || !data.length) && night) ({ data } = await pick(db.from('icare_queue').select('id,ticket,member,tries,status,taken_at').eq('ticket', '')));
           const out: unknown[] = [];
           for (const r of (data || []) as any[]) {
             const q = db.from('icare_queue').update({ status: 'taken', taken_at: nowIso(), tries: (r.tries || 0) + 1 }).eq('id', r.id).eq('status', r.status);

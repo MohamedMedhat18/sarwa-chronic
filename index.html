@@ -1676,6 +1676,7 @@ function folderPane(view) {
     link('unassigned', 'Unassigned', cnt(t => VIEW_DEFS.unassigned.f(t) && !t.mergedInto), { icon: '○' }),
     link('custresp', 'Customer response', cnt(t => VIEW_DEFS.custresp.f(t)), { icon: '✉', tone: 'warn', title: VIEW_DEFS.custresp.desc }),
     (() => { const n = cnt(t => needsMemberId(t)); return n ? link('needid', 'Needs member ID', n, { icon: '🆔', tone: 'warn', title: VIEW_DEFS.needid.desc }) : null; })(),
+    el('a', { href: '#', class: 'warn', title: 'Members whose annual limit (AML) is used up or nearly used up – for a person to decide on stopping the ID', onclick: e => { e.preventDefault(); amlReportDialog(); } }, el('span', { class: 'ico', 'aria-hidden': 'true' }, '💳'), el('span', { class: 'nm' }, 'AML – needs attention')),
     (() => { const n = cnt(t => VIEW_DEFS.notsent.f(t)); return n ? link('notsent', 'Replies not sent', n, { icon: '✕', tone: 'bad', title: VIEW_DEFS.notsent.desc }) : null; })(),
     link('responded', 'Provider responded', cnt(t => VIEW_DEFS.responded.f(t) && openT(t)), { icon: '↘' }),
     link('overdue', 'Overdue', cnt((t, s) => s.overdue), { icon: '!', tone: 'bad' }),
@@ -2175,7 +2176,7 @@ function ticketView(r) {
     el('button', { type: 'button', title: 'Bulleted list', onclick: () => cmd('insertUnorderedList') }, '• List'), el('button', { type: 'button', title: 'Numbered list', onclick: () => cmd('insertOrderedList') }, '1. List'),
     el('button', { type: 'button', title: 'Right-to-left', onclick: () => { ce.dir = ce.dir === 'rtl' ? 'ltr' : 'rtl'; } }, '⇄ RTL'),
     // portal tickets get short texts: the portal wraps them in its own greeting and closing (no letter, no second greeting)
-    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const list = isPortal(DB.tickets.get(no)) ? PORTAL_CANNED : cannedList(); const c = list[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', isPortal(DB.tickets.get(no)) ? 'Insert portal text…' : 'Insert canned response…'), (isPortal(DB.tickets.get(no)) ? PORTAL_CANNED : cannedList()).map((c, i) => opt(String(i), c.title))),
+    el('select', { 'aria-label': 'Insert canned response', style: 'margin-left:auto', onchange: e => { const list = replyCannedList(DB.tickets.get(no)); const c = list[+e.target.value]; e.target.value = ''; if (!c) return; ce.focus(); document.execCommand('insertHTML', false, sanitize(fillPlaceholders(c.html, DB.tickets.get(no)))); } }, opt('', isPortal(DB.tickets.get(no)) ? 'Insert portal text…' : 'Insert canned response…'), replyCannedList(DB.tickets.get(no)).map((c, i) => opt(String(i), c.title))),
     el('button', { type: 'button', onclick: () => fileIn.click() }, '📎 Attach'));
   // "Then set Pending – <reason>": the reply itself is the request to the customer, the reason files it in its Pending sub-folder
   const afterSel = el('select', { 'aria-label': 'Status after sending' }, opt('', 'Keep status'),
@@ -2233,6 +2234,7 @@ function ticketView(r) {
     if (!me()) { askName(); return; }
     const after = afterSplit();
     if (mode !== 'note' && !confirmOtherTicketNo(t, htmlToPlain(body))) return;   // text copied from another ticket's letter?
+    if (mode !== 'note' && !confirmLimitContradiction(t, htmlToPlain(body), t.mcc ? mccDec.value : '')) return;   // approves while the limit is exhausted?
     sendBtn.disabled = true;
     try {
       if (mode === 'note') {
@@ -3267,6 +3269,13 @@ async function xlsxDownload(name, sheets) {   // sheets: [{ name, rows: [ {col: 
 const ROLE_LABEL = { admin: 'Admin', assessor: 'Agent', agent: 'Agent' };
 const canEOB = () => !!ME;   // agents are the assessors: any team member uploads the EOB
 const isPSP = t => (t.tags || []).some(x => /^\s*psp\s*$/i.test(x));
+// the reply box's list: when a limit is exhausted, its reply comes first (★) – then the usual canned responses
+function replyCannedList(t) {
+  const base = isPortal(t) ? PORTAL_CANNED : cannedList(); const c = t && t.icare; if (!c || !(c.limits || []).length) return base;
+  const CL = chronicLimit(c.limits), amlEx = !!(CL.aml && CL.aml.balance != null && +CL.aml.balance <= 0), chEx = !amlEx && CL.effective != null && CL.effective <= 0;
+  if (!amlEx && !chEx) return base; const k = amlEx ? 'aml' : 'chronic', name = amlEx ? 'AML exhausted' : 'Chronic & Pre-existing limit exhausted';
+  return [{ title: '★ ' + name + ' (عربي)', html: limitReplyHtml(t, k, 'AR') }, { title: '★ ' + name + ' (English)', html: limitReplyHtml(t, k, 'EN') }, ...base];
+}
 const cannedList = () => { const L = DB.settings.canned || []; return [...L, ...DEFAULTS.canned.filter(d => /^PSP/.test(d.title) && !L.some(x => x.title === d.title))]; };
 const PSP_REPLY_AR = '<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p><p dir="rtl">الرجاء التكرم بالعلم بأنه تم إصدار موافقة بجرعات الشهر الحالي، وسيتم التواصل مع سيادتكم من قبل مقدم الخدمة.</p>';
 const num = s => { const v = parseFloat(String(s || '').replace(/,/g, '')); return isNaN(v) ? null : v; };
@@ -3369,6 +3378,157 @@ function parseICare(txt) {
   return { admin: a, limits };
 }
 const dmyDate = s => { const m = String(s || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[2] - 1, +m[1]) : null; };
+/* ---- i-CARE limit lines (28 Nov 2026). The chronic limit is ONE shared line for chronic AND pre-existing conditions
+   ("Combined DRC Limitation for: • Chronic related conditions • Pre-existing conditions"). Dental / Sight / maternity / exception /
+   congenital DRC lines are NOT the chronic limit. No combined line = chronic and pre-existing are covered up to the AML.
+   The chronic balance is always capped by the AML balance (the annual limit applies to everything). ---- */
+function limitKind(l) {
+  const lv = String((l && l.level) || ''), ds = String((l && l.desc) || '');
+  if (/^AML/i.test(lv) || /annual maximum/i.test(ds)) return 'aml';
+  if (/disease/i.test(lv)) {
+    const chronic = /chronic|مزمن/i.test(ds), pre = /pre-?\s*existing|سابق/i.test(ds);
+    if (chronic && pre) return 'chronic';
+    if (chronic) return 'chronic_only';
+    if (/dental|أسنان|اسنان/i.test(ds)) return 'dental_drc';
+    if (/sight|optic|vision|\beye|بصر|عيون/i.test(ds)) return 'optical_drc';
+    if (/deliver|pregnan|natal|partum|abortion|miscarr|matern|ولادة|حمل/i.test(ds)) return 'maternity_drc';
+    if (/exception/i.test(ds)) return 'exception_drc';
+    if (/congenital|خلق/i.test(ds)) return 'congenital_drc';
+    return 'other_drc';
+  }
+  if (/dental/i.test(ds)) return 'dental';
+  if (/optic|sight/i.test(ds)) return 'optical';
+  if (/doctor|visit/i.test(ds)) return 'visit';
+  return 'other';
+}
+const LIMIT_LABEL = { aml: 'Annual limit (AML)', chronic: 'Chronic & Pre-existing limit', chronic_only: 'Chronic limit (check: pre-existing not named)', dental_drc: 'Dental – related conditions', optical_drc: 'Optical – related conditions', maternity_drc: 'Maternity – related conditions', exception_drc: 'Exception cases (not the chronic limit)', congenital_drc: 'Congenital conditions (not the chronic limit)', other_drc: 'Other DRC line (needs review)', dental: 'Dental', optical: 'Optical', visit: 'Doctor visit', other: '' };
+// how a line is named on the ticket (never "Chronic" for a dental / sight / other DRC line)
+function limitName(l) {
+  const k = limitKind(l), ds = String(l.desc || '');
+  if (k === 'aml') return LIMIT_LABEL.aml;
+  if (k === 'chronic' || k === 'chronic_only') return LIMIT_LABEL[k] + ' – ' + ds.replace(/^Combined (POOL )?DRC Limitation for:\s*/i, '');
+  if (k === 'dental_drc' || k === 'optical_drc') return LIMIT_LABEL[k];
+  if (/_drc$/.test(k)) return LIMIT_LABEL[k] + (ds ? ' – ' + ds : '');
+  return [l.level, ds].filter(Boolean).join(' – ');
+}
+// the chronic & pre-existing limit to decide with: { kind: 'combined' | 'aml' | 'unknown', limit, used, balance, effective (capped by AML), aml }
+function chronicLimit(limits) {
+  const L = limits || []; const aml = L.find(l => limitKind(l) === 'aml') || null;
+  const ch = L.find(l => limitKind(l) === 'chronic') || L.find(l => limitKind(l) === 'chronic_only') || null;
+  const amlBal = aml && aml.balance != null ? +aml.balance : null;
+  if (ch) { const bal = ch.balance != null ? +ch.balance : null; return { kind: 'combined', check: limitKind(ch) === 'chronic_only', line: ch, limit: ch.limit, used: ch.used, balance: bal, effective: bal == null ? amlBal : amlBal == null ? bal : Math.min(bal, amlBal), cappedByAml: amlBal != null && bal != null && amlBal < bal, aml }; }
+  if (aml) return { kind: 'aml', line: aml, limit: aml.limit, used: aml.used, balance: amlBal, effective: amlBal, cappedByAml: false, aml };
+  return { kind: 'unknown', line: null, limit: null, used: null, balance: null, effective: null, aml: null };
+}
+// 80% used = watch, 90% = warning, 100% = exhausted (common insurer / TPA levels)
+function limitLevel(limit, balance) { if (balance == null) return ''; if (+balance <= 0) return 'exhausted'; if (!(+limit > 0)) return ''; const used = 1 - balance / limit; return used >= 0.9 ? 'red' : used >= 0.8 ? 'amber' : 'ok'; }
+const fmtEgp = x => x == null || x === '' ? '—' : (+x).toLocaleString(undefined, { maximumFractionDigits: 2 });
+// ---- replies for an exhausted / partly used limit (28 Nov 2026; the Arabic wording is the team's own). The signature with
+// "وتفضلوا بقبول فائق الاحترام والتقدير" is added by the reply box. Nothing is sent automatically.
+function limitReplyHtml(t, kind, lang, o) {
+  o = o || {}; const AR = lang !== 'EN', dir = AR ? 'rtl' : 'ltr', name = esc(t.memberName || '…'), card = esc(t.member || '…');
+  const head = AR ? `<p dir="rtl"><b>السادة / شريكنا الموقر</b><br>تحية طيبة وبعد،،،</p>` : `<p><b>Dear Esteemed Partner,</b><br>Greetings,</p>`;
+  const ref = AR ? `بالإشارة إلى الطلب المقدم للعضو / ${name} – رقم الكارت ${card} (رقم التذكرة ${t.no})، ` : `Regarding the request submitted for member ${name} – card No. ${card} (ticket No. ${t.no}), `;
+  const body = kind === 'aml' ? (AR ? 'نحيط سيادتكم علماً بأن المخصص المالي السنوي تم استنفاذه ولذلك نعتذر عن التغطية التأمينية.' : 'please note that the annual financial limit has been fully used; we therefore regret that the request cannot be covered under the insurance policy.')
+    : kind === 'chronic' ? (AR ? 'نحيط سيادتكم علماً بأن المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد تم استنفاذه، ولذلك نعتذر عن التغطية التأمينية للأدوية الشهرية المطلوبة.' : 'please note that the financial limit for chronic and pre-existing conditions has been fully used; we therefore regret that the requested monthly medications cannot be covered under the insurance policy.')
+    : (AR ? `نحيط سيادتكم علماً بأن الأدوية المعتمدة تُصرف من ${o.from} حتى ${o.to} في حدود المتبقي من المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد (${fmtEgp(o.amount)} جنيه)، وبعد ذلك يتم إيقاف التغطية لاستنفاذ المخصص.` : `please note that the approved medications can be dispensed from ${o.from} until ${o.to}, within the remaining chronic & pre-existing limit (${fmtEgp(o.amount)} EGP); coverage stops after that, as the limit will be fully used.`);
+  return head + `<p dir="${dir}">${ref}${body}</p>`;
+}
+function useLimitReply(t, kind, lang, o) {
+  if (!(CUR.view && CUR.view.insertReply)) return toast('Open the ticket first');
+  CUR.view.insertReply(limitReplyHtml(t, kind, lang, o)); toast('Reply placed in the reply box – check it and press Send');
+}
+// the usual monthly cost of a medicine (GlobeMed files: median of monthly quantity × unit price over the members who take it)
+const MEDCOST = new Map();
+async function loadMedCosts(codes) {
+  const need = [...new Set(codes.filter(c => c && !MEDCOST.has(c)))].slice(0, 60); if (!need.length) return;
+  const { data } = await SB.from('member_meds').select('med_code,monthly,unit_price').in('med_code', need).gt('unit_price', 0).gt('monthly', 0).limit(4000);
+  const by = new Map(); for (const r of data || []) (by.get(r.med_code) || by.set(r.med_code, []).get(r.med_code)).push(+r.monthly * +r.unit_price);
+  for (const c of need) { const v = (by.get(c) || []).sort((a, b) => a - b); MEDCOST.set(c, v.length ? v[Math.floor(v.length / 2)] : null); }
+}
+// estimated monthly cost of the approved items: the member's own line in the files, else the medicine's usual cost
+function treatmentCost(R, hist) {
+  let total = 0; const unknown = [];
+  for (const x of R.filter(y => y.final === 'APPROVED')) {
+    const m = hist && x.name ? histMatch(x.name, hist) : null;
+    const c = m && +m.monthly > 0 && +m.unit_price > 0 ? +m.monthly * +m.unit_price : MEDCOST.get(x.code);
+    if (c > 0) total += c; else unknown.push(x.name);
+  }
+  return { total, unknown };
+}
+// how far the usable chronic balance goes: { level, months, note } – an estimate, full price (the member's co-payment is not deducted)
+function limitCoverage(CL, monthly, monthsAsked) {
+  if (!CL || CL.effective == null) return { level: 'unknown', months: null };
+  if (CL.effective <= 0) return { level: 'exhausted', months: 0 };
+  if (!(monthly > 0)) return { level: 'ok', months: null };
+  const months = Math.floor(CL.effective / monthly);
+  return { level: months >= monthsAsked ? 'ok' : months >= 1 ? 'partial' : 'short', months };
+}
+// the reply approves something while the limit is exhausted? (asked before sending – the person decides)
+function confirmLimitContradiction(t, text, decision) {
+  const c = t && t.icare; if (!c || !(c.limits || []).length) return true;
+  const CL = chronicLimit(c.limits), a = CL.aml, amlEx = a && a.balance != null && +a.balance <= 0, chEx = CL.effective != null && CL.effective <= 0;
+  if (!amlEx && !chEx) return true;
+  const approves = /approv/i.test(decision || '') || (/approv|يمكن صرف|تمت الموافقة|تم الموافقة|الأدوية المعتمدة/i.test(text || '') && !/استنفاذ|fully used|exhausted/i.test(text || ''));
+  if (!approves) return true;
+  return confirm('⚠ ' + (amlEx ? 'The annual limit (AML) is exhausted' : 'The Chronic & Pre-existing limit is exhausted') + ' (i-CARE ' + fmtDate(c.fetchedAt || c.at) + '), but this reply approves.\n\nSend it anyway?');
+}
+/* ---- AML – needs attention (28 Nov 2026): members whose annual limit is used up or has threshold % (default 10) or less left,
+   from the latest i-CARE read of each member (members with tickets + the monthly night reads). For a person to decide whether to
+   stop the ID – the system never stops one. Every view and download is recorded (audit). ---- */
+async function amlReportRowsApp(threshold) {
+  const reads = [];
+  for (let from = 0; from < 100000; from += 1000) { const { data, error } = await SB.from('member_icare').select('member,d,read_at').range(from, from + 999); if (error) throw new Error(error.message); reads.push(...(data || [])); if (!data || data.length < 1000) break; }
+  const hit = [];
+  for (const r of reads) { const CL = chronicLimit((r.d && r.d.limits) || []), a = CL.aml; if (!a || a.limit == null || a.balance == null || !(+a.limit > 0)) continue; const pct = +a.balance / +a.limit; if (+a.balance > 0 && pct > threshold / 100) continue; hit.push({ r, CL, a, pct }); }
+  const cost = new Map(); const ids = hit.map(h => h.r.member);
+  for (let i = 0; i < ids.length; i += 300) { const { data } = await SB.from('member_cost').select('member,monthly_cost').in('member', ids.slice(i, i + 300)); for (const m of data || []) cost.set(m.member, m.monthly_cost); }
+  const tix = new Map(); for (const t of DB.tickets.values()) if (t.member && !t.mergedInto) (tix.get(t.member) || tix.set(t.member, []).get(t.member)).push(t.no);
+  return hit.sort((x, y) => x.pct - y.pct).map(({ r, CL, a, pct }) => { const ad = (r.d && r.d.admin) || {}, cv = (r.d && r.d.cover) || {};
+    return { 'Member card': r.member, Name: ad.name || '', 'Policy holder': ad.holder || '', Contract: ad.contract || '', 'Contract start': cv.effective || ad.start || '', 'Contract expiry': cv.expiry || ad.expiry || '',
+      'AML limit': +a.limit, 'AML used': a.used == null ? '' : +a.used, 'AML balance': +a.balance, 'AML balance %': Math.round(pct * 1000) / 10,
+      'Chronic & Pre-existing limit / used / balance': CL.kind === 'combined' ? fmtEgp(CL.limit) + ' / ' + fmtEgp(CL.used) + ' / ' + fmtEgp(CL.balance) : 'up to AML',
+      'Monthly chronic treatment': cost.has(r.member) ? 'yes (' + fmtEgp(Math.round(cost.get(r.member))) + ' EGP / month)' : 'no', 'Read from i-CARE': String(r.read_at).slice(0, 10),
+      Tickets: (tix.get(r.member) || []).sort().join(' '), 'Suggested action': +a.balance <= 0 ? 'AML exhausted – review stopping the ID' : 'Under ' + threshold + '% – monitor' }; });
+}
+async function amlReportDialog() {
+  const box = el('div', { style: 'display:grid;gap:10px' }, el('div', { class: 'small muted' }, 'Loading…'));
+  openDialog('AML – needs attention', box, [el('button', { class: 'btn', type: 'button', onclick: closeDialog }, 'Close')], 'min(1200px,calc(100vw - 16px))');
+  let cfg = { threshold: 10, to: '' }; try { cfg = await portalCall({ action: 'aml_report_config' }); } catch { }
+  const draw = async () => {
+    const th = +cfg.threshold || 10; let rows;
+    try { rows = await amlReportRowsApp(th); } catch (e) { box.replaceChildren(el('div', { style: 'color:var(--bad)' }, 'Could not load: ' + e.message)); return; }
+    emit('audit', null, { what: 'AML report viewed', rows: rows.length, threshold: th }).catch(() => { });
+    const isAdm = ME && ME.role === 'admin';
+    const toIn = el('input', { type: 'text', value: cfg.to || '', placeholder: 'name@sarwa.life; …', style: 'width:320px' }), thIn = el('input', { type: 'number', min: 1, max: 50, value: th, style: 'width:64px' });
+    const cols = rows.length ? Object.keys(rows[0]) : [];
+    box.replaceChildren(
+      el('div', { class: 'small' }, 'Members whose annual limit (AML) is used up or has ', el('b', {}, th + '%'), ' or less left – from the latest i-CARE read of each member (members with tickets, and from December the monthly night reads of the 1,500 members with the highest monthly treatment cost). ', el('b', {}, 'The system never stops an ID'), ' – "Suggested action" is for a person to decide. Sensitive member data: internal use only; views and downloads are recorded.'),
+      el('div', { class: 'row', style: 'gap:8px' }, el('span', { class: 'pill p-over' }, rows.filter(r => r['AML balance'] <= 0).length + ' exhausted'), el('span', { class: 'pill p-due' }, rows.filter(r => r['AML balance'] > 0).length + ' at ' + th + '% or less'),
+        el('button', { class: 'btn sm', type: 'button', onclick: async () => { await xlsxDownload('AML-report-' + new Date().toISOString().slice(0, 10), [{ name: 'AML', rows }]); emit('audit', null, { what: 'AML report downloaded', rows: rows.length, threshold: th }).catch(() => { }); } }, '⬇ Excel')),
+      rows.length ? el('div', { class: 'tw', style: 'max-height:55vh;overflow:auto' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, cols.map(c => el('th', {}, c)))), el('tbody', {}, rows.map(r => el('tr', {}, cols.map(c => el('td', { class: typeof r[c] === 'number' ? 'n' : '', dir: 'auto' }, c === 'Tickets' ? String(r[c]).split(' ').filter(Boolean).map(n => [el('a', { href: '#/t/' + n, onclick: closeDialog }, n), ' ']) : typeof r[c] === 'number' ? fmtEgp(r[c]) : r[c]))))))) : el('div', { class: 'small muted' }, 'No member at ' + th + '% or less of the AML in the i-CARE reads so far.'),
+      el('details', { class: 'small' }, el('summary', { style: 'cursor:pointer' }, 'Monthly email' + (cfg.to ? ' – to ' + cfg.to : ' – no address set yet') + (cfg.lastMonth ? ' · last sent for ' + cfg.lastMonth : '')),
+        el('div', { style: 'display:grid;gap:6px;margin-top:6px' }, el('div', { class: 'muted' }, 'Sent on the 1st of each month (07:00 Cairo) with the list as an Excel-readable file. Internal addresses only (@sarwa.life / @sarwa.insurance).'),
+          isAdm ? el('div', { class: 'row', style: 'gap:6px' }, 'To ', toIn, ' Threshold % ', thIn, el('button', { class: 'btn sm primary', type: 'button', onclick: async () => { try { cfg = await portalCall({ action: 'aml_report_config', set: true, to: toIn.value, threshold: +thIn.value }); toast('Saved'); draw(); } catch (e) { toast(e.message); } } }, 'Save')) : el('div', { class: 'muted' }, 'An admin sets the address and the threshold.'))));
+  };
+  draw();
+}
+// [kind, text] lines for the ticket: AML and chronic & pre-existing status (exhausted / 90% / 80%), "up to AML" when no combined line
+function limitStatus(c) {
+  const out = [], L = (c && c.limits) || []; if (!L.length) return out;
+  const CL = chronicLimit(L), a = CL.aml;
+  if (a) { const lv = limitLevel(a.limit, a.balance);
+    if (lv === 'exhausted') out.push(['bad', 'Annual limit (AML) exhausted – المخصص المالي السنوي تم استنفاذه (limit ' + fmtEgp(a.limit) + ', used ' + fmtEgp(a.used) + ')']);
+    else if (lv === 'red' || lv === 'amber') out.push([lv === 'red' ? 'bad' : 'warn', 'Annual limit (AML) ' + Math.round((1 - a.balance / a.limit) * 100) + '% used: ' + fmtEgp(a.balance) + ' left of ' + fmtEgp(a.limit)]); }
+  if (CL.kind === 'combined') { const lv = limitLevel(CL.limit, CL.balance);
+    if (lv === 'exhausted') out.push(['bad', 'Chronic & Pre-existing limit exhausted – المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد تم استنفاذه']);
+    else if (lv === 'red' || lv === 'amber') out.push([lv === 'red' ? 'bad' : 'warn', 'Chronic & Pre-existing limit ' + Math.round((1 - CL.balance / CL.limit) * 100) + '% used: ' + fmtEgp(CL.balance) + ' left of ' + fmtEgp(CL.limit)]);
+    if (CL.cappedByAml && lv !== 'exhausted') out.push(['warn', 'Chronic & Pre-existing: only ' + fmtEgp(CL.effective) + ' usable – the AML balance is lower than the chronic balance']);
+    if (CL.check) out.push(['warn', 'The chronic line does not name pre-existing conditions – check it']);
+  } else if (CL.kind === 'aml') out.push(['ok', 'No separate Chronic / Pre-existing limit: covered up to AML, balance = AML balance (' + fmtEgp(CL.effective) + ')']);
+  if (L.some(l => limitKind(l) === 'other_drc')) out.push(['warn', 'A DRC line could not be classified – see "Other DRC line (needs review)"; not used for decisions']);
+  return out;
+}
 function icareVerdict(t, c) {
   const a = c.admin || {}; const out = [];
   const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
@@ -3377,7 +3537,8 @@ function icareVerdict(t, c) {
   if (a.riskCarrier) out.push(/sarwa/i.test(a.riskCarrier) ? ['ok', 'Sarwa Life member'] : ['bad', 'Risk carrier: ' + a.riskCarrier]);
   const exp = dmyDate(a.expiry); if (exp) out.push(exp >= new Date(new Date().toDateString()) ? ['ok', 'Contract active until ' + a.expiry] : ['bad', 'Contract EXPIRED ' + a.expiry]);
   if (a.blacklistDate || a.blacklistReason) out.push(['bad', 'Blacklisted ' + a.blacklistDate + ' ' + a.blacklistReason]);
-  for (const l of c.limits || []) if (l.limit && l.balance != null) { const p = l.balance / l.limit; if (p <= 0.1 || l.balance < 2500) out.push([p <= 0.02 ? 'bad' : 'warn', (l.level === 'AML' ? 'Annual limit' : l.level === 'Disease Related Condition' ? 'Chronic (DRC) limit' : l.desc || l.level) + ' almost used: ' + l.balance.toLocaleString() + ' ' + l.curr + ' left of ' + l.limit.toLocaleString()]); }
+  // limits: only the AML and the chronic & pre-existing limit (dental / sight / other DRC lines are not the chronic limit)
+  for (const s of limitStatus(c)) out.push(s);
   return out;
 }
 /* ---- i-CARE check. Proven on the live i-CARE: Administrative Info always shows the patient LAST SEARCHED in i-CARE's
@@ -3663,6 +3824,19 @@ function icareVsFiles(t, c) {
   if (ci && ci.expiry && (cv.expiry || a.expiry)) { const e = iso(cv.expiry || a.expiry); out.push(e === ci.expiry ? ['ok', 'Contract expiry ' + dmy(e) + ' matches the files'] : ['warn', 'Contract expiry: i-CARE ' + dmy(e) + ' vs files ' + dmy(ci.expiry)]); }
   return out;
 }
+// the box at the top of Limits: the chronic & pre-existing limit to decide with, its level, and the matching reply when exhausted
+function chronicSummary(t, c) {
+  const CL = chronicLimit(c.limits || []), a = CL.aml, aLv = a ? limitLevel(a.limit, a.balance) : '', cLv = CL.kind === 'combined' ? limitLevel(CL.limit, CL.balance) : aLv;
+  const color = lv => lv === 'exhausted' || lv === 'red' ? 'var(--bad)' : lv === 'amber' ? '#9a6a00' : '#2f8a4f';
+  const amlEx = aLv === 'exhausted', chEx = !amlEx && (CL.effective != null && CL.effective <= 0);
+  return el('div', { class: 'small', style: 'display:grid;gap:3px;padding:6px 8px;border-radius:6px;background:var(--surface-2)' },
+    CL.kind === 'combined' ? el('div', { style: 'color:' + color(cLv) }, el('b', {}, 'Chronic & Pre-existing: '), fmtEgp(CL.effective) + ' usable', ' (combined limit ' + fmtEgp(CL.limit) + ', used ' + fmtEgp(CL.used) + ', balance ' + fmtEgp(CL.balance) + (CL.cappedByAml ? ', capped by the AML balance' : '') + ')')
+      : CL.kind === 'aml' ? el('div', { style: 'color:' + color(aLv) }, el('b', {}, 'Chronic & Pre-existing: '), 'no separate limit – covered up to AML, balance = AML balance ' + fmtEgp(CL.effective))
+      : el('div', { style: 'color:#8a5200' }, el('b', {}, 'Chronic & Pre-existing: '), 'Not available – no AML or chronic line in the report'),
+    amlEx ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ المخصص المالي السنوي تم استنفاذه – Annual limit exhausted') : null,
+    chEx ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد تم استنفاذه') : null,
+    amlEx || chEx ? el('div', { class: 'row', style: 'gap:6px' }, ['AR', 'EN'].map(lg => el('button', { class: 'btn sm', type: 'button', title: 'Put this reply in the reply box – you check it and press Send', onclick: () => useLimitReply(t, amlEx ? 'aml' : 'chronic', lg) }, '✉ Reply (' + (lg === 'AR' ? 'عربي' : 'English') + ')'))) : null);
+}
 function icarePanel(t) {
   const c = t.icare; const formName = t.aiRead && t.aiRead.data && t.aiRead.data.memberName;
   const nameWarn = formName && t.memberName && sameName(formName, t.memberName) === false;
@@ -3684,8 +3858,10 @@ function icarePanel(t) {
       c.via === 'bridge' && !cv.effective ? NA('Contract dates', c.limitsNote || 'the coverage report could not be read') : null),
     (cv.classes || []).length ? el('div', { class: 'chips' }, cv.classes.map(x => el('span', { style: x.covered === 'Covered' ? '' : 'opacity:.6;text-decoration:line-through' }, (x.covered === 'Covered' ? '✓ ' : '✗ ') + x.name.replace(/ Coverage$/i, '')))) : null,
     el('div', { style: 'display:grid;gap:6px' }, el('b', { class: 'small' }, 'Limits'),
-      lim.length ? lim.map(l => { const p = l.limit && l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; const f = x => x == null ? '—' : (+x).toLocaleString(undefined, { maximumFractionDigits: 2 });
-        return el('div', { class: 'small' }, el('div', { class: 'row', style: 'justify-content:space-between;gap:6px' }, el('span', {}, (l.level === 'Disease Related Condition' ? 'Chronic / DRC' : l.level === 'AML' ? 'Annual (AML)' : l.level || '') + (l.desc ? ' – ' + l.desc : '') + (l.pool ? ' (' + l.pool + ')' : '')), el('b', {}, l.perTransaction ? f(l.limit) + ' ' + (l.curr || '') + ' per transaction' : f(l.balance) + ' left')),
+      lim.length ? chronicSummary(t, c) : null,
+      lim.length ? lim.map(l => { const p = l.limit && l.balance != null ? Math.max(0, Math.min(1, l.balance / l.limit)) : null; const f = x => x == null ? '—' : (+x).toLocaleString(undefined, { maximumFractionDigits: 2 }); const k = limitKind(l);
+        const name = limitName(l);
+        return el('div', { class: 'small', style: k === 'other_drc' ? 'outline:1px dashed #c98a00;padding:2px 4px' : '' }, el('div', { class: 'row', style: 'justify-content:space-between;gap:6px' }, el('span', { style: k === 'chronic' || k === 'chronic_only' ? 'font-weight:600' : '' }, name + (l.pool ? ' (' + l.pool + ')' : '')), el('b', {}, l.perTransaction ? f(l.limit) + ' ' + (l.curr || '') + ' per transaction' : f(l.balance) + ' left')),
           !l.perTransaction ? el('div', { class: 'muted' }, 'Limit ' + f(l.limit) + ' · used ' + f(l.used) + ' · remaining ' + f(l.balance) + ' ' + (l.curr || '')) : null,
           p != null ? el('div', { class: 'bar2', style: 'width:100%;height:7px;border-radius:5px;background:var(--surface-2);overflow:hidden' }, el('i', { style: `display:block;height:100%;width:${Math.round(p * 100)}%;background:${p < 0.1 ? 'var(--bad)' : p < 0.3 ? '#c98a00' : '#2f8a4f'}` })) : null); })
         : NA('Limits', c.limitsNote || (c.via === 'bridge' ? 'the coverage report had no limits table' : 'not read yet – press Read from i-CARE')),
@@ -3939,6 +4115,7 @@ function portalDecisionDialog(t, d, preset, opts = {}) {
         if (wantMail && overlap && !confirm(overlap + ' will receive this twice (the portal emails them too). Send the email as well?')) { e.target.disabled = false; return; }
         const replyId = replyIdNew();
         if (!confirmOtherTicketNo(t, msg.value)) { e.target.disabled = false; return; }
+        if (!confirmLimitContradiction(t, msg.value, d)) { e.target.disabled = false; return; }   // approves while the limit is exhausted?
         const q = await queuePortal(t, { decision: d, text: msg.value.trim(), reason: [reason.value, note.value.trim()].filter(Boolean).join(' – '), missing: missing.value.split('\n').map(x => x.replace(/^\s*[-•]\s*/, '').trim()).filter(Boolean), files: files.slice(), ticketUpdate, replyId });
         if (q === 'dry') return;   // the dry-run preview replaced this dialog; nothing was sent
         if (q === 'cancelled') { e.target.disabled = false; return; }   // same text already sent: the agent chose not to send it again
@@ -5415,6 +5592,27 @@ function validationDialog(no) {
         await emit('update', no, ch); CARDS.cache.delete(no); CARD = await cardCheck(DB.tickets.get(no)); draw();
       } }, '✓ Confirm member ID ' + want));
   }
+  // limits (i-CARE): the chronic & pre-existing balance to decide with, how many months it covers (estimate) and the matching reply
+  function limitLine() {
+    const ic = (DB.tickets.get(no) || t).icare;
+    if (!ic || !(ic.limits || []).length) return el('div', { class: 'small muted' }, '💳 Limits: Not available – no i-CARE read with limits yet (⚡ Read from i-CARE on the ticket)');
+    const CL = chronicLimit(ic.limits), R = computeValidation(V, CY), appr = R.filter(x => x.final === 'APPROVED');
+    const codes = appr.map(x => x.code).filter(Boolean);
+    if (codes.some(c => !MEDCOST.has(c))) loadMedCosts(codes).then(() => { if ($('#dlg').open && box.isConnected) draw(); }).catch(() => { });
+    const cost = treatmentCost(R, hist), monthsAsked = Math.max(1, ...appr.map(x => +x.months || 0));
+    const cov = limitCoverage(CL, cost.total, monthsAsked), a = CL.aml, amlEx = !!(a && a.balance != null && +a.balance <= 0);
+    const tk = DB.tickets.get(no) || t, lg = tk.lang === 'EN' ? 'EN' : 'AR';
+    const reply = (kind, o, label) => el('button', { class: 'btn sm', type: 'button', title: 'Put this reply in the reply box (behind this window) – you check it and press Send', onclick: () => useLimitReply(tk, kind, lg, o) }, '✉ ' + label);
+    const partTo = cov.level === 'partial' ? addMonths(V.start, cov.months) : '';
+    return el('div', { class: 'small', style: 'display:grid;gap:3px' },
+      el('div', {}, '💳 ', el('b', {}, CL.kind === 'combined' ? 'Chronic & Pre-existing: ' + fmtEgp(CL.effective) + ' usable' : CL.kind === 'aml' ? 'Chronic & Pre-existing: covered up to AML – ' + fmtEgp(CL.effective) + ' left' : 'Chronic & Pre-existing: not available'),
+        el('span', { class: 'muted' }, CL.kind === 'combined' ? ' (combined limit ' + fmtEgp(CL.limit) + ', used ' + fmtEgp(CL.used) + (CL.cappedByAml ? ', capped by the AML balance' : '') + ')' : '') , el('span', { class: 'muted' }, ' · i-CARE ' + fmtDate(ic.fetchedAt || ic.at))),
+      appr.length && cost.total > 0 ? el('div', { class: 'muted' }, 'Approved items ≈ ' + fmtEgp(Math.round(cost.total)) + ' EGP / month (estimate, GlobeMed prices, co-payment not deducted)' + (cost.unknown.length ? ' – no price for ' + cost.unknown.join(', ') : '') + (cov.months != null ? ' → the balance covers about ' + cov.months + ' month(s)' : '')) : null,
+      amlEx ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ المخصص المالي السنوي تم استنفاذه – the annual limit (AML) is exhausted ', reply('aml', null, 'AML exhausted reply')) : null,
+      !amlEx && cov.level === 'exhausted' ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⛔ المخصص المالي الخاص بالأمراض المزمنة والسابقة عن التعاقد تم استنفاذه ', reply('chronic', null, 'Chronic limit exhausted reply')) : null,
+      cov.level === 'short' ? el('div', { style: 'color:var(--bad);font-weight:600' }, '⚠ The balance (' + fmtEgp(CL.effective) + ') is less than one month of the approved items – decide: partial approval or reject') : null,
+      cov.level === 'partial' ? el('div', { style: 'color:#8a5200;font-weight:600' }, '⚠ The balance covers about ' + cov.months + ' of ' + monthsAsked + ' month(s): until about ' + dmy(partTo) + ' ', reply('partial', { from: dmy(V.start), to: dmy(partTo), amount: CL.effective }, 'Partial (balance) reply')) : null);
+  }
   const dayWant = () => CY.day ? Math.min(CY.day, daysIn(+V.start.slice(0, 4), +V.start.slice(5, 7) - 1)) : 0;
   const dayWrong = () => !!(CY.day && /^\d{4}-\d{2}-\d{2}$/.test(V.start || '') && +V.start.slice(8, 10) !== dayWant());
   const suggestNow = () => CY.day && /^\d{4}-\d{2}-\d{2}$/.test(V.start || '') ? startSuggest({ day: CY.day, first: CY.cd && CY.cd.firstTime, req: V.start, eff: CY.eff, exp: CY.expiry, elig: CY.elig }) : null;
@@ -5473,7 +5671,7 @@ function validationDialog(no) {
     const caseRow = el('div', { class: 'g2' },
       el('label', {}, 'Diagnosis written on the form', el('textarea', { rows: 2, dir: 'auto', oninput: e => { V.diagnosis = e.target.value; recalc(); } }, V.diagnosis)),
       el('div', { style: 'display:grid;gap:6px' }, el('div', { class: 'row' }, el('label', {}, 'Start ', inp(V, 'start', { type: 'date' })), el('label', {}, 'Months ', inp(V, 'months', { type: 'number', min: 1, max: 12, style: 'width:64px' })), el('label', {}, 'Days/month ', inp(V, 'daysPerMonth', { type: 'number', min: 28, max: 31, style: 'width:64px' }))),
-        cardLine(), cycleLine(),
+        cardLine(), cycleLine(), limitLine(),
         el('label', { class: 'row' }, inp(V, 'mismatch', { type: 'checkbox', checked: V.mismatch }), 'Member card / name does not match'),
         el('label', { class: 'row' }, inp(V, 'noForm', { type: 'checkbox', checked: V.noForm }), 'No claim form / prescription attached')));
     const labs = el('div', { class: 'tw' }, el('table', { class: 't' }, el('thead', {}, el('tr', {}, ['Lab / scan', 'Result value', 'Date', 'Interpretation', ''].map(h => el('th', {}, h)))),
@@ -5511,6 +5709,9 @@ function validationDialog(no) {
       V.startDayNote = n.trim().slice(0, 300);
     }
     V._day = CY.day || 0;
+    // approving while the limit is exhausted: asked, never blocked (the person decides)
+    { const ic = (DB.tickets.get(no) || t).icare; const CL = ic && (ic.limits || []).length ? chronicLimit(ic.limits) : null; const appr = computeValidation(V, CY).some(x => x.final === 'APPROVED');
+      if (CL && appr && CL.effective != null && CL.effective <= 0 && !confirm('⚠ ' + (CL.aml && CL.aml.balance != null && +CL.aml.balance <= 0 ? 'The annual limit (AML) is exhausted' : 'The Chronic & Pre-existing limit is exhausted') + ', but items are approved.\n\nSave anyway?')) return; }
     const R = computeValidation(V, CY); const missingCls = R.filter(x => !x.final);
     if (missingCls.length) return toast('Choose a class or final decision for item ' + missingCls.map(x => x.n).join(', '));
     const noWhy = R.filter(x => (x.final === 'NOT_COVERED' || x.final === 'NOT_JUSTIFIED') && !String(x.reason || '').trim());
@@ -5925,7 +6126,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-28c';
+const APP_VERSION = '2026-11-28d';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();

@@ -31,8 +31,9 @@ try {
   if (Test-Path $StateFile) { $s = Get-Content $StateFile -Raw -Encoding UTF8 | ConvertFrom-Json; $state.sig = $s.sig; $state.csig = "$($s.csig)"; foreach ($p in $s.hashes.PSObject.Properties) { $state.hashes[$p.Name] = $p.Value } }
   # csig: the files the contract dates were last sent from (28 Nov 2026: contract dates added - sent once even if no file changed;
   # version 2: the policy number is the "Certificate NBR" column - the "Policy Number" column holds the holder's name;
-  # version 3: the starting day of each contract is counted here and sent with the dates)
-  $cver = '3'; $csigWant = "$cver|$sig"
+  # version 3: the starting day of each contract is counted here and sent with the dates;
+  # version 4: each member's monthly treatment cost is sent too)
+  $cver = '4'; $csigWant = "$cver|$sig"
   if (-not $Force -and $state.sig -eq $sig -and $state.csig -eq $csigWant) { Log 'no file changed - nothing to do'; return }
 
   $culture = [Globalization.CultureInfo]::InvariantCulture
@@ -116,8 +117,21 @@ try {
         $row.start_day = [int]$r[0].Key; $row.day_share = [Math]::Round($r[0].Value / $tot, 3); $row.members = [int]$tot; if ($r.Count -gt 1) { $row.second_day = [int]$r[1].Key } }
       $row })
     $cn = 0; for ($i = 0; $i -lt $cl.Count; $i += 1000) { $res = Bridge @{ action = 'contracts_upsert'; rows = @($cl[$i..([Math]::Min($i + 999, $cl.Count - 1))]) }; if ($res.error) { throw $res.error }; $cn += [int]$res.n }
-    Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn); $csig = $csigWant
-  } catch { Log ('contract dates not sent: ' + $_.Exception.Message) }
+    Log ("contract dates: {0:N0} contracts, {1:N0} updated" -f $cl.Count, $cn)
+    # each member's monthly treatment cost (active medicines: Monthly x Unit Price) - for the AML report's night reads and the
+    # months a limit balance covers; members not sent this time (no active medicine) are removed on the server
+    $today = (Get-Date).ToString('yyyy-MM-dd'); $mc = @{}
+    foreach ($v in $agg.Values) {
+      if (-not $v.cov_end -or $v.cov_end -lt $today) { continue }
+      $m = $mc[$v.member]; if (-not $m) { $m = @{ member = $v.member; monthly_cost = 0.0; active_lines = 0; holder = $v.policy_holder; contract = $v.contract }; $mc[$v.member] = $m }
+      $m.active_lines++; if ($v.monthly -and $v.unit_price) { $m.monthly_cost += [double]$v.monthly * [double]$v.unit_price }
+    }
+    $ml = @($mc.Values | ForEach-Object { [ordered]@{ member = $_.member; monthly_cost = [Math]::Round($_.monthly_cost, 2); active_lines = $_.active_lines; holder = $_.holder; contract = $_.contract } })
+    $since = (Get-Date).ToUniversalTime().AddMinutes(-1).ToString('o'); $mn = 0
+    for ($i = 0; $i -lt $ml.Count; $i += 1000) { $res = Bridge @{ action = 'member_cost_upsert'; rows = @($ml[$i..([Math]::Min($i + 999, $ml.Count - 1))]) }; if ($res.error) { throw $res.error }; $mn += [int]$res.n }
+    $pr = Bridge @{ action = 'member_cost_prune'; since = $since }
+    Log ("member monthly costs: {0:N0} members on active treatment, {1:N0} no longer active removed" -f $mn, [int]$pr.n); $csig = $csigWant
+  } catch { Log ('contract dates / member costs not sent: ' + $_.Exception.Message) }
   [IO.File]::WriteAllText($StateFile, ([pscustomobject]@{ sig = $sig; csig = $csig; at = (Get-Date).ToString('o'); hashes = $newHashes } | ConvertTo-Json -Depth 3 -Compress), $Utf8)
   Log ("done: {0:N0} uploaded, server has {1:N0} lines" -f $done, (Bridge @{ action = 'history_stats' }).rows)
   try { $cr = Bridge @{ action = 'catalog_refresh' }; Log ("medicine search list: {0:N0} medicines" -f $cr.medicines) } catch { Log ('medicine list refresh failed: ' + $_.Exception.Message) }
