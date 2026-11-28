@@ -1118,7 +1118,7 @@ async function poll() {
     const n = await loadEvents();
     if (n) { DB = fold(); scheduleRender(); }
     await syncClock();
-    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)).then(() => autoCardFix()).catch(e => console.warn('card fix', e)); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
+    await runImporter(); autoFillMembers().catch(e => console.warn('member names', e)).then(() => autoCardFix()).catch(e => console.warn('card fix', e)); loadContracts().catch(() => { }); cycleHousekeeping().catch(e => console.warn('pending cycle', e)); outboxWatch().catch(e => console.warn('outbox watch', e)); portalTick().catch(() => { });
     setSync('ok', (STORE.liveOk ? 'Live · ' : 'Synced ') + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
   } catch (e) {
     console.error(e);
@@ -1283,6 +1283,17 @@ async function cardCheck(t) {
   CARDS.cache.set(t.no, { sig, r }); return r;
 }
 const cardOk = r => r && r.status === 'verified';
+// card review of 28 Nov 2026: no correct card number anywhere in these tickets (policy / phone numbers, Portal zeros) – a person
+// enters or confirms it; each leaves the "Needs member ID" view once someone confirmed or changed its card
+const CARD_REVIEW_NOS = new Set(['CHR-000133', 'CHR-000169', 'CHR-000421', 'CHR-000432', 'CHR-000459', 'CHR-000590', 'CHR-000679', 'CHR-000948', 'CHR-000467', 'CHR-000492', 'CHR-000713', 'CHR-000373', 'CHR-000377']);
+function needsMemberId(t) {
+  if (!t || t.mergedInto) return false;
+  if (t.memberConfirm && t.memberConfirm.no === t.member) return false;
+  if (CARD_REVIEW_NOS.has(t.no)) { const last = (t.memberHist || []).slice(-1)[0]; return !(last && !last.auto && last.ts >= '2026-11-28'); }
+  if (!openT(t)) return false;
+  const m = String(t.member || '');
+  return !/^\d{6,10}$/.test(m) || /^0+$/.test(m) || (CARDS.notMember.has(m) && !CARDS.known.get(m));
+}
 // the person picks / types the card no. and confirms it belongs to this member; a number they replaced is learnt as "not a card"
 // for this sender (a signature phone is then never taken again)
 function confirmMemberDialog(t, r, then) {
@@ -1595,6 +1606,7 @@ const VIEW_DEFS = {
   pending: { label: 'Decision: Pending', f: t => t.decision === 'Pending' && t.status !== 'Closed' },
   rejected: { label: 'Decision: Rejected', f: t => t.decision === 'Rejected' },
   nodecision: { label: 'Open without a decision', f: t => !t.decision && t.status !== 'Resolved' && t.status !== 'Closed' },
+  needid: { label: 'Needs member ID', desc: 'No usable member card no.: none found, a phone / policy / contract number, or on the card review list of 28 Nov – open the ticket › Patient info › Confirm member ID', f: t => needsMemberId(t) },
   unverified: { label: 'Open, not checked in i-CARE', f: t => !t.icare && t.status !== 'Resolved' && t.status !== 'Closed' && !t.mergedInto },
   portal: { label: 'Portal – open requests', desc: 'Open tickets from the portal (Chronic Attach)', f: t => isPortal(t) && openT(t) && !t.mergedInto },
   infodesk: { label: 'Info Desk', desc: 'Call Center requests handed to the Chronic team (portal Call Center > Chronic / Approval, MCC-…, status In Progress) – open or waiting for the Call Center. Requests still Open at the Call Center are under “Call Center working”.', f: t => !!t.mcc && !t.mergedInto && !mccWithCallCenter(t) && !['Closed', 'Resolved'].includes(t.status) },
@@ -1663,6 +1675,7 @@ function folderPane(view) {
     link('mine', 'Mine', cnt(t => VIEW_DEFS.mine.f(t)), { icon: '◔' }),
     link('unassigned', 'Unassigned', cnt(t => VIEW_DEFS.unassigned.f(t) && !t.mergedInto), { icon: '○' }),
     link('custresp', 'Customer response', cnt(t => VIEW_DEFS.custresp.f(t)), { icon: '✉', tone: 'warn', title: VIEW_DEFS.custresp.desc }),
+    (() => { const n = cnt(t => needsMemberId(t)); return n ? link('needid', 'Needs member ID', n, { icon: '🆔', tone: 'warn', title: VIEW_DEFS.needid.desc }) : null; })(),
     (() => { const n = cnt(t => VIEW_DEFS.notsent.f(t)); return n ? link('notsent', 'Replies not sent', n, { icon: '✕', tone: 'bad', title: VIEW_DEFS.notsent.desc }) : null; })(),
     link('responded', 'Provider responded', cnt(t => VIEW_DEFS.responded.f(t) && openT(t)), { icon: '↘' }),
     link('overdue', 'Overdue', cnt((t, s) => s.overdue), { icon: '!', tone: 'bad' }),
@@ -5798,7 +5811,7 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => { reg.update().catch(() => { }); window.addEventListener('focus', () => reg.update().catch(() => { })); }).catch(() => { });
 }
 // new version published -> reload once to use it (only when no dialog / editor is open, so nobody loses typing)
-const APP_VERSION = '2026-11-28a';
+const APP_VERSION = '2026-11-28b';
 async function checkVersion() {
   try {
     const h = await (await fetch(location.pathname + '?v=' + Date.now(), { cache: 'no-store' })).text();
